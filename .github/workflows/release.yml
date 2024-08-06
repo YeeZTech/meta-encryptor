@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main  # 发布的目标分支
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '14'  # 你项目使用的 Node.js 版本
+
+    - name: Install Yarn
+      run: npm install -g yarn
+
+    - name: Install
+      run: yarn
+
+    - name: Build project
+      run: yarn build  # 假设你的项目有一个构建步骤
+
+    - name: Publish
+      id: changesets
+      uses: changesets/action@v1
+      with:
+        # Note: pnpm install after versioning is necessary to refresh lockfile
+        version: yarn version
+        publish: yarn release
+        commit: '[ci] release'
+        title: '[ci] release'
+      env:
+        # Needs access to push to main
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Needs access to publish to npm
+        NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

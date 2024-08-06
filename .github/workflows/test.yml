@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  pull_request:
+    branches:
+      - main  # 或者你希望的目标分支
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '14'  # 你项目使用的 Node.js 版本
+
+    - name: Install Yarn
+      run: npm install -g yarn
+
+    - name: Install
+      run: yarn
+
+    - name: Run tests
+      run: yarn test  # 假设你的测试脚本是通过 `npm test` 命令运行的

@@ -121,14 +121,14 @@ test('test medium file', async()=>{
 })
 
 test('test large file', async()=>{
-  let src = "xlarge.file";
+  let src = "xUnsealerlarge.file";
   try{
     fs.unlinkSync(src)
   }catch(error){
 
   }
   //100MB
-  generateFileWithSize(src,  3 * 1024 * 1024 * 100)
-   await sealAndUnsealFile(src);
-   fs.unlinkSync(src)
+  generateFileWithSize(src,  1024 * 1024 * 100)
+  await sealAndUnsealFile(src);
+  fs.unlinkSync(src)
 })

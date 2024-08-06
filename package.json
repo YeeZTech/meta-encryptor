@@ -1,6 +1,6 @@
 {
   "name": "@yeez-tech/meta-encryptor",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "description": "Data Seal/Unseal for Fidelius",
   "main": "build/commonjs/index.cjs",
   "module": "build/es/index.js",
@@ -12,7 +12,9 @@
   ],
   "scripts": {
     "build": "rollup-cli-build --no-uglify",
-    "test": "jest"
+    "test": "jest",
+    "version": "changeset version",
+    "release": "changeset publish"
   },
   "repository": {
     "type": "git",
@@ -21,6 +23,8 @@
   "devDependencies": {
     "@babel/core": "^7.11.0",
     "@babel/preset-env": "^7.11.0",
+    "@changesets/changelog-github": "^0.5.0",
+    "@changesets/cli": "^2.27.7",
     "@jest/transform": "^29.7.0",
     "@rollup/plugin-babel": "^6.0.3",
     "@rollup/plugin-commonjs": "^24.0.0",
