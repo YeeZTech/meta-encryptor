@@ -82,7 +82,7 @@ test('test large file', async()=>{
 
   }
   //100MB
-  generateFileWithSize(src,  1024 * 1024 * 100)
+  generateFileWithSize(src,  1024 * 1024 * 1024)
    await sealAndUnsealFile(src);
    fs.unlinkSync(src)
 })
