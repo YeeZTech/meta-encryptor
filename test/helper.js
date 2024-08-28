@@ -47,8 +47,16 @@ function generateFileWithSize(fp, size){
   log.info("done generate file")
 }
 
+const tusConfig = {
+  // tus服务，下载文件url
+  downloadUrl: 'http://localhost:1080/download-bytes',
+  // 使用tus服务时，加密文件写入的目录
+  tusFileDir: '/tus-node-server/files'
+}
+
 export {
   calculateMD5,
   key_pair,
   generateFileWithSize,
+  tusConfig
 }

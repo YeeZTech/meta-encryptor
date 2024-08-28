@@ -13,6 +13,7 @@ declare const _default: {
   forwardSkey: any;
   Unsealer: any;
   SealedFileStream: any;
+  RemoteSealedFileStream: any;
 };
 export const downloadJson: typeof _default.downloadJson;
 export const DataProvider: typeof _default.dataProvider;
