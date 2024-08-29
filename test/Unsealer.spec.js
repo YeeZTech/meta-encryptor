@@ -1,7 +1,7 @@
 import {Sealer, ToString} from "../src/Sealer"
 import {Unsealer} from "../src/Unsealer"
 import {SealedFileStream} from "../src/SealedFileStream"
-import {RemoteSealedFileStream} from "../src/RemoteSealedFileStream"
+import { downloadSealFileForStream } from "../src/http/downloadFileForStream"
 
 const path = require('path');
 import fs from "fs";
@@ -14,7 +14,7 @@ var unsealer_log = require("loglevel").getLogger("meta-encryptor/Unsealer");
 var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
 import{calculateMD5, key_pair, generateFileWithSize, tusConfig} from "./helper"
 
-log.setLevel("error")
+log.setLevel('DEBUG')
 //unsealer_log.setLevel("error")
 //unsealer_stream_log.setLevel("trace")
 
@@ -59,8 +59,13 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   }catch(err){}
 
   while(keep){
-    let sealedStream = useRemoteSealedFileStream ? new RemoteSealedFileStream(dstFileName, tusDownloadUrl, {start: status.processedBytes}) : new SealedFileStream(dst,
-      {start:status.processedBytes, highWaterMark: 64 * 1024});
+    let sealedStream
+    if (useRemoteSealedFileStream) {
+      const res = await downloadSealFileForStream(tusDownloadUrl, dstFileName, {start: status.processedBytes})
+      sealedStream = res.data
+    } else {
+      sealedStream = new SealedFileStream(dst, {start:status.processedBytes, highWaterMark: 64 * 1024 })
+    }
     let ret_ws = fs.createWriteStream(ret_src, {flags:'a'});
     let unsealer = new Unsealer({keyPair:key_pair,
       processedItemCount:status.processedItems,
@@ -148,7 +153,7 @@ test('test large file use RemoteSealedFileStream', async()=>{
   }
   //100MB
   generateFileWithSize(src,  1024 * 1024 * 100)
-  // await sealAndUnsealFile(src, true);
-  await sealAndUnsealFile(src);
+  await sealAndUnsealFile(src, true);
+  // await sealAndUnsealFile(src);
   fs.unlinkSync(src)
 })

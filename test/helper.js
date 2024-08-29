@@ -49,9 +49,9 @@ function generateFileWithSize(fp, size){
 
 const tusConfig = {
   // tus服务，下载文件url
-  downloadUrl: 'http://localhost:1080/download-bytes',
+  downloadUrl: 'http://localhost:1080/get-seal-file-stream',
   // 使用tus服务时，加密文件写入的目录
-  tusFileDir: '/tus-node-server/files'
+  tusFileDir: '/Users/lirong/projects/tus-node-server/files'
 }
 
 export {
