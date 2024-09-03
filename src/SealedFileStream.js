@@ -81,7 +81,7 @@ export class SealedFileStream extends Readable{
           }
           let endPosition = this.end !== undefined ? this.end : this.contentSize;
           this.end = Math.min(endPosition, this.contentSize);
-          this.streamSize = HeaderSize + this.end - this.startReadPos;
+          this.streamSize = HeaderSize + this.end - this.start;
           resolve();
         });
       }) ;
