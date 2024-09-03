@@ -17,10 +17,6 @@ export{
   SealedFileStream
 }from "./SealedFileStream.js"
 
-export{
-  RemoteSealedFileStream
-}from "./RemoteSealedFileStream.js"
-
 export {
   isSealedFile,
   sealedFileVersion,
