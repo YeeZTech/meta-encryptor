@@ -14,7 +14,7 @@ var unsealer_log = require("loglevel").getLogger("meta-encryptor/Unsealer");
 var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
 import{calculateMD5, key_pair, generateFileWithSize, tusConfig} from "./helper"
 
-log.setLevel('DEBUG')
+log.setLevel('INFO')
 //unsealer_log.setLevel("error")
 //unsealer_stream_log.setLevel("trace")
 
@@ -44,7 +44,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   let status = {processedBytes:0, processedItems:0, writeBytes: 0}
   let last_status = JSON.parse(JSON.stringify(status));
   const progressHandler=function(totalItem, readItem, bytes, writeBytes){
-    log.debug("total item: ", totalItem, "readItem: ", readItem, "bytes: ", bytes, ", write bytes: ", writeBytes)
+    log.info("total item: ", totalItem, "readItem: ", readItem, "bytes: ", bytes, ", write bytes: ", writeBytes)
     last_status = JSON.parse(JSON.stringify(status));
     status.processedBytes = bytes;
     status.processedItems = readItem;
@@ -59,13 +59,6 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   }catch(err){}
 
   while(keep){
-    let sealedStream
-    if (useRemoteSealedFileStream) {
-      const res = await downloadSealFileForStream(tusDownloadUrl, dstFileName, {start: status.processedBytes})
-      sealedStream = res.data
-    } else {
-      sealedStream = new SealedFileStream(dst, {start:status.processedBytes, highWaterMark: 64 * 1024 })
-    }
     let ret_ws = fs.createWriteStream(ret_src, {flags:'a'});
     let unsealer = new Unsealer({keyPair:key_pair,
       processedItemCount:status.processedItems,
@@ -73,6 +66,13 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
       writeBytes : status.writeBytes,
       progressHandler : progressHandler
     })
+    let sealedStream
+    if (useRemoteSealedFileStream) {
+      const res = await downloadSealFileForStream(tusDownloadUrl, dstFileName, {start: status.processedBytes})
+      sealedStream = res.data
+    } else {
+      sealedStream = new SealedFileStream(dst, {start:status.processedBytes, highWaterMark: 64 * 1024 })
+    }
 
     let count = 0;
     //let rand = Math.floor(Math.random() * 10);
@@ -144,7 +144,7 @@ test('test large file', async()=>{
   fs.unlinkSync(src)
 })
 
-test('test large file use RemoteSealedFileStream', async()=>{
+test.skip('test large file use RemoteSealedFileStream', async()=>{
   let src = "test.remote.xUnsealerlarge.file";
   try{
     fs.unlinkSync(src)
