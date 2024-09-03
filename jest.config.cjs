@@ -6,5 +6,5 @@ module.exports = {
       configFile: './babel.config.cjs',
     }],
   },
-  testTimeout: 10000 * 6
+  testTimeout: 1000 * 60 * 10
 };

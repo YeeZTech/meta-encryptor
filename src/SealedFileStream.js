@@ -38,6 +38,7 @@ export class SealedFileStream extends Readable{
     this.end = options ? options.end : undefined;
     this.startReadPos = 0;
     this.initialized = false;
+    this.streamSize = 0;
     log.debug("SealedFileStream: ", this)
     if (!supportsConstruct()) {
       log.debug("no support construct");
@@ -46,7 +47,6 @@ export class SealedFileStream extends Readable{
           this.emit("error", err);
           return;
         }
-        this.emit('ready')
       })
     } else {
       log.debug("support construct");
@@ -81,11 +81,13 @@ export class SealedFileStream extends Readable{
           }
           let endPosition = this.end !== undefined ? this.end : this.contentSize;
           this.end = Math.min(endPosition, this.contentSize);
+          this.streamSize = HeaderSize + this.end - this.startReadPos;
           resolve();
         });
       }) ;
       this.initialized = true;
       callback();
+      this.emit('ready');
     } catch (err) {
       log.error("got err " + err)
       callback(err);
@@ -94,7 +96,7 @@ export class SealedFileStream extends Readable{
 
   _read(size) {
     log.debug("_read initialized:", this.initialized);
-    if (!this.initialized) {
+    if (!this.initialized && !supportsConstruct()) {
       this.once('ready', () => this._read(size));
       return;
     }
@@ -147,9 +149,19 @@ export class SealedFileStream extends Readable{
   }
 
   _destroy(err, callback) {
+    log.debug('Entering _destroy with error:', err);
     if (this.fileHandle) {
-      this.fileHandle.close().then(() => callback(err)).catch(callback);
+      this.fileHandle.close()
+        .then(() => {
+          log.debug('File handle closed successfully.');
+          callback(err);
+        })
+        .catch(err => {
+          log.error('Error closing file handle:', err);
+          callback(err);
+        });
     } else {
+      log.debug('No file handle to close.');
       callback(err);
     }
   }

@@ -1,6 +1,7 @@
 import {Sealer, ToString} from "../src/Sealer"
 import {Unsealer} from "../src/Unsealer"
 import {SealedFileStream} from "../src/SealedFileStream"
+import { downloadSealFileForStream } from "../src/http/downloadFileForStream"
 
 const path = require('path');
 import fs from "fs";
@@ -11,15 +12,20 @@ const stream = require("stream");
 const log = require('loglevel');
 var unsealer_log = require("loglevel").getLogger("meta-encryptor/Unsealer");
 var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
-import{calculateMD5, key_pair, generateFileWithSize} from "./helper"
+import{calculateMD5, key_pair, generateFileWithSize, tusConfig} from "./helper"
 
-log.setLevel("error")
+log.setLevel('INFO')
 //unsealer_log.setLevel("error")
 //unsealer_stream_log.setLevel("trace")
 
+// 本地下载文件的服务
+const tusDownloadUrl = tusConfig.downloadUrl
 
-async function sealAndUnsealFile(src){
-  let dst = path.join(path.dirname(src), path.basename(src) + ".sealed");
+const tusFileDir = tusConfig.tusFileDir
+
+async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
+  let dstFileName = path.basename(src) + ".sealed"
+  let dst = useRemoteSealedFileStream ? path.join(tusFileDir, dstFileName) : path.join(path.dirname(src), dstFileName);
   let ret_src = path.join(path.dirname(src), path.basename(src) + ".unsealed.ret");
 
   let rs = fs.createReadStream(src)
@@ -38,7 +44,7 @@ async function sealAndUnsealFile(src){
   let status = {processedBytes:0, processedItems:0, writeBytes: 0}
   let last_status = JSON.parse(JSON.stringify(status));
   const progressHandler=function(totalItem, readItem, bytes, writeBytes){
-    log.debug("total item: ", totalItem, "readItem: ", readItem, "bytes: ", bytes, ", write bytes: ", writeBytes)
+    log.info("total item: ", totalItem, "readItem: ", readItem, "bytes: ", bytes, ", write bytes: ", writeBytes)
     last_status = JSON.parse(JSON.stringify(status));
     status.processedBytes = bytes;
     status.processedItems = readItem;
@@ -53,8 +59,6 @@ async function sealAndUnsealFile(src){
   }catch(err){}
 
   while(keep){
-    let sealedStream = new SealedFileStream(dst,
-      {start:status.processedBytes});
     let ret_ws = fs.createWriteStream(ret_src, {flags:'a'});
     let unsealer = new Unsealer({keyPair:key_pair,
       processedItemCount:status.processedItems,
@@ -62,6 +66,13 @@ async function sealAndUnsealFile(src){
       writeBytes : status.writeBytes,
       progressHandler : progressHandler
     })
+    let sealedStream
+    if (useRemoteSealedFileStream) {
+      const res = await downloadSealFileForStream(tusDownloadUrl, dstFileName, {start: status.processedBytes})
+      sealedStream = res.data
+    } else {
+      sealedStream = new SealedFileStream(dst, {start:status.processedBytes, highWaterMark: 64 * 1024 })
+    }
 
     let count = 0;
     //let rand = Math.floor(Math.random() * 10);
@@ -130,5 +141,19 @@ test('test large file', async()=>{
   //100MB
   generateFileWithSize(src,  1024 * 1024 * 100)
   await sealAndUnsealFile(src);
+  fs.unlinkSync(src)
+})
+
+test.skip('test large file use RemoteSealedFileStream', async()=>{
+  let src = "test.remote.xUnsealerlarge.file";
+  try{
+    fs.unlinkSync(src)
+  }catch(error){
+
+  }
+  //100MB
+  generateFileWithSize(src,  1024 * 1024 * 100)
+  await sealAndUnsealFile(src, true);
+  // await sealAndUnsealFile(src);
   fs.unlinkSync(src)
 })
