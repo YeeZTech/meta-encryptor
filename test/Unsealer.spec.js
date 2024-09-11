@@ -2,6 +2,7 @@ import {Sealer, ToString} from "../src/Sealer"
 import {Unsealer} from "../src/Unsealer"
 import {SealedFileStream} from "../src/SealedFileStream"
 import { downloadSealFileForStream } from "../src/http/downloadFileForStream"
+import { UnsealerRelatedWriteStream } from "../src/UnsealerRelatedWriteStream"
 
 const path = require('path');
 import fs from "fs";
@@ -15,7 +16,7 @@ var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFi
 import{calculateMD5, key_pair, generateFileWithSize, tusConfig} from "./helper"
 
 log.setLevel('INFO')
-//unsealer_log.setLevel("error")
+// unsealer_log.setLevel('DEBUG')
 //unsealer_stream_log.setLevel("trace")
 
 // 本地下载文件的服务
@@ -59,12 +60,15 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   }catch(err){}
 
   while(keep){
-    let ret_ws = fs.createWriteStream(ret_src, {flags:'a'});
+    // let ret_ws = new UnsealerRelatedWriteStream(ret_src, {flags:'a'});
+    let ret_ws = new UnsealerRelatedWriteStream({
+      filePath: ret_src,
+      writeBytes: status.writeBytes
+    });
     let unsealer = new Unsealer({keyPair:key_pair,
       processedItemCount:status.processedItems,
       processedBytes : status.processedBytes,
-      writeBytes : status.writeBytes,
-      progressHandler : progressHandler
+      writeBytes : status.writeBytes
     })
     let sealedStream
     if (useRemoteSealedFileStream) {
@@ -78,6 +82,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
     //let rand = Math.floor(Math.random() * 10);
     let rand = 1
     let ctrlStream = new stream.Transform({
+      objectMode: true,
       transform(chunk, encoding, callback) {
         try{
           this.push(chunk);
@@ -98,7 +103,17 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
       log.error("error", error)
       //status = last_status;
     })
+    await ret_ws.initialize()
     let v = sealedStream.pipe(unsealer).pipe(ctrlStream).pipe(ret_ws);
+    ret_ws.on('progress', (processedBytes, readItemCount, totalItem, writeSucceedBytes) => {
+      log.info('progress', processedBytes, readItemCount, totalItem, writeSucceedBytes)
+      status.processedBytes = processedBytes;
+      status.processedItems = readItemCount;
+      status.writeBytes = writeSucceedBytes;
+      if(readItemCount === totalItem){
+        keep = false;
+      }
+    })
     await new Promise((resolve)=>{
       log.debug("wait finish");
       ret_ws.on('finish', ()=>{

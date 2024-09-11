@@ -28,7 +28,7 @@ const YPCCrypto = YPCCryptoFun();
 
 export class Unsealer extends Transform{
   constructor(options) {
-    super(options);
+    super({...options, objectMode: true});
     this.accumulatedBuffer = Buffer.alloc(0);
     this.keyPair = options.keyPair;
     this.progressHandler = options.progressHandler;
@@ -77,6 +77,7 @@ export class Unsealer extends Transform{
           let offset = 0;
           let buf = ByteBuffer.wrap(this.accumulatedBuffer.slice(0, 8), LITTLE_ENDIAN);
           let item_size = buf.readUint64(offset).toNumber()
+          log.debug("item_size toNumber()", item_size)
           offset += 8;
           if(this.accumulatedBuffer.length >= item_size + offset){
             log.debug("got enough data ", item_size)
@@ -91,12 +92,14 @@ export class Unsealer extends Transform{
             //TODO check if msg is null, i.e., decrypt failed
             let batch = ntpackage2batch(msg);
             log.debug("got batch with length " + batch.length)
+            let input = Buffer.alloc(0);
             for(let i = 0; i < batch.length; i++){
               //log.debug("start from n")
               let b = fromNtInput(batch[i]);
               //log.debug("end from n")
-
-              this.push(b);
+              log.debug("b", b)
+              input = Buffer.concat([input, b])
+              log.debug("input", input)
               this.writeBytes += b.length;
 
               let k = Buffer.from(
@@ -106,11 +109,23 @@ export class Unsealer extends Transform{
              this.dataHash = keccak256(k);
             }
             this.readItemCount += 1;
+            this.push({
+              chunk: input,
+              processedBytes: this.processedBytes,
+              readItemCount: this.readItemCount,
+              totalItem: this.header.item_number
+            })
+            log.debug('this.push', {
+              chunk: input,
+              processedBytes: this.processedBytes,
+              readItemCount: this.readItemCount
+            })
             if(this.progressHandler !== undefined &&
               this.progressHandler !== null){
               this.progressHandler(this.header.item_number, this.readItemCount, this.processedBytes, this.writeBytes);
             }
             if(this.readItemCount === this.header.item_number){
+              log.debug('push(null)')
               this.push(null);
             }
           }else{
