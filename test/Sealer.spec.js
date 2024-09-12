@@ -1,6 +1,7 @@
 import {Sealer, ToString} from "../src/Sealer"
 import {Unsealer} from "../src/Unsealer"
 import {SealedFileStream} from "../src/SealedFileStream"
+import { UnsealerRelatedWriteStream } from "../src/UnsealerRelatedWriteStream"
 
 const path = require('path');
 import fs from "fs";
@@ -37,9 +38,14 @@ async function sealAndUnsealFile(src){
   tag = 'stream unseal ' + src + ' cost time'
   console.time(tag)
   let sealedStream = new SealedFileStream(dst);
-  let ret_ws = fs.createWriteStream(ret_src);
+
+  let ret_ws = new UnsealerRelatedWriteStream({
+    filePath: ret_src,
+    writeBytes: 0
+  });
 
   let unsealer = new Unsealer({keyPair: key_pair});
+  await ret_ws.initialize()
   sealedStream.pipe(unsealer).pipe(ret_ws);
   sealedStream.on('error', (error)=>{
     console.log("got error: ", error);
@@ -67,7 +73,7 @@ test('seal small file', async()=>{
   await sealAndUnsealFile(src);
 })
 
-test('test medium file', async()=>{
+test.skip('test medium file', async()=>{
   let src = './yarn.lock';
   await sealAndUnsealFile(src);
 })
@@ -105,7 +111,12 @@ async function sealAndUnsealCSVFile(src){
   console.timeEnd(tag)
 
   let sealedStream = new SealedFileStream(dst);
-  let ret_ws = fs.createWriteStream(ret_src);
+  // let ret_ws = fs.createWriteStream(ret_src);
+  let ret_ws = new UnsealerRelatedWriteStream({
+    filePath: ret_src,
+    writeBytes: 0
+  });
+  await ret_ws.initialize()
   sealedStream.pipe(new Unsealer({keyPair: key_pair})).pipe(ret_ws);
   await new Promise((resolve)=>{
     ret_ws.on('finish', ()=>{

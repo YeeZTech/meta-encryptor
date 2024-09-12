@@ -40,4 +40,5 @@ test('UnsealerRelatedWriteStream', async () => {
   await new Promise((resolve) => {
     writeStream.on('close', resolve)
   })
+  fs.unlinkSync(src)
 })

@@ -5,8 +5,8 @@ import{ calculateMD5, generateFileWithSize, key_pair } from "./helper"
 import { Sealer } from "../src/Sealer"
 
 test('test SealedFileStream on("readable")', async()=>{
-  const src = "xlarge.file";
-  const copyFilePath = "xlarge.file.copy";
+  const src = "SealedFileStream.xlarge.file";
+  const copyFilePath = "SealedFileStream.xlarge.file.copy";
   let dst = path.join(path.dirname(src), path.basename(src) + ".sealed");
   try{
     fs.unlinkSync(src)

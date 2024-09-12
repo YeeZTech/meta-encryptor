@@ -9,7 +9,7 @@ import fs from "fs";
 import{calculateMD5, key_pair} from "./helper"
 
 test('true', async()=>{
-  let src = './tsconfig.json'
+  let src = './jest.config.cjs'
   let dst = path.join(path.dirname(src), path.basename(src) + ".util.sealed");
   let rs = fs.createReadStream(src)
   let ws = fs.createWriteStream(dst)
