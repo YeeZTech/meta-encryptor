@@ -42,6 +42,10 @@ export class UnsealerRelatedWriteStream extends Writable {
   _write(obj, _, callback) {
     try {
       log.debug('Received chunk:', obj);
+      if (!this.fileHandle) {
+        callback(new Error('new UnsealerRelatedWriteStream().initialize function must be called'))
+        return
+      }
       const { chunk, processedBytes, readItemCount, totalItem } = obj
       const chunkLength = chunk.length
       this.fileHandle.write(chunk, 0, chunkLength, this.writeProcessedBytes).then((res) => {
