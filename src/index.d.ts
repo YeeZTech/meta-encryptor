@@ -13,7 +13,8 @@ declare const _default: {
   forwardSkey: any;
   Unsealer: any;
   SealedFileStream: any;
-  UnsealerRelatedWriteStream: any;
+  ProgressInfoStream: any;
+  UnsealerWithProgressInfo: any;
 };
 export const downloadJson: typeof _default.downloadJson;
 export const DataProvider: typeof _default.dataProvider;
@@ -29,5 +30,6 @@ export const signedDataHash: typeof _default.signedDataHash;
 export const forwardSkey: typeof _default.forwardSkey;
 export const Unsealer: typeof _default.Unsealer;
 export const SealedFileStream: typeof _default.SealedFileStream;
-export const UnsealerRelatedWriteStream: typeof _default.UnsealerRelatedWriteStream;
+export const ProgressInfoStream: typeof _default.ProgressInfoStream;
+export const UnsealerWithProgressInfo: typeof _default.UnsealerWithProgressInfo;
 export default _default;

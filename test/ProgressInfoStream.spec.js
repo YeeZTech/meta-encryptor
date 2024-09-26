@@ -1,18 +1,24 @@
-import { UnsealerRelatedWriteStream } from "../src/UnsealerRelatedWriteStream"
+import { ProgressInfoStream } from "../src/ProgressInfoStream"
 import fs from 'fs'
 import log from 'loglevel'
+const logger = require("loglevel").getLogger("meta-encryptor/ProgressInfoStream");
 const { Readable } = require('stream');
 
 log.setLevel('DEBUG')
+logger.setLevel('DEBUG')
 
-test('UnsealerRelatedWriteStream', async () => {
-  const src = "unsealerRelatedWriteStream.file";
+test('ProgressInfoStream', async () => {
+  const src = "progressInfoStream.file";
+  const processFilePath = "progressInfoText.file";
   try{
     fs.unlinkSync(src)
   }catch(error){}
-  const writeStream = new UnsealerRelatedWriteStream({
+  const writeStream = new ProgressInfoStream({
     filePath: src,
-    writeBytes: 0
+    processFilePath
+  })
+  writeStream.once('processInfoAvailable',  (res) => {
+    log.debug('processInfoAvailable res', res)
   })
   // 创建一个可读流 (模拟)
   const readableStream = new Readable({
@@ -22,7 +28,8 @@ test('UnsealerRelatedWriteStream', async () => {
       this.push({
         chunk: Buffer.from('hello'),
         processedBytes: Buffer.from('hello').length,
-        readItemCount: 1
+        readItemCount: 1,
+        totalItem: 1
       });
       this.push(null); // 使用 null 表示数据流结束
     }
@@ -41,4 +48,5 @@ test('UnsealerRelatedWriteStream', async () => {
     writeStream.on('close', resolve)
   })
   fs.unlinkSync(src)
+  fs.unlinkSync(processFilePath)
 })

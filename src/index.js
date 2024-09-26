@@ -18,8 +18,12 @@ export{
 }from "./SealedFileStream.js"
 
 export{
-  UnsealerRelatedWriteStream
-}from "./UnsealerRelatedWriteStream.js"
+  ProgressInfoStream
+}from "./ProgressInfoStream.js"
+
+export{
+  UnsealerWithProgressInfo
+}from "./UnsealerWithProgressInfo.js"
 
 export {
   isSealedFile,
