@@ -17,6 +17,10 @@ export{
   SealedFileStream
 }from "./SealedFileStream.js"
 
+export{
+  UnsealerRelatedWriteStream
+}from "./UnsealerRelatedWriteStream.js"
+
 export {
   isSealedFile,
   sealedFileVersion,

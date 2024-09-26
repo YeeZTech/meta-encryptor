@@ -1,6 +1,6 @@
 {
   "name": "@yeez-tech/meta-encryptor",
-  "version": "2.1.4",
+  "version": "3.0.0",
   "description": "Data Seal/Unseal for Fidelius",
   "main": "build/commonjs/index.cjs",
   "module": "build/es/index.js",
