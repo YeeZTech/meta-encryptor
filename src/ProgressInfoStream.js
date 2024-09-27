@@ -1,5 +1,6 @@
 import { Writable } from 'stream'
 import fs from 'fs'
+import waterfallUntil from 'run-waterfall-until'
 
 const log = require("loglevel").getLogger("meta-encryptor/ProgressInfoStream");
 
@@ -9,18 +10,10 @@ function isObject(value) {
 
 const lineBreak = '\n'
 const splitter = ','
-const processItemCount = 5
+const progressItemCount = 5
+const tmpFileSuffix = '.tmp'
 
-class UtilsPromise {
-  constructor() {
-    this.promise = new Promise((resolve, reject) => {
-      this.resolve = resolve;
-      this.reject = reject;
-    });
-  }
-}
-
-export class WriteWithProgressInfo extends Writable {
+class WritableWithProgressInfo extends Writable {
   constructor(options, writableOptions) {
     if (isObject(writableOptions)) {
       writableOptions.objectMode = true
@@ -56,7 +49,7 @@ export class WriteWithProgressInfo extends Writable {
     try {
       log.debug('Received chunk:', obj);
       if (!this.fileHandle) {
-        callback(new Error('new ProgressInfoStream().initialize function must be called'))
+        callback(new Error('new WritableWithProgressInfo().initialize function must be called'))
         return
       }
       const { chunk } = obj
@@ -109,126 +102,148 @@ export class ProgressInfoStream extends Writable {
     if (!options || !options.filePath) {
       throw new Error('filePath must be passed')
     }
-    if (!options || !options.processFilePath) {
-      throw new Error('processFilePath must be passed')
+    if (!options || !options.progressFilePath) {
+      throw new Error('progressFilePath must be passed')
     }
     this.filePath = options.filePath
-    this.processFilePath = options.processFilePath
-    this.fileProcessInfo = {
+    this.progressFilePath = options.progressFilePath
+    this.progressTmpFilePath = `${options.progressFilePath}${tmpFileSuffix}`
+    this.fileProgressInfo = {
       processedBytes: 0,
       readItemCount: 0,
       totalItem: 0,
       writeSucceedBytes: 0,
     }
-    this.processFileProcessInfo = {
-      writeSucceedBytes: 0
-    }
     this.fileStream = null
-    this.processFileStream = null
-  }
-
-  async _initProcessFile() {
-    try {
-      await fs.promises.access(this.processFilePath)
-    } catch(e) {
-      return Promise.resolve()
-    }
-    try {
-      const res = await fs.promises.readFile(this.processFilePath, { encoding: 'utf8' })
-      // 将文件内容按换行符拆分成数组，并反向处理
-      const lines = res.split(lineBreak).reverse();
-      log.debug('[_initProcessFile]', lines)
-      let isReadSuccess = false
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i]
-        const items = line.split(splitter)
-        if (items.length === processItemCount) {
-          this.fileProcessInfo.processedBytes = Number(items[0]) || 0
-          this.fileProcessInfo.readItemCount = Number(items[1]) || 0
-          this.fileProcessInfo.totalItem = Number(items[2]) || 0
-          this.fileProcessInfo.writeSucceedBytes = Number(items[3]) || 0
-          this._checkProcessInfo()
-          isReadSuccess = true
-          break
-        }
-      }
-      const data = isReadSuccess ? this._getProcessItem([
-        this.fileProcessInfo.processedBytes,
-        this.fileProcessInfo.readItemCount,
-        this.fileProcessInfo.totalItem,
-        this.fileProcessInfo.writeSucceedBytes,
-        ''
-      ]) : ''
-      await fs.promises.writeFile(this.processFilePath, data)
-      const info = await fs.promises.stat(this.processFilePath)
-      log.info('info.size', info.size)
-      this.processFileProcessInfo.writeSucceedBytes = info.size || 0
-    } catch(e) {
-      log.error('[_initProcessFile] error', e)
-      return Promise.reject(e)
-    }
-  }
-
-  _checkProcessInfo() {
-    if (this.fileProcessInfo.writeSucceedBytes <= 0) {
-      this.fileProcessInfo.processedBytes = 0
-      this.fileProcessInfo.readItemCount = 0
-      this.fileProcessInfo.totalItem = 0
-      this.fileProcessInfo.writeSucceedBytes = 0
-    }
-  }
-
-  _getProcessItem(values) {
-    return `${values.join(splitter)}${lineBreak}`
   }
 
   async initialize() {
     try {
-      await this._initProcessFile()
-      this.emit('processInfoAvailable', this.fileProcessInfo)
-      this.fileStream = new WriteWithProgressInfo({
+      await this._initProgressFile()
+      this.emit('progressInfoAvailable', this.fileProgressInfo)
+      this.fileStream = new WritableWithProgressInfo({
         filePath: this.filePath,
-        writeBytes: this.fileProcessInfo.writeSucceedBytes
-      });
-      this.processFileStream = new WriteWithProgressInfo({
-        filePath: this.processFilePath,
-        writeBytes: this.processFileProcessInfo.writeSucceedBytes
+        writeBytes: this.fileProgressInfo.writeSucceedBytes
       });
       await this.fileStream.initialize()
-      await this.processFileStream.initialize()
-      log.debug('[ProgressInfoStream] initialize success', this.fileProcessInfo)
+      log.debug('[ProgressInfoStream] initialize success')
     } catch(e) {
       log.error(e)
       return Promise.reject(e)
     }
   }
 
+  async _initProgressFile() {
+    try {
+      await fs.promises.access(this.progressFilePath)
+    } catch(e) {
+      return Promise.resolve()
+    }
+    try {
+      const res = await fs.promises.readFile(this.progressFilePath, { encoding: 'utf8' })
+      const items = res.split(splitter)
+      if (items.length === progressItemCount) {
+        const [processedBytes, readItemCount, totalItem, writeSucceedBytes] = items
+        this.fileProgressInfo.processedBytes = Number(processedBytes) || 0
+        this.fileProgressInfo.readItemCount = Number(readItemCount) || 0
+        this.fileProgressInfo.totalItem = Number(totalItem) || 0
+        this.fileProgressInfo.writeSucceedBytes = Number(writeSucceedBytes) || 0
+        this._checkProgressInfo()
+      }
+    } catch(e) {
+      log.error('[_initProgressFile] error', e)
+      return Promise.reject(e)
+    }
+  }
+
+  _checkProgressInfo() {
+    if (this.fileProgressInfo.writeSucceedBytes <= 0) {
+      this.fileProgressInfo.processedBytes = 0
+      this.fileProgressInfo.readItemCount = 0
+      this.fileProgressInfo.totalItem = 0
+      this.fileProgressInfo.writeSucceedBytes = 0
+    }
+  }
+
+  _getProgressItem(values) {
+    return `${values.join(splitter)}${lineBreak}`
+  }
+
+  _writeProgressFile(callback) {
+    const _this = this
+    try {
+      const progressTmpFileExecutable = {
+        do: async function(res) {
+          try {
+            log.info('writeFile progressTmpFilePath', res)
+            await fs.promises.writeFile(_this.progressTmpFilePath, res)
+          } catch(e) {
+            return Promise.reject(e)
+          }
+        }
+      }
+      
+      const progressFileExecutable = {
+        do: async function() {
+          try {
+            await fs.promises.copyFile(_this.progressTmpFilePath, _this.progressFilePath)
+          } catch(e) {
+            return Promise.reject(e)
+          }
+        }
+      }
+
+      const { processedBytes, readItemCount, totalItem, writeSucceedBytes } = _this.fileProgressInfo
+      const data = _this._getProgressItem([
+        processedBytes,
+        readItemCount,
+        totalItem,
+        writeSucceedBytes,
+        ''
+      ])
+
+      waterfallUntil([
+        async function(arg, cb) {
+          try {
+            await progressTmpFileExecutable.do(arg)
+            cb(null, false, arg);
+          } catch(e) {
+            cb(e, true);
+          }
+        },
+        async function (_, cb) {
+          try {
+            await progressFileExecutable.do()
+            cb(null, 'done');
+          } catch(e) {
+            cb(e, 'done');
+          }
+        },
+      ], data, function(err, result) {
+        callback(err)
+      })
+    } catch(e) {
+      callback(e)
+    }
+  }
+
   _write(obj, encoding, callback) {
     try {
       log.debug('Received chunk:', obj);
-      if (!this.fileStream || !this.processFileStream) {
+      if (!this.fileStream) {
         callback(new Error('new ProgressInfoStream().initialize function must be called'))
         return
       }
       const { chunk, processedBytes, readItemCount, totalItem } = obj
       this.fileStream.once('progress', (writeBytes) => {
-        this.fileProcessInfo.writeSucceedBytes = writeBytes
-        const values = [
-          processedBytes,
-          readItemCount,
-          totalItem,
-          writeBytes,
-          ''
-        ]
-        this.processFileStream.write({
-          chunk: Buffer.from(this._getProcessItem(values))
-        }, encoding, (e) => {
-          if (e) {
-            callback(e)
-          } else {
-            this.emit('progress', processedBytes, readItemCount, totalItem, this.fileProcessInfo.writeSucceedBytes)
-            callback()
-          }
+        this.fileProgressInfo.writeSucceedBytes = writeBytes
+        this.fileProgressInfo.processedBytes = processedBytes
+        this.fileProgressInfo.readItemCount = readItemCount
+        this.fileProgressInfo.totalItem = totalItem
+        this._writeProgressFile((e) => {
+          log.info('_writeProgressFile error', e)
+          !e && this.emit('progress', processedBytes, readItemCount, totalItem, this.fileProgressInfo.writeSucceedBytes)
+          callback(e)
         })
       })
       this.fileStream.write({ chunk }, encoding, (e) => {
@@ -244,28 +259,13 @@ export class ProgressInfoStream extends Writable {
 
   _destroy(err, callback) {
     log.debug('[ProgressInfoStream] Entering _destroy with error:', err);
-    const fileUtilsPromise = new UtilsPromise();
-    const processFileUtilsPromise = new UtilsPromise();
     if (this.fileStream) {
       this.fileStream.destroy(err)
-      this.fileStream.on('close', () => {
-        fileUtilsPromise.resolve()
+      this.fileStream.on('close', (e) => {
+        callback(err)
       })
     } else {
-      fileUtilsPromise.resolve()
-    }
-    if (this.processFileStream) {
-      this.processFileStream.destroy(err)
-      this.processFileStream.on('close', () => {
-        processFileUtilsPromise.resolve()
-      })
-    } else {
-      processFileUtilsPromise.resolve()
-    }
-    Promise.all([fileUtilsPromise.promise, processFileUtilsPromise.promise]).then(() => {
       callback(err)
-    }).catch((err) => {
-      callback(err)
-    })
+    }
   }
 }

@@ -1,11 +1,11 @@
-import { ProgressInfoStream }from "./ProgressInfoStream.js"
-import { UnsealerWithProgressInfo }from "./UnsealerWithProgressInfo.js"
+import { ProgressInfoStream }from "../src/ProgressInfoStream.js"
+import { UnsealerWithProgressInfo }from "../src/UnsealerWithProgressInfo.js"
 import { EventEmitter } from "events";
 import axios from "axios";
 
-const log = require("loglevel").getLogger("meta-encryptor/DecryptorWithHttp");
+const log = require("loglevel").getLogger("meta-encryptor/UnsealerWithTus");
 
-export class DecryptorWithHttp {
+export class UnsealerWithTus {
   constructor(options) {
     this._eventEmitter = new EventEmitter();
     this._isAbort = false;
@@ -13,11 +13,11 @@ export class DecryptorWithHttp {
     
     this._writeStream = new ProgressInfoStream({
       filePath: this._options.filePath,
-      processFilePath: this._options.processFilePath,
+      progressFilePath: this._options.progressFilePath,
     });
     
-    this._writeStream.on('processInfoAvailable', (res) => {
-      log.debug('processInfoAvailable', res)
+    this._writeStream.on('progressInfoAvailable', (res) => {
+      log.debug('progressInfoAvailable', res)
       this._lastProgressInfo = {
         processedBytes: res.processedBytes,
         readItemCount: res.readItemCount,

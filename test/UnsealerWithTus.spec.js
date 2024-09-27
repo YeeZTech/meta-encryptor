@@ -1,17 +1,20 @@
 import path from "path"
 import fs from "fs"
 import { uuidv7 } from 'uuidv7'
-import { DecryptorWithHttp } from "../src/DecryptorWithHttp";
+import { UnsealerWithTus } from "./UnsealerWithTus";
 import { Sealer } from "../src/Sealer"
 import { Writable } from "stream";
 import{ calculateMD5, key_pair, generateFileWithSize, tusConfig } from "./helper"
 import log from 'loglevel'
 
-const logger = require("loglevel").getLogger("meta-encryptor/DecryptorWithHttp");
+const logger = require("loglevel").getLogger("meta-encryptor/UnsealerWithTus");
+const loggerPro = require("loglevel").getLogger("meta-encryptor/ProgressInfoStream");
 
-logger.setLevel('error')
+logger.setLevel('debug')
 
-log.setLevel('error')
+log.setLevel('debug')
+
+loggerPro.setLevel('debug')
 
 const sealedFile = async (options) => {
   let rs = fs.createReadStream(options.filePath)
@@ -53,7 +56,7 @@ async function generateEncryptOptions(args) {
   const key = uuidv7();
   const fileName = args.fileName ? args.fileName : key + ".file";
   const filePath = path.join(__dirname, "../" + fileName);
-  const processFilePath = path.join(__dirname, "../" + fileName + ".pro")
+  const progressFilePath = path.join(__dirname, "../" + fileName + ".pro")
   const decryptFilePath = path.join(__dirname, "../decrypt_" + fileName);
   args.size && generateFileWithSize(filePath, args.size);
   // 生成加密文件名称
@@ -66,16 +69,16 @@ async function generateEncryptOptions(args) {
     encFilePath,
     decryptFilePath,
     encFileName,
-    processFilePath
+    progressFilePath
   };
   return options;
 }
 
 const fileSizeList = [1024 * 1024 * 10];
-const bigFileSizeList = [1024 * 1024 * 1024];
-describe.skip("DecryptorWithHttp", () => {
+const bigFileSizeList = [1024 * 1024 * 100];
+describe("UnsealerWithTus", () => {
   test.each(fileSizeList.map((size) => [size]))(
-    "base DecryptorWithHttp %s",
+    "base UnsealerWithTus %s",
     async (size) => {
       const options = await generateEncryptOptions({
         size,
@@ -85,11 +88,11 @@ describe.skip("DecryptorWithHttp", () => {
       });
       const eventHandler = jest.fn();
       await new Promise((resolve, reject) => {
-        const decryptorEx = new DecryptorWithHttp({
+        const decryptorEx = new UnsealerWithTus({
           privateKey: key_pair.private_key,
           publicKey: key_pair.public_key,
           filePath: options.decryptFilePath,
-          processFilePath: options.processFilePath,
+          progressFilePath: options.progressFilePath,
           sealedFileName: options.encFileName,
           getSealedFileStreamServerUrl: tusConfig.downloadUrl,
         });
@@ -101,7 +104,11 @@ describe.skip("DecryptorWithHttp", () => {
           eventHandler();
           resolve(true);
         });
-        decryptorEx.start();
+        decryptorEx.start().then((res) => {
+          log.debug(res)
+        }).catch((e) => {
+          log.error('decryptorEx.start', e)
+        });
       });
       const localHash = await calculateMD5(options.filePath);
       const decryptHash = await calculateMD5(options.decryptFilePath);
@@ -112,7 +119,7 @@ describe.skip("DecryptorWithHttp", () => {
       fs.unlinkSync(options.filePath);
       fs.unlinkSync(options.encFilePath);
       fs.unlinkSync(options.decryptFilePath);
-      fs.unlinkSync(options.processFilePath);
+      fs.unlinkSync(options.progressFilePath);
     }
   );
   test.each(bigFileSizeList.map((size) => [size]))(
@@ -127,11 +134,11 @@ describe.skip("DecryptorWithHttp", () => {
       let keep = true;
       let status = { processedBytes: 0, processedItems: 0, writeBytes: 0 };
       while (keep) {
-        const decryptorEx = new DecryptorWithHttp({
+        const decryptorEx = new UnsealerWithTus({
           privateKey: key_pair.private_key,
           publicKey: key_pair.public_key,
           filePath: options.decryptFilePath,
-          processFilePath: options.processFilePath,
+          progressFilePath: options.progressFilePath,
           sealedFileName: options.encFileName,
           getSealedFileStreamServerUrl: tusConfig.downloadUrl,
         });
@@ -163,7 +170,7 @@ describe.skip("DecryptorWithHttp", () => {
       fs.unlinkSync(options.filePath);
       fs.unlinkSync(options.encFilePath);
       fs.unlinkSync(options.decryptFilePath);
-      fs.unlinkSync(options.processFilePath);
+      fs.unlinkSync(options.progressFilePath);
     }
   );
   test.skip("ENOSPC: no space left on device", async () => {
@@ -181,11 +188,11 @@ describe.skip("DecryptorWithHttp", () => {
     });
     const eventHandler = jest.fn();
     await new Promise((resolve) => {
-      const decryptorEx = new DecryptorWithHttp({
+      const decryptorEx = new UnsealerWithTus({
         privateKey: key_pair.private_key,
         publicKey: key_pair.public_key,
         filePath: options.decryptFilePath,
-        processFilePath: options.processFilePath,
+        progressFilePath: options.progressFilePath,
         sealedFileName: options.encFileName,
         getSealedFileStreamServerUrl: tusConfig.downloadUrl,
       });
@@ -201,6 +208,6 @@ describe.skip("DecryptorWithHttp", () => {
     );
     fs.unlinkSync(options.filePath);
     fs.unlinkSync(options.encFilePath);
-    fs.unlinkSync(options.processFilePath);
+    fs.unlinkSync(options.progressFilePath);
   });
 });

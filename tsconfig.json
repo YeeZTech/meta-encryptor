@@ -10,7 +10,8 @@
     "declarationDir": "./dist/types"
   },
   "include": [
-    "src/*"
+    "src/*",
+    "test/UnsealerWithTus.js"
   ],
   "exclude": [
     "node_modules"

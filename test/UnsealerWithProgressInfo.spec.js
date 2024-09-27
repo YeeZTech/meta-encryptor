@@ -15,7 +15,7 @@ var unsealer_log = require("loglevel").getLogger("meta-encryptor/Unsealer");
 var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
 import{calculateMD5, key_pair, generateFileWithSize, tusConfig} from "./helper"
 
-log.setLevel('INFO')
+log.setLevel('debug')
 // unsealer_log.setLevel('DEBUG')
 //unsealer_stream_log.setLevel("trace")
 
@@ -28,7 +28,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   let dstFileName = path.basename(src) + ".sealed"
   let dst = useRemoteSealedFileStream ? path.join(tusFileDir, dstFileName) : path.join(path.dirname(src), dstFileName);
   let ret_src = path.join(path.dirname(src), path.basename(src) + ".unsealed.ret");
-  let processFilePath = path.basename(src) + ".pro"
+  let progressFilePath = path.basename(src) + ".pro"
 
   let rs = fs.createReadStream(src)
   let ws = fs.createWriteStream(dst)
@@ -64,7 +64,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
     // let ret_ws = new UnsealerRelatedWriteStream(ret_src, {flags:'a'});
     let ret_ws = new ProgressInfoStream({
       filePath: ret_src,
-      processFilePath
+      progressFilePath
     });
     ret_ws.once('processInfoAvailable',  (res) => {
       log.debug('processInfoAvailable res', res)
@@ -140,7 +140,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   expect(m1).toStrictEqual(m2);
   fs.unlinkSync(dst);
   fs.unlinkSync(ret_src);
-  fs.unlinkSync(processFilePath)
+  fs.unlinkSync(progressFilePath)
 }
 
 
