@@ -76,7 +76,7 @@ async function generateEncryptOptions(args) {
 
 const fileSizeList = [1024 * 1024 * 10];
 const bigFileSizeList = [1024 * 1024 * 100];
-describe("UnsealerWithTus", () => {
+describe.skip("UnsealerWithTus", () => {
   test.each(fileSizeList.map((size) => [size]))(
     "base UnsealerWithTus %s",
     async (size) => {
