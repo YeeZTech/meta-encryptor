@@ -17,6 +17,14 @@ export{
   SealedFileStream
 }from "./SealedFileStream.js"
 
+export{
+  ProgressInfoStream
+}from "./ProgressInfoStream.js"
+
+export{
+  UnsealerWithProgressInfo
+}from "./UnsealerWithProgressInfo.js"
+
 export {
   isSealedFile,
   sealedFileVersion,

@@ -4,31 +4,23 @@ import ByteBuffer, {
 } from "bytebuffer";
 
 import {
-  header_t,
-  header_t2buffer,
   buffer2header_t,
-  block_info_t2buffer,
-  buffer2block_info_t,
   ntpackage2batch,
-  toNtInput,
   fromNtInput,
-  batch2ntpackage
 } from "./header_util.js"
 const {
   Transform
 } = require('stream');
-var log = require("loglevel").getLogger("meta-encryptor/Unsealer");
-import YPCNt_Object from "./ypcntobject"
+var log = require("loglevel").getLogger("meta-encryptor/UnsealerWithProgressInfo");
 
-import{MaxItemSize, HeaderSize, MagicNum, CurrentBlockFileVersion} from "./limits.js";
+import{HeaderSize, MagicNum, CurrentBlockFileVersion} from "./limits.js";
 
-const YPCNtObject = YPCNt_Object()
 import YPCCryptoFun from "./ypccrypto.js";
 const YPCCrypto = YPCCryptoFun();
 
-export class Unsealer extends Transform{
+export class UnsealerWithProgressInfo extends Transform{
   constructor(options) {
-    super(options);
+    super({...options, objectMode: true});
     this.accumulatedBuffer = Buffer.alloc(0);
     this.keyPair = options.keyPair;
     this.progressHandler = options.progressHandler;
@@ -37,7 +29,7 @@ export class Unsealer extends Transform{
     this.readItemCount = options ? (options.processedItemCount || 0) : 0;
     this.processedBytes = options ? options.processedBytes || 0 : 0;
     this.writeBytes = options ? (options.writeBytes || 0) : 0;
-    log.debug("Unsealer : ", this)
+    log.debug("UnsealerWithProgressInfo : ", this)
   }
 
   _transform(chunk, encoding, callback) {
@@ -77,6 +69,7 @@ export class Unsealer extends Transform{
           let offset = 0;
           let buf = ByteBuffer.wrap(this.accumulatedBuffer.slice(0, 8), LITTLE_ENDIAN);
           let item_size = buf.readUint64(offset).toNumber()
+          log.debug("item_size toNumber()", item_size)
           offset += 8;
           if(this.accumulatedBuffer.length >= item_size + offset){
             log.debug("got enough data ", item_size)
@@ -91,12 +84,14 @@ export class Unsealer extends Transform{
             //TODO check if msg is null, i.e., decrypt failed
             let batch = ntpackage2batch(msg);
             log.debug("got batch with length " + batch.length)
+            let input = Buffer.alloc(0);
             for(let i = 0; i < batch.length; i++){
               //log.debug("start from n")
               let b = fromNtInput(batch[i]);
               //log.debug("end from n")
-
-              this.push(b);
+              log.debug("b", b)
+              input = Buffer.concat([input, b])
+              log.debug("input", input)
               this.writeBytes += b.length;
 
               let k = Buffer.from(
@@ -106,11 +101,23 @@ export class Unsealer extends Transform{
              this.dataHash = keccak256(k);
             }
             this.readItemCount += 1;
+            this.push({
+              chunk: input,
+              processedBytes: this.processedBytes,
+              readItemCount: this.readItemCount,
+              totalItem: this.header.item_number
+            })
+            log.debug('this.push', {
+              chunk: input,
+              processedBytes: this.processedBytes,
+              readItemCount: this.readItemCount
+            })
             if(this.progressHandler !== undefined &&
               this.progressHandler !== null){
               this.progressHandler(this.header.item_number, this.readItemCount, this.processedBytes, this.writeBytes);
             }
             if(this.readItemCount === this.header.item_number){
+              log.debug('push(null)')
               this.push(null);
             }
           }else{

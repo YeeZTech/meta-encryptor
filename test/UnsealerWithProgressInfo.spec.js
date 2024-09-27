@@ -1,7 +1,8 @@
 import {Sealer, ToString} from "../src/Sealer"
-import {Unsealer} from "../src/Unsealer"
+import {UnsealerWithProgressInfo} from "../src/UnsealerWithProgressInfo"
 import {SealedFileStream} from "../src/SealedFileStream"
 import { downloadSealFileForStream } from "../src/http/downloadFileForStream"
+import { ProgressInfoStream } from "../src/ProgressInfoStream"
 
 const path = require('path');
 import fs from "fs";
@@ -14,8 +15,8 @@ var unsealer_log = require("loglevel").getLogger("meta-encryptor/Unsealer");
 var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
 import{calculateMD5, key_pair, generateFileWithSize, tusConfig} from "./helper"
 
-log.setLevel('INFO')
-//unsealer_log.setLevel("error")
+log.setLevel('debug')
+// unsealer_log.setLevel('DEBUG')
 //unsealer_stream_log.setLevel("trace")
 
 // 本地下载文件的服务
@@ -27,6 +28,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   let dstFileName = path.basename(src) + ".sealed"
   let dst = useRemoteSealedFileStream ? path.join(tusFileDir, dstFileName) : path.join(path.dirname(src), dstFileName);
   let ret_src = path.join(path.dirname(src), path.basename(src) + ".unsealed.ret");
+  let progressFilePath = path.basename(src) + ".pro"
 
   let rs = fs.createReadStream(src)
   let ws = fs.createWriteStream(dst)
@@ -59,12 +61,22 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   }catch(err){}
 
   while(keep){
-    let ret_ws = fs.createWriteStream(ret_src, {flags:'a'});
-    let unsealer = new Unsealer({keyPair:key_pair,
+    // let ret_ws = new UnsealerRelatedWriteStream(ret_src, {flags:'a'});
+    let ret_ws = new ProgressInfoStream({
+      filePath: ret_src,
+      progressFilePath
+    });
+    ret_ws.once('processInfoAvailable',  (res) => {
+      log.debug('processInfoAvailable res', res)
+      status.processedBytes = res.processedBytes;
+      status.processedItems = res.readItemCount;
+      status.writeBytes = res.writeSucceedBytes;
+    })
+    await ret_ws.initialize()
+    let unsealer = new UnsealerWithProgressInfo({keyPair:key_pair,
       processedItemCount:status.processedItems,
       processedBytes : status.processedBytes,
-      writeBytes : status.writeBytes,
-      progressHandler : progressHandler
+      writeBytes : status.writeBytes
     })
     let sealedStream
     if (useRemoteSealedFileStream) {
@@ -78,6 +90,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
     //let rand = Math.floor(Math.random() * 10);
     let rand = 1
     let ctrlStream = new stream.Transform({
+      objectMode: true,
       transform(chunk, encoding, callback) {
         try{
           this.push(chunk);
@@ -98,7 +111,17 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
       log.error("error", error)
       //status = last_status;
     })
+    
     let v = sealedStream.pipe(unsealer).pipe(ctrlStream).pipe(ret_ws);
+    ret_ws.on('progress', (processedBytes, readItemCount, totalItem, writeSucceedBytes) => {
+      log.info('progress', processedBytes, readItemCount, totalItem, writeSucceedBytes)
+      status.processedBytes = processedBytes;
+      status.processedItems = readItemCount;
+      status.writeBytes = writeSucceedBytes;
+      if(readItemCount === totalItem){
+        keep = false;
+      }
+    })
     await new Promise((resolve)=>{
       log.debug("wait finish");
       ret_ws.on('finish', ()=>{
@@ -117,22 +140,23 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   expect(m1).toStrictEqual(m2);
   fs.unlinkSync(dst);
   fs.unlinkSync(ret_src);
+  fs.unlinkSync(progressFilePath)
 }
 
 
 test('seal small file', async()=>{
 
-  let src = './rollup.config.js';
+  let src = './webpack.config.js';
   await sealAndUnsealFile(src);
 })
 
 test('test medium file', async()=>{
-  let src = './README.en.md';
+  let src = './README.md';
   await sealAndUnsealFile(src);
 })
 
 test('test large file', async()=>{
-  let src = "Unsealerlarge.file";
+  let src = "UnsealerWithProgressInfoLarge.file";
   try{
     fs.unlinkSync(src)
   }catch(error){
