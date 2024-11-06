@@ -36,8 +36,15 @@ class WritableWithProgressInfo extends Writable {
   }
 
   async initialize() {
+    // 检查文件是否存在
     try {
-      this.fileHandle = await fs.promises.open(this.filePath, 'a+');
+      await fs.promises.access(this.filePath);
+    } catch (error) {
+      // 文件不存在，创建一个空文件
+      await fs.promises.writeFile(this.filePath, '');
+    }
+    try {
+      this.fileHandle = await fs.promises.open(this.filePath, 'r+');
       log.debug('initialize success')
     } catch(e) {
       log.error(e)
