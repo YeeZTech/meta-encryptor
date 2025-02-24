@@ -3,7 +3,6 @@ import ByteBuffer, { LITTLE_ENDIAN } from 'bytebuffer';
 import YPCCryptoFun from './ypccrypto.js';
 const YPCCrypto = YPCCryptoFun();
 import fs from 'fs';
-import ByteBuffer from 'bytebuffer';
 import keccak256 from 'keccak256';
 import { BlockNumLimit, MaxItemSize, HeaderSize, MagicNum } from './limits.js';
 const anyEnclave = Buffer.from(
