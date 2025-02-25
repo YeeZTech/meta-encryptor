@@ -77,44 +77,66 @@ export const forwardSkey = function (
   let forwardSig = YPCCrypto.generateSignature(b_skey, dianPKey, enclaveHash);
   return { encrypted_skey: forwardSkey, forward_sig: forwardSig };
 };
-
 export function calculateSealedHash(filePath) {
-  // 读取文件尾部的header
-  const stats = fs.statSync(filePath);
-  const fileSize = stats.size;
-  const headerSize = 64;
-  const header = ByteBuffer.wrap(
-    fs.readFileSync(filePath, {
-      start: fileSize - headerSize,
-      end: fileSize,
-    }),
-    ByteBuffer.LITTLE_ENDIAN
-  );
+  console.log('开始处理文件:', filePath);
 
-  // 获取item数量
-  const itemNumber = header.readUint64(24).toNumber();
+  // 读取文件末尾的header
+  function readLast64BytesSync(filePath) {
+    const stats = fs.statSync(filePath);
+    const fileSize = stats.size;
+    const bytesToRead = fileSize < 64 ? fileSize : 64;
+    const startPosition = fileSize - bytesToRead;
+
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(bytesToRead);
+      fs.readSync(fd, buffer, 0, bytesToRead, startPosition);
+      const bb = ByteBuffer.wrap(buffer, ByteBuffer.LITTLE_ENDIAN);
+      return bb;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  // 解析header
+  let header = readLast64BytesSync(filePath);
+  let magic_number = Buffer.from(header.buffer.subarray(0, 8));
+  let version_number = header.readUint64(8).toNumber();
+  let block_number = header.readUint64(16).toNumber();
+  let item_number = header.readUint64(24).toNumber();
+
+  console.log('文件包含items数量:', item_number);
 
   // 计算hash
-  let resultHash = keccak256(Buffer.from('Fidelius', 'utf-8'));
   const fd = fs.openSync(filePath, 'r');
+  let result_hash = keccak256(Buffer.from('Fidelius', 'utf-8'));
+  let offset = 0;
+
   try {
-    let offset = 0;
-    for (let i = 0; i < itemNumber; i++) {
+    for (let i = 0; i < item_number; i++) {
+      if (i % 1000 === 0) {
+        console.log(`处理进度: ${i}/${item_number}`);
+      }
+
       // 读取长度
-      const lenBuf = Buffer.alloc(8);
-      fs.readSync(fd, lenBuf, 0, 8, offset);
-      const len = ByteBuffer.wrap(lenBuf, ByteBuffer.LITTLE_ENDIAN)
-        .readUint64(0)
-        .toNumber();
+      let bytesToRead = 8;
+      let buf = Buffer.alloc(bytesToRead);
+      fs.readSync(fd, buf, 0, bytesToRead, offset);
+      let b = ByteBuffer.wrap(buf, ByteBuffer.LITTLE_ENDIAN);
+      let len = b.readUint64(0).toNumber();
       offset += 8;
 
-      // 读取数据并更新hash
-      const dataBuf = Buffer.alloc(len);
-      fs.readSync(fd, dataBuf, 0, len, offset);
-      resultHash = keccak256(Buffer.concat([resultHash, dataBuf]));
+      // 读取数据
+      bytesToRead = len;
+      buf = Buffer.alloc(bytesToRead);
+      fs.readSync(fd, buf, 0, bytesToRead, offset);
+      let k = Buffer.concat([Buffer.from(result_hash), buf]);
+      result_hash = keccak256(k);
       offset += len;
     }
-    return resultHash.toString('hex');
+
+    console.log('处理完成');
+    return result_hash.toString('hex');
   } finally {
     fs.closeSync(fd);
   }
