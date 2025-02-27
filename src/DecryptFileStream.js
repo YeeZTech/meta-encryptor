@@ -2,6 +2,7 @@ import { Duplex } from 'stream';
 import fs from 'fs';
 
 const log = require('loglevel').getLogger('meta-encryptor/DecryptFileStream');
+
 export class DecryptFileStream extends Duplex {
   constructor(options) {
     super({
@@ -19,7 +20,10 @@ export class DecryptFileStream extends Duplex {
     this.readPosition = 0;
     this.fileHandle = null;
     this.currentChunk = null;
-    this.processingData = false; // 添加标志位
+    this.processingData = false;
+    this._isDestroyed = false;
+    this.retryCount = options.retryCount || 3;
+    this.retryDelay = options.retryDelay || 100;
   }
 
   async initialize() {
@@ -71,7 +75,10 @@ export class DecryptFileStream extends Duplex {
           // 准备处理下一块数据
           this._prepareNextChunk()
             .then(() => callback())
-            .catch(callback);
+            .catch((err) => {
+              log.error('Prepare next chunk error:', err);
+              callback(err);
+            });
         })
         .catch((err) => {
           log.error('Write error:', err);
@@ -84,6 +91,10 @@ export class DecryptFileStream extends Duplex {
   }
 
   async _prepareNextChunk() {
+    if (this.processingData) {
+      return;
+    }
+
     try {
       this.processingData = true;
 
@@ -93,16 +104,12 @@ export class DecryptFileStream extends Duplex {
         this.fileHandle = null;
       }
 
-      // 只有在非中断状态下才进行文件重命名
       if (!this._isDestroyed) {
-        // 重命名临时文件为正式文件
-        await fs.promises.rename(this.decryptTmpPath, this.decryptPath);
-        // 等待下游处理完成后，删除decrypt文件
+        // 尝试重命名文件
+        await this._safeRename(this.decryptTmpPath, this.decryptPath);
+        // 清理文件
         await this._cleanupDecryptFile();
-      }
-
-      // 重新初始化，准备下一块数据
-      if (!this._isDestroyed) {
+        // 重新初始化
         await this.initialize();
       }
 
@@ -115,21 +122,58 @@ export class DecryptFileStream extends Duplex {
     }
   }
 
+  async _safeRename(oldPath, newPath) {
+    for (let i = 0; i < this.retryCount; i++) {
+      try {
+        // 检查目标文件
+        const targetExists = await this._checkFileExists(newPath);
+        if (targetExists) {
+          await this._safeUnlink(newPath);
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+
+        // 执行重命名
+        await fs.promises.rename(oldPath, newPath);
+        return;
+      } catch (err) {
+        if (i === this.retryCount - 1) {
+          throw err;
+        }
+        await new Promise((resolve) =>
+          setTimeout(resolve, this.retryDelay * Math.pow(2, i))
+        );
+      }
+    }
+  }
+
   async _cleanupDecryptFile() {
     try {
       if (await this._checkFileExists(this.decryptPath)) {
-        await fs.promises.unlink(this.decryptPath);
+        await this._safeUnlink(this.decryptPath);
       }
     } catch (err) {
-      // 只在非中断状态下记录错误
       if (!this._isDestroyed) {
         log.error('Cleanup decrypt file error:', err);
       }
     }
   }
 
+  _read() {
+    // 由于在_write中已经处理了数据推送，这里不需要实现
+  }
+
+  _final(callback) {
+    this.push(null);
+    this._destroy(null, callback);
+  }
+
   _destroy(err, callback) {
+    if (this._isDestroyed) {
+      return callback(err);
+    }
+
     this._isDestroyed = true;
+
     const cleanup = async () => {
       try {
         if (this.fileHandle) {
@@ -137,23 +181,17 @@ export class DecryptFileStream extends Duplex {
           this.fileHandle = null;
         }
 
+        // 清理临时文件
+        await this._safeUnlink(this.decryptTmpPath);
         callback(err);
       } catch (cleanupErr) {
         callback(cleanupErr || err);
       }
     };
+
     cleanup();
   }
 
-  async _safeUnlink(filePath) {
-    try {
-      await fs.promises.unlink(filePath);
-    } catch (error) {
-      if (error.code !== 'ENOENT') {
-        log.warn(`Failed to delete file ${filePath}:`, error);
-      }
-    }
-  }
   async _checkFileExists(path) {
     try {
       await fs.promises.access(path);
@@ -163,12 +201,13 @@ export class DecryptFileStream extends Duplex {
     }
   }
 
-  _read(size) {
-    // 不需要实现，因为在_write中已经处理了数据推送
-  }
-
-  _final(callback) {
-    this.push(null);
-    this._destroy(null, callback);
+  async _safeUnlink(path) {
+    try {
+      await fs.promises.unlink(path);
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        log.warn(`Failed to delete file ${path}:`, error);
+      }
+    }
   }
 }
