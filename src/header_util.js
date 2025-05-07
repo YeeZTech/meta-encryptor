@@ -127,12 +127,3 @@ export const ntpackage2batch = function(pkg) {
   }
   return batch;
 }
-
-//export default {header_t,
-//header_t2buffer,
-//buffer2header_t,
-//block_info_t,
-//block_info_t2buffer,
-//buffer2block_info_t,
-//ntpackage2batch,
-//batch2ntpackage}

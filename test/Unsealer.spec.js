@@ -44,7 +44,7 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false){
   let status = {processedBytes:0, processedItems:0, writeBytes: 0}
   let last_status = JSON.parse(JSON.stringify(status));
   const progressHandler=function(totalItem, readItem, bytes, writeBytes){
-    log.info("total item: ", totalItem, "readItem: ", readItem, "bytes: ", bytes, ", write bytes: ", writeBytes)
+    //log.info("total item: ", totalItem, "readItem: ", readItem, "bytes: ", bytes, ", write bytes: ", writeBytes)
     last_status = JSON.parse(JSON.stringify(status));
     status.processedBytes = bytes;
     status.processedItems = readItem;

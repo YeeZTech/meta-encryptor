@@ -42,15 +42,12 @@
   "author": "contact@yeez.tech",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.7.5",
     "bytebuffer": "^5.0.1",
     "js-sha256": "^0.9.0",
     "keccak256": "^1.0.6",
     "loglevel": "^1.9.1",
-    "memory-streams": "^0.1.3",
-    "run-waterfall-until": "^1.0.1",
-    "secp256k1": "5.0.0",
-    "semver": "^7.6.3"
+    "secp256k1": "^5.0.1",
+    "memory-streams": "^0.1.3"
   },
   "publishConfig": {
     "access": "public"
