@@ -42,7 +42,9 @@ export class RecoverableReadStream extends Readable {
         if (
             this.context.context === null ||
             this.context.context === undefined ||
-            Object.keys(this.context.context).length === 0
+            Object.keys(this.context.context).length === 0 ||
+          this.context.context["data"] === null ||
+          this.context.context["data"] === undefined
         ) {
             return Buffer.alloc(0);
         }
@@ -65,6 +67,7 @@ export class RecoverableReadStream extends Readable {
                 }
                 break;
             case 'contextData':
+                this.context.context["status"] = "context"
                 const contextData = this._getDataInContext();
                 if (contextData.length > 0) {
                     const chunkSize = Math.min(contextData.length, size);
@@ -80,6 +83,7 @@ export class RecoverableReadStream extends Readable {
                 }
                 break;
             case 'remaining':
+                this.context.context["status"] = "file"
                 const remainingChunk = this.inputStream.read(size);
                 if (remainingChunk) {
                     if (
@@ -90,11 +94,12 @@ export class RecoverableReadStream extends Readable {
                         this.context.context['readStart'] = 0;
                     }
                     this.context.context['readStart'] += remainingChunk.length;
-                    this.context.context['data'] = remainingChunk;
-                    this.context.saveContext();
+                    //this.context.context['data'] = remainingChunk;
+                    //this.context.saveContext();
                     this.push(remainingChunk);
                 } else {
                     if (this.inputStream.readableEnded) {
+                      //console.log("push null")
                         this.push(null);
                     } else {
                         this.inputStream.once('readable', () => {

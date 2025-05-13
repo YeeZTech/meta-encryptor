@@ -58,8 +58,11 @@ test('test pipeline context basic', async () => {
 
     await compare(src, ret_src);
 
+  try{
     fs.unlinkSync(context_path);
     fs.unlinkSync(ret_src);
+ }
+  catch(error){}
 });
 
 test('test pipeline context large', async () => {
@@ -171,21 +174,24 @@ test('test pipeline context large', async () => {
     // fs.unlinkSync(context_path);
     // fs.unlinkSync(ret_src);
 });
+
 test('test pipeline context with pause and resume from large file', async () => {
     let src = 'pause_resume_large.file';
     let context_path = 'pause_resume_large_context';
     let dst, ret_src;
 
+    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
+      fs.unlinkSync(ret_src)
     } catch (error) {}
 
     // 第一步：准备测试文件
     console.log('Generating test file...');
     generateFileWithSize(src, 1024 * 1024 * 20); // 20MB测试文件
     dst = await sealFile(src);
-    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    //ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
 
     // 第二步：第一阶段处理（处理部分后暂停）
     console.log('Stage 1: Processing initial part...');
@@ -223,7 +229,8 @@ test('test pipeline context with pause and resume from large file', async () => 
         let rs = new RecoverableReadStream(dst, context);
         let unsealer = new meta.Unsealer({
             keyPair: key_pair,
-            progressHandler: _progressHandler
+            progressHandler: _progressHandler,
+          context: context
         });
         let pauseController = new PauseController();
         let ws = new RecoverableWriteStream(ret_src, context);
@@ -268,6 +275,17 @@ test('test pipeline context with pause and resume from large file', async () => 
             dataLength: context.context.data ? context.context.data.length : 0
         }
     });
+    context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+    console.log('context saved:', {
+        processedMB: firstStageSize / (1024 * 1024),
+        contextState: {
+            readStart: context.context.readStart,
+            writeStart: context.context.writeStart,
+            hasData: context.context.data ? true : false,
+            dataLength: context.context.data ? context.context.data.length : 0
+        }
+    });
 
     // 第三步：恢复处理（完成剩余部分）
     console.log('Stage 2: Resuming processing...');
@@ -288,7 +306,8 @@ test('test pipeline context with pause and resume from large file', async () => 
             processedItemCount: context.context.readItemCount || 0,
             processedBytes: context.context.readStart || 0,
             writeBytes: context.context.writeStart || 0,
-            progressHandler: _progressHandler
+            progressHandler: _progressHandler,
+            context: context
         });
         let ws = new RecoverableWriteStream(ret_src, context);
 
@@ -301,6 +320,17 @@ test('test pipeline context with pause and resume from large file', async () => 
 
         // 连接管道
         rs.pipe(unsealer).pipe(ws);
+    });
+    context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+    console.log('final context saved:', {
+        //processedMB: firstStageSize / (1024 * 1024),
+        contextState: {
+            readStart: context.context.readStart,
+            writeStart: context.context.writeStart,
+            hasData: context.context.data ? true : false,
+            dataLength: context.context.data ? context.context.data.length : 0
+        }
     });
 
     // 第四步：验证结果
@@ -318,6 +348,7 @@ test('test pipeline context with pause and resume from large file', async () => 
         console.warn('Cleanup error:', error.message);
     }
 }, 180000);
+
 test('test pipeline context large same file', async () => {
     let src = 'Unsealerlarge.file';
     //let src = './rollup.config.js'
@@ -342,7 +373,7 @@ test('test pipeline context large same file', async () => {
     console.log('ddd');
     let rs = new RecoverableReadStream(dst, context);
     let ws = new RecoverableWriteStream(ret_src, context);
-    let unsealer = new meta.Unsealer({keyPair: key_pair});
+    let unsealer = new meta.Unsealer({keyPair: key_pair, context:context});
     rs.pipe(unsealer).pipe(ws);
 
     await new Promise((resolve) => {

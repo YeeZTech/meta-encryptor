@@ -1,7 +1,7 @@
 import {Sealer, ToString} from '../src/Sealer';
 import {Unsealer} from '../src/Unsealer';
 import {SealedFileStream} from '../src/SealedFileStream';
-import {downloadSealFileForStream} from '../src/http/downloadFileForStream';
+import {downloadSealFileForStream} from './http/downloadFileForStream';
 
 const path = require('path');
 import fs from 'fs';
