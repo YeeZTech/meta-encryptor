@@ -43,8 +43,8 @@ export class RecoverableReadStream extends Readable {
             this.context.context === null ||
             this.context.context === undefined ||
             Object.keys(this.context.context).length === 0 ||
-          this.context.context["data"] === null ||
-          this.context.context["data"] === undefined
+            this.context.context['data'] === null ||
+            this.context.context['data'] === undefined
         ) {
             return Buffer.alloc(0);
         }
@@ -67,7 +67,7 @@ export class RecoverableReadStream extends Readable {
                 }
                 break;
             case 'contextData':
-                this.context.context["status"] = "context"
+                this.context.context['status'] = 'context';
                 const contextData = this._getDataInContext();
                 if (contextData.length > 0) {
                     const chunkSize = Math.min(contextData.length, size);
@@ -83,7 +83,7 @@ export class RecoverableReadStream extends Readable {
                 }
                 break;
             case 'remaining':
-                this.context.context["status"] = "file"
+                this.context.context['status'] = 'file';
                 const remainingChunk = this.inputStream.read(size);
                 if (remainingChunk) {
                     if (
@@ -99,7 +99,7 @@ export class RecoverableReadStream extends Readable {
                     this.push(remainingChunk);
                 } else {
                     if (this.inputStream.readableEnded) {
-                      //console.log("push null")
+                        //console.log("push null")
                         this.push(null);
                     } else {
                         this.inputStream.once('readable', () => {
@@ -122,35 +122,48 @@ export class RecoverableWriteStream extends Writable {
         const writeStart = this._getWriteStartInContext();
         const fileExists = fs.existsSync(filePath);
         let streamOptions = {};
+        if (fileExists) {
+            // 文件存在，获取文件大小
+            this.fileSize = fs.statSync(filePath).size;
+            if (writeStart > 0) {
+                // 文件存在且有写入点 - 使用 'r+' 模式，保留现有内容
+                streamOptions = {
+                    flags: 'r+',
+                    start: writeStart
+                };
+                console.log(`Opening file for resuming write at position: ${writeStart}`);
+            } else {
+                // 新文件或从头开始 - 也用使用 'r+' 模式，否则会自动截断start后面的内容
+                streamOptions = {
+                    flags: 'r+',
+                    start: 0
+                };
+                console.log(`Creating new file for writing`);
+            }
+        } else {
+            // 文件不存在，创建新文件
+            // 先创建空文件
+            fs.writeFileSync(filePath, '');
+            this.fileSize = 0;
 
-        if (fileExists && writeStart > 0) {
-            // 文件存在且有写入点 - 使用 'r+' 模式，保留现有内容
             streamOptions = {
                 flags: 'r+',
-                start: writeStart
-            };
-            console.log(`Opening file for resuming write at position: ${writeStart}`);
-        } else {
-            // 新文件或从头开始 - 使用 'w' 模式
-            streamOptions = {
-                flags: 'w',
                 start: 0
             };
-            console.log(`Creating new file for writing`);
+            console.log(`Created new file for writing`);
         }
-
         this.writeStream = new WriteStream(filePath, streamOptions);
 
         this.writeStream.on('error', (err) => {
             this.emit('error', err);
         });
         this.writeStream.on('close', () => {
-            fs.truncate(this.filePath, this.context.context['writeStart'], (truncateErr) => {
-                if (truncateErr) {
-                    this.emit('error', truncateErr);
-                } else {
-                }
-            });
+            // fs.truncate(this.filePath, this.context.context['writeStart'], (truncateErr) => {
+            //     if (truncateErr) {
+            //         this.emit('error', truncateErr);
+            //     } else {
+            //     }
+            // });
         });
     }
 
@@ -184,7 +197,25 @@ export class RecoverableWriteStream extends Writable {
 
     _final(callback) {
         this.writeStream.on('finish', () => {
-            callback();
+            const readStart = this.context.context['readStart'] || 0;
+            const writeStart = this.context.context['writeStart'] || 0;
+            const length = this.context.context.data ? this.context.context.data.length : 0;
+            console.log('Write stream finished:', this.fileSize, length, JSON.stringify(this.context.context));
+
+            // 检查是否到达文件末尾
+            if (readStart + length >= this.fileSize) {
+                // 到达文件末尾，执行截断
+                fs.truncate(this.filePath, writeStart, (truncateErr) => {
+                    if (truncateErr) {
+                        callback(truncateErr);
+                    } else {
+                        callback();
+                    }
+                });
+            } else {
+                // 未到达文件末尾，不执行截断
+                callback();
+            }
         });
         this.writeStream.end();
     }

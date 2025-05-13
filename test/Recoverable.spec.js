@@ -26,6 +26,7 @@ async function sealFile(src) {
 async function compare(src, ret_src) {
     let m1 = await calculateMD5(src);
     let m2 = await calculateMD5(ret_src);
+    console.log('compare:', m1, m2);
     expect(m1.length > 0).toBe(true);
     expect(m1).toStrictEqual(m2);
 }
@@ -58,11 +59,10 @@ test('test pipeline context basic', async () => {
 
     await compare(src, ret_src);
 
-  try{
-    fs.unlinkSync(context_path);
-    fs.unlinkSync(ret_src);
- }
-  catch(error){}
+    try {
+        fs.unlinkSync(context_path);
+        fs.unlinkSync(ret_src);
+    } catch (error) {}
 });
 
 test('test pipeline context large', async () => {
@@ -169,10 +169,11 @@ test('test pipeline context large', async () => {
     });
     console.log('compare:', src, ret_src);
     await compare(src, ret_src);
-
-    // fs.unlinkSync(src);
-    // fs.unlinkSync(context_path);
-    // fs.unlinkSync(ret_src);
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
+        fs.unlinkSync(ret_src);
+    } catch (error) {}
 });
 
 test('test pipeline context with pause and resume from large file', async () => {
@@ -184,7 +185,7 @@ test('test pipeline context with pause and resume from large file', async () => 
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-      fs.unlinkSync(ret_src)
+        fs.unlinkSync(ret_src);
     } catch (error) {}
 
     // 第一步：准备测试文件
@@ -230,7 +231,7 @@ test('test pipeline context with pause and resume from large file', async () => 
         let unsealer = new meta.Unsealer({
             keyPair: key_pair,
             progressHandler: _progressHandler,
-          context: context
+            context: context
         });
         let pauseController = new PauseController();
         let ws = new RecoverableWriteStream(ret_src, context);
@@ -282,6 +283,7 @@ test('test pipeline context with pause and resume from large file', async () => 
         contextState: {
             readStart: context.context.readStart,
             writeStart: context.context.writeStart,
+            readItemCount: context.context.readItemCount,
             hasData: context.context.data ? true : false,
             dataLength: context.context.data ? context.context.data.length : 0
         }
@@ -297,7 +299,7 @@ test('test pipeline context with pause and resume from large file', async () => 
     // 恢复处理
     await new Promise((resolve, reject) => {
         const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
-            console.log('Stage 2 progress:', {totalItem, readItem, bytes, writeBytes});
+            // console.log('Stage 2 progress:', {totalItem, readItem, bytes, writeBytes});
         };
 
         let rs = new RecoverableReadStream(dst, context);
@@ -349,6 +351,176 @@ test('test pipeline context with pause and resume from large file', async () => 
     }
 }, 180000);
 
+test('test pipeline context with multiple random pause and resume', async () => {
+    let src = 'pause_resume_large.file';
+    let context_path = 'pause_resume_large_context';
+    let dst, ret_src;
+
+    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
+        fs.unlinkSync(ret_src);
+    } catch (error) {}
+
+    // 准备测试文件
+    console.log('Generating test file...');
+    const fileSize = 1024 * 1024 * 50; // 50MB
+    generateFileWithSize(src, fileSize);
+    dst = await sealFile(src);
+
+    // 生成随机暂停点
+    const generateRandomPausePoints = (fileSize, numberOfPauses) => {
+        const minGap = 1024 * 1024 * 2; // 至少2MB的间隔
+        const pausePoints = new Set();
+
+        while (pausePoints.size < numberOfPauses) {
+            const point = Math.floor(minGap + Math.random() * (fileSize - minGap * 2));
+            pausePoints.add(point);
+        }
+
+        return Array.from(pausePoints).sort((a, b) => a - b);
+    };
+
+    const pausePoints = generateRandomPausePoints(fileSize, 4);
+    console.log(
+        'Random pause points:',
+        pausePoints.map((point) => `${(point / (1024 * 1024)).toFixed(2)}MB`)
+    );
+
+    let context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    // 处理多个阶段
+    for (let stage = 0; stage < pausePoints.length + 1; stage++) {
+        console.log(`\n=== Starting Stage ${stage + 1} ===`);
+
+        let pauseTriggered = false;
+        let totalBytesProcessed = 0;
+        const currentPauseThreshold = pausePoints[stage];
+
+        class PauseController extends require('stream').Transform {
+            constructor(options = {}) {
+                super(options);
+            }
+
+            _transform(chunk, encoding, callback) {
+                totalBytesProcessed += chunk.length;
+                this.push(chunk);
+
+                if (!pauseTriggered && currentPauseThreshold && totalBytesProcessed >= currentPauseThreshold) {
+                    pauseTriggered = true;
+                    console.log(
+                        `Stage ${stage + 1}: Processed ${(totalBytesProcessed / (1024 * 1024)).toFixed(
+                            2
+                        )}MB, triggering pause`
+                    );
+                }
+
+                callback();
+            }
+        }
+
+        // 处理当前阶段
+        await new Promise((resolve, reject) => {
+            const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+                console.log(`Stage ${stage + 1} progress:`, {totalItem, readItem, bytes, writeBytes});
+            };
+
+            let rs = new RecoverableReadStream(dst, context);
+            let unsealer = new meta.Unsealer({
+                keyPair: key_pair,
+                processedItemCount: context.context.readItemCount || 0,
+                processedBytes: context.context.readStart || 0,
+                writeBytes: context.context.writeStart || 0,
+                progressHandler: _progressHandler,
+                context: context
+            });
+            let pauseController = stage < pausePoints.length ? new PauseController() : null;
+            let ws = new RecoverableWriteStream(ret_src, context);
+
+            // 监听进度和暂停
+            let checkInterval;
+            if (stage < pausePoints.length) {
+                checkInterval = setInterval(() => {
+                    if (pauseTriggered) {
+                        console.log(`Stage ${stage + 1}: Pausing pipeline...`);
+                        clearInterval(checkInterval);
+
+                        rs.unpipe(unsealer);
+                        unsealer.unpipe(pauseController);
+                        pauseController.unpipe(ws);
+
+                        // 随机延迟暂停时间 (1-3秒)
+                        const randomDelay = 1000 + Math.random() * 2000;
+                        setTimeout(() => {
+                            rs.destroy();
+                            unsealer.destroy();
+                            pauseController.destroy();
+                            ws.end();
+                            resolve();
+                        }, randomDelay);
+                    }
+                }, 100);
+            }
+
+            // 连接管道
+            if (stage < pausePoints.length) {
+                rs.pipe(unsealer).pipe(pauseController).pipe(ws);
+            } else {
+                rs.pipe(unsealer).pipe(ws);
+            }
+
+            // 处理完成和错误
+            ws.on('finish', () => {
+                if (checkInterval) clearInterval(checkInterval);
+                console.log(`Stage ${stage + 1}: Processing complete`);
+                resolve();
+            });
+            ws.on('error', reject);
+        });
+
+        // 打印当前阶段状态
+        context = new PipelineContextInFile(context_path);
+        await context.loadContext();
+        const currentSize = fs.existsSync(ret_src) ? fs.statSync(ret_src).size : 0;
+        console.log(`Stage ${stage + 1} completed:`, {
+            processedMB: (currentSize / (1024 * 1024)).toFixed(2),
+            contextState: {
+                readStart: context.context.readStart,
+                writeStart: context.context.writeStart,
+                readItemCount: context.context.readItemCount,
+                hasData: context.context.data ? true : false,
+                dataLength: context.context.data ? context.context.data.length : 0
+            }
+        });
+
+        // 随机等待时间后继续 (2-5秒)
+        if (stage < pausePoints.length) {
+            const resumeDelay = 2000 + Math.random() * 3000;
+            console.log(`Waiting ${(resumeDelay / 1000).toFixed(1)}s before resuming...`);
+            await new Promise((resolve) => setTimeout(resolve, resumeDelay));
+        }
+    }
+
+    // 验证最终结果
+    console.log('\n=== Verifying Final Results ===');
+    await compare(src, ret_src);
+    console.log('Verification successful');
+
+    // 打印最终状态
+    context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+    console.log('Final context state:', {
+        contextState: {
+            readStart: context.context.readStart,
+            writeStart: context.context.writeStart,
+            hasData: context.context.data ? true : false,
+            dataLength: context.context.data ? context.context.data.length : 0
+        }
+    });
+}, 300000);
+
 test('test pipeline context large same file', async () => {
     let src = 'Unsealerlarge.file';
     //let src = './rollup.config.js'
@@ -372,8 +544,9 @@ test('test pipeline context large same file', async () => {
     context.loadContext();
     console.log('ddd');
     let rs = new RecoverableReadStream(dst, context);
-    let ws = new RecoverableWriteStream(ret_src, context);
-    let unsealer = new meta.Unsealer({keyPair: key_pair, context:context});
+    // let ws = new RecoverableWriteStream(ret_src, context);
+    let ws = new RecoverableWriteStream(dst, context);
+    let unsealer = new meta.Unsealer({keyPair: key_pair, context: context});
     rs.pipe(unsealer).pipe(ws);
 
     await new Promise((resolve) => {
@@ -384,9 +557,371 @@ test('test pipeline context large same file', async () => {
 
     let m2 = await calculateMD5(ret_src);
     expect(m1.length > 0).toBe(true);
+    console.log(m1, m2);
     expect(m1).toStrictEqual(m2);
 
     fs.unlinkSync(src);
     fs.unlinkSync(context_path);
-    //fs.unlinkSync(ret_src)
+    // fs.unlinkSync(ret_src);
 });
+test('test pipeline context with pause and resume on same file', async () => {
+    let src = 'pause_resume_large.file';
+    let context_path = 'pause_resume_large_context';
+    let dst;
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
+    } catch (error) {}
+
+    // 第一步：准备测试文件
+    console.log('Generating test file...');
+    generateFileWithSize(src, 1024 * 1024 * 200); // 20MB测试文件
+    dst = await sealFile(src);
+
+    // 保存原始文件内容的副本用于后续验证
+    const originalContent = fs.readFileSync(src);
+
+    // 第二步：第一阶段处理（处理部分后暂停）
+    console.log('Stage 1: Processing initial part...');
+    let context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    let pauseTriggered = false;
+    let totalBytesProcessed = 0;
+    const pauseThreshold = 1024 * 1024 * 50; // 处理5MB后暂停
+
+    class PauseController extends require('stream').Transform {
+        constructor(options = {}) {
+            super(options);
+        }
+
+        _transform(chunk, encoding, callback) {
+            totalBytesProcessed += chunk.length;
+            this.push(chunk);
+
+            if (!pauseTriggered && totalBytesProcessed >= pauseThreshold) {
+                pauseTriggered = true;
+                console.log(`Processed ${totalBytesProcessed / (1024 * 1024)}MB, triggering pause`);
+            }
+
+            callback();
+        }
+    }
+
+    // 第一阶段的处理
+    await new Promise((resolve, reject) => {
+        const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+            console.log('Stage 1 progress:', {totalItem, readItem, bytes, writeBytes});
+        };
+
+        let rs = new RecoverableReadStream(dst, context);
+        let unsealer = new meta.Unsealer({
+            keyPair: key_pair,
+            progressHandler: _progressHandler,
+            context: context
+        });
+        let pauseController = new PauseController();
+        let ws = new RecoverableWriteStream(dst, context); // 写回到同一个文件
+
+        // 监听进度
+        let checkInterval = setInterval(() => {
+            if (pauseTriggered) {
+                console.log('Pausing pipeline...');
+                clearInterval(checkInterval);
+
+                // 优雅地停止管道
+                rs.unpipe(unsealer);
+                unsealer.unpipe(pauseController);
+                pauseController.unpipe(ws);
+
+                setTimeout(() => {
+                    rs.destroy();
+                    unsealer.destroy();
+                    pauseController.destroy();
+                    ws.end();
+                    resolve();
+                }, 1000);
+            }
+        }, 100);
+
+        // 连接管道
+        rs.pipe(unsealer).pipe(pauseController).pipe(ws);
+
+        ws.on('error', reject);
+    });
+
+    console.log('Stage 1 completed, context saved');
+
+    // 打印第一阶段状态
+    const firstStageSize = fs.existsSync(src) ? fs.statSync(src).size : 0;
+    console.log('First stage processed:', {
+        processedMB: firstStageSize / (1024 * 1024),
+        contextState: {
+            readStart: context.context.readStart,
+            writeStart: context.context.writeStart,
+            hasData: context.context.data ? true : false,
+            dataLength: context.context.data ? context.context.data.length : 0
+        }
+    });
+
+    // 让文件系统有时间完成写入
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // 第三步：恢复处理（完成剩余部分）
+    console.log('Stage 2: Resuming processing...');
+
+    // 重新加载上下文
+    context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    // 恢复处理
+    await new Promise((resolve, reject) => {
+        const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+            console.log('Stage 2 progress:', {totalItem, readItem, bytes, writeBytes});
+        };
+
+        let rs = new RecoverableReadStream(dst, context);
+        let unsealer = new meta.Unsealer({
+            keyPair: key_pair,
+            processedItemCount: context.context.readItemCount || 0,
+            processedBytes: context.context.readStart || 0,
+            writeBytes: context.context.writeStart || 0,
+            progressHandler: _progressHandler,
+            context: context
+        });
+        let ws = new RecoverableWriteStream(src, context); // 继续写入同一个文件
+
+        // 监听完成事件
+        ws.on('finish', () => {
+            console.log('Processing complete');
+            resolve();
+        });
+        ws.on('error', reject);
+
+        // 连接管道
+        rs.pipe(unsealer).pipe(ws);
+    });
+
+    // 让文件系统有时间完成写入
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    // 第四步：验证结果
+    console.log('Verifying results...');
+    const finalContent = fs.readFileSync(src);
+    expect(Buffer.compare(originalContent, finalContent)).toBe(0);
+    console.log('Verification successful');
+
+    // 清理文件
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(dst);
+        fs.unlinkSync(context_path);
+    } catch (error) {
+        console.warn('Cleanup error:', error.message);
+    }
+}, 180000);
+
+test('test pipeline context with multiple random pause and resume on same file', async () => {
+    let src = 'multi_pause_resume_large.file';
+    let context_path = 'multi_pause_resume_large_context';
+    let dst;
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
+    } catch (error) {}
+
+    // 准备测试文件
+    console.log('Generating test file...');
+    const fileSize = 1024 * 1024 * 500; // 500MB
+    generateFileWithSize(src, fileSize);
+    dst = await sealFile(src);
+
+    // 保存原始文件内容用于后续验证
+    const originalContent = fs.readFileSync(src);
+
+    // 生成更均匀的随机暂停点
+    const segmentSize = fileSize / 5; // 将文件分成5段
+    const pausePoints = [];
+
+    // 在每段中随机选择一个暂停点
+    for (let i = 1; i < 5; i++) {
+        const minPoint = i * segmentSize - segmentSize / 4;
+        const maxPoint = i * segmentSize + segmentSize / 4;
+        const point = Math.floor(minPoint + Math.random() * (maxPoint - minPoint));
+        pausePoints.push(point);
+    }
+
+    console.log(
+        'Random pause points:',
+        pausePoints.map((point) => `${(point / (1024 * 1024)).toFixed(2)}MB`)
+    );
+
+    let context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    // 处理多个阶段
+    for (let stage = 0; stage < pausePoints.length + 1; stage++) {
+        console.log(`\n=== Starting Stage ${stage + 1} ===`);
+
+        let pauseTriggered = false;
+        let totalBytesProcessed = 0;
+        const currentPauseThreshold = pausePoints[stage];
+
+        class PauseController extends require('stream').Transform {
+            constructor(options = {}) {
+                super(options);
+                this.lastLoggedPosition = 0;
+            }
+
+            _transform(chunk, encoding, callback) {
+                totalBytesProcessed += chunk.length;
+                const absolutePosition = (context.context.readStart || 0) + totalBytesProcessed;
+
+                // 每处理50MB记录一次位置
+                if (absolutePosition - this.lastLoggedPosition >= 50 * 1024 * 1024) {
+                    console.log('Processing position:', {
+                        stage: stage + 1,
+                        absolutePosition: (absolutePosition / (1024 * 1024)).toFixed(2) + 'MB',
+                        nextPausePoint: currentPauseThreshold
+                            ? (currentPauseThreshold / (1024 * 1024)).toFixed(2) + 'MB'
+                            : 'none'
+                    });
+                    this.lastLoggedPosition = absolutePosition;
+                }
+
+                this.push(chunk);
+
+                if (!pauseTriggered && currentPauseThreshold && absolutePosition >= currentPauseThreshold) {
+                    pauseTriggered = true;
+                    console.log(
+                        `Stage ${stage + 1}: Processed ${(absolutePosition / (1024 * 1024)).toFixed(
+                            2
+                        )}MB, triggering pause`
+                    );
+                }
+
+                callback();
+            }
+        }
+
+        // 处理当前阶段
+        await new Promise((resolve, reject) => {
+            const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+                console.log(`Stage ${stage + 1} progress:`, {
+                    totalItem,
+                    readItem,
+                    bytes: (bytes / (1024 * 1024)).toFixed(2) + 'MB',
+                    writeBytes: (writeBytes / (1024 * 1024)).toFixed(2) + 'MB'
+                });
+            };
+
+            let rs = new RecoverableReadStream(dst, context);
+            let unsealer = new meta.Unsealer({
+                keyPair: key_pair,
+                processedItemCount: context.context.readItemCount || 0,
+                processedBytes: context.context.readStart || 0,
+                writeBytes: context.context.writeStart || 0,
+                progressHandler: _progressHandler,
+                context: context
+            });
+            let pauseController = stage < pausePoints.length ? new PauseController() : null;
+            let ws = new RecoverableWriteStream(src, context);
+
+            // 监听进度和暂停
+            let checkInterval;
+            if (stage < pausePoints.length) {
+                checkInterval = setInterval(() => {
+                    if (pauseTriggered) {
+                        console.log(`Stage ${stage + 1}: Pausing pipeline...`);
+                        clearInterval(checkInterval);
+
+                        rs.unpipe(unsealer);
+                        unsealer.unpipe(pauseController);
+                        pauseController.unpipe(ws);
+
+                        // 随机延迟暂停时间 (1-3秒)
+                        const randomDelay = 1000 + Math.random() * 2000;
+                        setTimeout(() => {
+                            rs.destroy();
+                            unsealer.destroy();
+                            pauseController.destroy();
+                            ws.end();
+                            resolve();
+                        }, randomDelay);
+                    }
+                }, 100);
+            }
+
+            // 连接管道
+            if (stage < pausePoints.length) {
+                rs.pipe(unsealer).pipe(pauseController).pipe(ws);
+            } else {
+                rs.pipe(unsealer).pipe(ws);
+            }
+
+            // 处理完成和错误
+            ws.on('finish', () => {
+                if (checkInterval) clearInterval(checkInterval);
+                console.log(`Stage ${stage + 1}: Processing complete`);
+                resolve();
+            });
+            ws.on('error', (err) => {
+                if (checkInterval) clearInterval(checkInterval);
+                console.error(`Stage ${stage + 1} error:`, err);
+                reject(err);
+            });
+        });
+
+        // 打印当前阶段状态
+        context = new PipelineContextInFile(context_path);
+        await context.loadContext();
+        console.log(`Stage ${stage + 1} completed:`, {
+            contextState: {
+                readStart: (context.context.readStart / (1024 * 1024)).toFixed(2) + 'MB',
+                writeStart: (context.context.writeStart / (1024 * 1024)).toFixed(2) + 'MB',
+                readItemCount: context.context.readItemCount,
+                hasData: context.context.data ? true : false,
+                dataLength: context.context.data ? context.context.data.length : 0
+            }
+        });
+
+        // 随机等待时间后继续 (2-5秒)
+        if (stage < pausePoints.length) {
+            const resumeDelay = 2000 + Math.random() * 3000;
+            console.log(`Waiting ${(resumeDelay / 1000).toFixed(1)}s before resuming...`);
+            await new Promise((resolve) => setTimeout(resolve, resumeDelay));
+        }
+    }
+
+    // 解密文件进行验证
+    console.log('\n=== Verifying Final Results ===');
+    let finalContext = new PipelineContextInFile('final_verify_context');
+    await finalContext.loadContext();
+
+    await new Promise((resolve, reject) => {
+        let rs = new RecoverableReadStream(dst, finalContext);
+        let unsealer = new meta.Unsealer({keyPair: key_pair, context: finalContext});
+        let ws = new RecoverableWriteStream(src, finalContext);
+
+        ws.on('finish', resolve);
+        ws.on('error', reject);
+
+        rs.pipe(unsealer).pipe(ws);
+    });
+
+    const finalContent = fs.readFileSync(src);
+    expect(Buffer.compare(originalContent, finalContent)).toBe(0);
+    console.log('Verification successful');
+
+    // 清理文件
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(dst);
+        fs.unlinkSync(context_path);
+        fs.unlinkSync('final_verify_context');
+    } catch (error) {
+        console.warn('Cleanup error:', error.message);
+    }
+}, 300000);
