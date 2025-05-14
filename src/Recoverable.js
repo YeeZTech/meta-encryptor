@@ -200,7 +200,6 @@ export class RecoverableWriteStream extends Writable {
             const readStart = this.context.context['readStart'] || 0;
             const writeStart = this.context.context['writeStart'] || 0;
             const length = this.context.context.data ? this.context.context.data.length : 0;
-            console.log('Write stream finished:', this.fileSize, length, JSON.stringify(this.context.context));
 
             // 检查是否到达文件末尾
             if (readStart + length >= this.fileSize) {
