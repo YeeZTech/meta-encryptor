@@ -5,28 +5,16 @@ import ByteBuffer, {
   LITTLE_ENDIAN
 } from "bytebuffer";
 const fs = require('fs');
-import{MaxItemSize, HeaderSize, BlockInfoSize,
+import{HeaderSize, BlockInfoSize,
   MagicNum, CurrentBlockFileVersion} from "./limits.js";
 import {
-  header_t,
-  header_t2buffer,
-  buffer2header_t,
-  block_info_t2buffer,
-  buffer2block_info_t,
-  ntpackage2batch,
-  toNtInput,
-  fromNtInput,
-  batch2ntpackage
+  buffer2header_t
 } from "./header_util.js"
-import { gte } from "semver";
+
+const {supportsConstruct} =require( "./utils.js")
 
 
 var log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
-
-function supportsConstruct() {
-  // Node.js 15.0.0 引入了 _construct 方法
-  return gte(process.version, '15.0.0');
-}
 
 export class SealedFileStream extends Readable{
   constructor(filePath, options){

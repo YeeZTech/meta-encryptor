@@ -37,6 +37,7 @@ export class Unsealer extends Transform{
     this.readItemCount = options ? (options.processedItemCount || 0) : 0;
     this.processedBytes = options ? options.processedBytes || 0 : 0;
     this.writeBytes = options ? (options.writeBytes || 0) : 0;
+    this.context = options? (options.context) : undefined
     log.debug("Unsealer : ", this)
   }
 
@@ -79,6 +80,11 @@ export class Unsealer extends Transform{
           let item_size = buf.readUint64(offset).toNumber()
           offset += 8;
           if(this.accumulatedBuffer.length >= item_size + offset){
+            if(this.context !== undefined && this.context.context !== undefined
+              &&this.context.context["status"] === "file"){
+              this.context.context["data"] = this.accumulatedBuffer;
+              this.context.saveContext();
+            }
             log.debug("got enough data ", item_size)
             let cipher = this.accumulatedBuffer.slice(offset, offset + item_size);
             log.debug("offset + item_size: ", offset + item_size)
