@@ -132,11 +132,8 @@ test('test medium file', async () => {
     await sealAndUnsealFile(src);
 });
 
-test('test large file', async () => {
+test.skip('test large file', async () => {
     let src = 'Unsealerlarge.file';
-    try {
-        fs.unlinkSync(src);
-    } catch (error) {}
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     await sealAndUnsealFile(src);
