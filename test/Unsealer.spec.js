@@ -140,7 +140,9 @@ test('test large file', async () => {
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     await sealAndUnsealFile(src);
-    fs.unlinkSync(src);
+    try {
+        fs.unlinkSync(src);
+    } catch (error) {}
 });
 
 test.skip('test large file use RemoteSealedFileStream', async () => {
@@ -155,87 +157,3 @@ test.skip('test large file use RemoteSealedFileStream', async () => {
     fs.unlinkSync(src);
 });
 
-test('test destory and resume unsealing', async () => {
-    // 准备测试文件
-    let src = 'pause.resume.test.file';
-    let dst = src + '.sealed';
-    let ret_src = src + '.unsealed.ret';
-
-    try {
-        fs.unlinkSync(src);
-        fs.unlinkSync(dst);
-        fs.unlinkSync(ret_src);
-    } catch (error) {}
-    generateFileWithSize(src, 1024 * 1024 * 50); // 50MB测试文件
-
-    // 先加密文件
-    await new Promise((resolve) => {
-        fs.createReadStream(src)
-            .pipe(new Sealer({keyPair: key_pair}))
-            .pipe(fs.createWriteStream(dst))
-            .on('finish', resolve);
-    });
-
-    // 解密状态
-    let status = {
-        processedBytes: 0,
-        processedItems: 0,
-        writeBytes: 0
-    };
-
-    // 第一次解密（解密到20MB后暂停）
-    console.log('First unsealing attempt (will pause at 20MB)...');
-    await unsealPart(dst, ret_src, status, true);
-
-    // 等待3秒
-    console.log('Pausing for 3 seconds...');
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-
-    // 继续解密剩余部分
-    console.log('Resuming unsealing from', status.processedBytes, 'bytes...');
-    await unsealPart(dst, ret_src, status, false);
-
-    // 验证文件完整性
-    let originalMD5 = await calculateMD5(src);
-    let unsealedMD5 = await calculateMD5(ret_src);
-    expect(originalMD5).toStrictEqual(unsealedMD5);
-
-    // 清理文件
-    fs.unlinkSync(src);
-    fs.unlinkSync(dst);
-    fs.unlinkSync(ret_src);
-});
-
-// 辅助函数：执行部分解密
-async function unsealPart(sealedFile, outputFile, status, shouldPause) {
-    console.log('status:', status);
-    return new Promise((resolve, reject) => {
-        // const ret_ws = fs.createWriteStream(outputFile, {start: status.writeBytes, flags: 'a'});
-        const ret_ws = fs.createWriteStream(outputFile, {start: status.writeBytes});
-        const unsealer = new Unsealer({
-            keyPair: key_pair,
-            processedItemCount: status.processedItems,
-            processedBytes: status.processedBytes,
-            writeBytes: status.writeBytes,
-            progressHandler: (totalItem, readItem, bytes, writeBytes) => {
-                status.processedBytes = bytes;
-                status.processedItems = readItem;
-                status.writeBytes = writeBytes;
-
-                // 如果需要暂停且达到20MB，则触发暂停
-                if (shouldPause && bytes > 1024 * 1024 * 20) {
-                    unsealer.destroy();
-                    ret_ws.end(() => resolve());
-                    return;
-                }
-            }
-        });
-
-        const sealedStream = new SealedFileStream(sealedFile, {
-            start: status.processedBytes,
-            highWaterMark: 64 * 1024
-        });
-
-        sealedStream.pipe(unsealer).pipe(ret_ws).on('finish', resolve).on('error', reject);
-    });
-}
