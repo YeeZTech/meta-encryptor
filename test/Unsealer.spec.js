@@ -140,9 +140,9 @@ test('test large file', async () => {
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     await sealAndUnsealFile(src);
-    try {
-        fs.unlinkSync(src);
-    } catch (error) {}
+    // try {
+    //     fs.unlinkSync(src);
+    // } catch (error) {}
 });
 
 test.skip('test large file use RemoteSealedFileStream', async () => {
