@@ -139,6 +139,35 @@ import {isSealedFile} from '@yeez-tech/meta-encryptor';
 let r = isSealedFile(path);
 ```
 
+#### 浏览器端 Unsealer (实验性)
+
+为了在纯浏览器环境中直接解密后端通过 HTTP 以二进制流提供的加密文件，本仓库提供了实验性实现：`src/browser/UnsealerBrowser.js` 与 `src/browser/ypccrypto.browser.js`。它通过 `fetch` 的 `ReadableStream` 增量读取加密文件，对照 Node 版 `Unsealer` 的协议解析 header 和每个 item 的长度前缀，调用浏览器版 `decryptMessage` 还原批次，再拼接为明文。
+
+示例页面：`example/browser/index.html`。
+
+使用要点：
+1. 后端需提供已使用 Node 版 `Sealer` 生成的加密文件（格式：header | blocks(items with size prefix) | blockMeta | headerMeta）。当前浏览器版仍处于验证阶段，可能不支持全部边界情况。
+2. 在页面输入加密文件 URL 与私钥（hex）。公钥从加密文件的每段中动态获取。
+3. 点击“开始解密”后实时显示进度，完成后可下载合并后的明文。
+
+导入方式 (通过打包器或原始源码)：
+```js
+import { UnsealerBrowser, unsealStream } from '@yeez-tech/meta-encryptor/dist/browser';
+// 或直接引用源码路径: import { unsealStream } from '.../src/browser/UnsealerBrowser.js'
+```
+
+核心 API：
+```js
+await unsealStream(fetchResponse, {
+  privateKeyHex: 'YOUR_PRIVATE_KEY_HEX',
+  onChunk: (plaintextUint8) => { /* 每个数据块 */ },
+  progressHandler: (totalItems, processedItems, readBytes, writeBytes) => {}
+});
+```
+
+注意：浏览器版实现中 AES-CMAC 与 ECDH 派生流程是通过纯 JS 复刻，尚未经过完整安全审计，不建议在生产环境直接替换 Node 端实现。若需要生产支持，应将 Node 端逻辑通过打包工具（Rollup/Webpack）与适配层（例如 polyfill `crypto`）严格对齐后再使用。
+
+
 ##### sealedFileVersion
 
 返回封装文件的版本号。

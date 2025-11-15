@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>Browser Unsealer 示例</title>
+  <style>
+    body{font-family:system-ui,Arial,sans-serif;margin:2rem;max-width:900px;}
+    fieldset{margin:1rem 0;padding:1rem;border:1px solid #ccc;}
+    label{display:inline-block;min-width:140px;font-weight:600;}
+    input[type=text]{width:420px;}
+    #log{background:#111;color:#0f0;font-size:.8rem;height:160px;overflow:auto;padding:.75rem;white-space:pre-wrap;}
+    button{margin:.4rem .7rem .4rem 0;padding:.5rem 1rem;}
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "bytebuffer": "/src/browser/bytebuffer.browser.js",
+      "buffer": "https://esm.sh/buffer@6.0.3?target=es2020",
+      "keccak256": "https://esm.sh/keccak256@1.0.6?target=es2020",
+      "aes-js": "https://esm.sh/aes-js@3.1.2?target=es2020",
+      "@noble/secp256k1": "https://esm.sh/@noble/secp256k1@2.1.0?target=es2020"
+    }
+  }
+  </script>
+</head>
+<body>
+<h1>在浏览器中使用 Unsealer 解密流</h1>
+<p>你可以一键生成样本（自动生成 stream.bin 与 keys.json 并预填私钥），或者手动填写 URL 和私钥进行解密。</p>
+
+<fieldset>
+  <legend>输入</legend>
+  <div>
+    <label for="fileUrl">加密文件 URL</label>
+    <input id="fileUrl" type="text" placeholder="例如 https://example.com/encrypted.bin" />
+  </div>
+  <div>
+    <label for="privKey">私钥 (hex)</label>
+    <input id="privKey" type="text" placeholder="64字节十六进制" />
+  </div>
+  <div>
+    <label for="sizeSel">生成大小</label>
+    <select id="sizeSel">
+      <option value="1048576" selected>1 MB</option>
+      <option value="104857600">100 MB</option>
+      <option value="1073741824">1 GB</option>
+    </select>
+    <button id="verifyBtn">检查解密结果</button>
+  </div>
+  <div>
+    <button id="genAndRun">一键生成并解密</button>
+    <button id="loadKeys">读取本地 keys.json</button>
+    <button id="streamSaveBtn">边解密边保存</button>
+    <button id="cleanBtn">清除临时文件</button>
+  </div>
+</fieldset>
+
+<fieldset>
+  <legend>进度</legend>
+  <div>总条目: <span id="totalItems">?</span></div>
+  <div>已处理条目: <span id="processedItems">0</span></div>
+  <div>已读字节: <span id="readBytes">0</span></div>
+  <div>写出字节: <span id="writeBytes">0</span></div>
+</fieldset>
+
+<h3>日志</h3>
+<div id="log"></div>
+
+<script type="module">
+// Ensure Node.js Buffer APIs exist in the browser before loading modules that depend on it
+import { Buffer as BufferPolyfill } from 'buffer';
+if (!window.Buffer) {
+  window.Buffer = BufferPolyfill;
+}
+
+// Load Unsealer after Buffer is available
+const { unsealStream } = await import('../../src/browser/UnsealerBrowser.js');
+
+const logDiv = document.getElementById('log');
+function log(m){const t=new Date().toISOString();logDiv.textContent += `[${t}] ${m}\n`;logDiv.scrollTop=logDiv.scrollHeight;}
+window.addEventListener('error', (e)=>{ log('页面错误: '+ (e?.message||e)); });
+window.addEventListener('unhandledrejection', (e)=>{ log('未处理的Promise拒绝: '+ (e?.reason?.message||e?.reason||e)); });
+
+const streamSaveBtn = document.getElementById('streamSaveBtn');
+const genAndRunBtn = document.getElementById('genAndRun');
+const loadKeysBtn = document.getElementById('loadKeys');
+const cleanBtn = document.getElementById('cleanBtn');
+const verifyBtn = document.getElementById('verifyBtn');
+const sizeSel = document.getElementById('sizeSel');
+const fileUrlInput = document.getElementById('fileUrl');
+const privKeyInput = document.getElementById('privKey');
+const totalItemsSpan = document.getElementById('totalItems');
+const processedItemsSpan = document.getElementById('processedItems');
+const readBytesSpan = document.getElementById('readBytes');
+const writeBytesSpan = document.getElementById('writeBytes');
+
+let outputBuffers = [];
+
+async function withFileWriter(defaultName='unsealed.bin'){ 
+  // Prefer File System Access API when available
+  if(window.showSaveFilePicker){
+    const handle = await window.showSaveFilePicker({ suggestedName: defaultName, types:[{description:'Binary', accept:{'application/octet-stream':['.bin']}}] });
+    const writable = await handle.createWritable();
+    return {
+      async write(u8){ await writable.write(u8); },
+      async close(){ await writable.close(); }
+    };
+  }
+  // Fallback: accumulate to blob and trigger download at end
+  const chunks = [];
+  return {
+    async write(u8){ chunks.push(new Uint8Array(u8)); },
+    async close(){
+      const total = chunks.reduce((a,b)=>a+b.length,0);
+      const merged = new Uint8Array(total); let o=0; for(const c of chunks){ merged.set(c,o); o+=c.length; }
+      const blob = new Blob([merged]);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = defaultName;
+      a.click();
+    }
+  };
+}
+
+async function autoPrefillKeys(){
+  try{
+    const base = location.origin;
+    const r = await fetch(`${base}/example/browser/keys.json`, {cache:'no-store'});
+    if(r.ok){
+      const j = await r.json();
+      if(j?.private_key){ privKeyInput.value = j.private_key; }
+      if(!fileUrlInput.value){ fileUrlInput.value = `${base}/example/browser/stream.bin`; }
+    }
+  }catch(e){ /* ignore */ }
+}
+
+window.addEventListener('DOMContentLoaded', autoPrefillKeys);
+
+// 快速自检：提示当前 origin
+log('页面已加载，origin='+ location.origin);
+
+streamSaveBtn.addEventListener('click', async ()=>{
+  outputBuffers = [];
+  const url = fileUrlInput.value.trim();
+  const priv = privKeyInput.value.trim();
+  if(!url || !priv){log('请填写 URL 和 私钥');return;}
+  log('开始获取加密文件流...');
+  try{
+  const resp = await fetch(url, { cache: 'no-store' });
+    if(!resp.ok) throw new Error('HTTP 状态: '+resp.status);
+    log('已连接，开始解密并写入文件...');
+    const writer = await withFileWriter('unsealed.bin');
+    await unsealStream(resp, {
+      privateKeyHex: priv,
+      onChunk: async (plain)=>{
+        outputBuffers.push(plain);
+        try{ log(`收到明文块: ${plain?.length||0} 字节`); }catch(e){}
+        await writer.write(plain);
+      },
+      progressHandler: (total, processed, readBytes, writeBytes)=>{
+        totalItemsSpan.textContent = total;
+        processedItemsSpan.textContent = processed;
+        readBytesSpan.textContent = readBytes;
+        writeBytesSpan.textContent = writeBytes;
+      }
+    });
+    // 统计总明文字节
+    const totalLen = outputBuffers.reduce((acc,b)=> acc + (b?.length||0),0);
+    log(`解密结束并写入完成，总输出块: ${outputBuffers.length}，总明文字节: ${totalLen}`);
+    if(totalLen > 0){
+      try{
+        const merged = new Uint8Array(totalLen);
+        let o=0; for(const b of outputBuffers){ merged.set(b, o); o+=b.length; }
+        const preview = new TextDecoder().decode(merged.slice(0, 256));
+        log('明文预览(前256字节 as UTF-8):');
+        log(preview.replace(/\n/g,'\\n'));
+      }catch(e){ /* ignore preview errors */ }
+    }
+    await writer.close();
+  }catch(e){
+    log('解密失败: '+e.message);
+  }
+});
+
+genAndRunBtn.addEventListener('click', async ()=>{
+  const base = location.origin;
+  try{
+    genAndRunBtn.disabled = true; streamSaveBtn.disabled = true;
+  const size = Number(sizeSel.value || (1024*1024*1024));
+  const r = await fetch(`${base}/api/gen?size=${size}`);
+    const j = await r.json();
+    if(!j.ok){ throw new Error(j.message || '生成失败'); }
+    // 预填并立即解密
+    privKeyInput.value = j.keys.private_key;
+    fileUrlInput.value = j.files.stream;
+    await (async ()=>{ streamSaveBtn.click(); })();
+  }catch(e){
+    log('生成或预填失败: '+e.message);
+  } finally {
+    genAndRunBtn.disabled = false; streamSaveBtn.disabled = false;
+  }
+});
+verifyBtn.addEventListener('click', async ()=>{
+  try{
+    const size = Number(sizeSel.value || 0);
+    if(!size){ log('请选择或输入正确的大小'); return; }
+    // 下载原始明文（按固定生成逻辑）
+    const base = location.origin;
+    const plainResp = await fetch(`${base}/api/plain?size=${size}`, {cache:'no-store'});
+    if(!plainResp.ok) throw new Error('下载原始明文失败: '+plainResp.status);
+    const plainBuf = new Uint8Array(await plainResp.arrayBuffer());
+    log(`原始明文已获取：${plainBuf.length} 字节`);
+
+    // 读取刚才保存的解密文件：让用户手动选择本地文件来比对
+    let fileHandle;
+    if(window.showOpenFilePicker){
+      const [h] = await window.showOpenFilePicker({ types:[{description:'Binary', accept:{'application/octet-stream':['.bin']}}] });
+      fileHandle = h;
+      const f = await fileHandle.getFile();
+      const decBuf = new Uint8Array(await f.arrayBuffer());
+      log(`解密文件已选择：${decBuf.length} 字节，开始比对...`);
+      const equal = (a,b)=>{
+        if(a.length!==b.length) return false;
+        for(let i=0;i<a.length;i++){ if(a[i]!==b[i]) return false; }
+        return true;
+      };
+      const ok = equal(plainBuf, decBuf);
+      log(ok ? '比对一致 ✅' : '比对不一致 ❌');
+    } else {
+      log('当前浏览器不支持本地文件选择 API，请手动用其它工具比对。');
+    }
+  }catch(e){
+    log('检查失败: '+e.message);
+  }
+});
+cleanBtn.addEventListener('click', async ()=>{
+  const base = location.origin;
+  try{
+    cleanBtn.disabled = true;
+    const r = await fetch(`${base}/api/clean`, { method:'POST' });
+    const j = await r.json();
+    if(j.ok){
+      log(`已清除: ${j.removed?.join(', ') || '(无)'} `);
+    } else {
+      log(`清除失败: ${j.message || '未知错误'}`);
+    }
+  }catch(e){
+    log('清除失败: '+e.message);
+  }finally{
+    cleanBtn.disabled = false;
+  }
+});
+
+loadKeysBtn.addEventListener('click', async ()=>{
+  const base = location.origin;
+  try{
+    const r = await fetch(`${base}/example/browser/keys.json`, {cache:'no-store'});
+    if(!r.ok) throw new Error('未找到 keys.json');
+    const j = await r.json();
+    privKeyInput.value = j.private_key || '';
+    if(!fileUrlInput.value){ fileUrlInput.value = `${base}/example/browser/stream.bin`; }
+    log('已加载 keys.json 并预填');
+  }catch(e){ log('加载 keys.json 失败: '+e.message); }
+});
+</script>
+</body>
+</html>
