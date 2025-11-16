@@ -51,6 +51,7 @@
     <button id="loadKeys">读取本地 keys.json</button>
     <button id="streamSaveBtn">边解密边保存</button>
     <button id="cleanBtn">清除临时文件</button>
+    <button id="chooseFileBtn">选择解密文件</button>
   </div>
 </fieldset>
 
@@ -94,6 +95,16 @@ const readBytesSpan = document.getElementById('readBytes');
 const writeBytesSpan = document.getElementById('writeBytes');
 
 let outputBuffers = [];
+
+// Hidden file input fallback for browsers that don't support showOpenFilePicker or when the user aborts it
+const hiddenFileInput = document.createElement('input');
+hiddenFileInput.type = 'file';
+hiddenFileInput.accept = '.bin,application/octet-stream';
+hiddenFileInput.style.display = 'none';
+document.body.appendChild(hiddenFileInput);
+
+const chooseFileBtn = document.getElementById('chooseFileBtn');
+chooseFileBtn.addEventListener('click', ()=> hiddenFileInput.click());
 
 async function withFileWriter(defaultName='unsealed.bin'){ 
   // Prefer File System Access API when available
@@ -210,24 +221,33 @@ verifyBtn.addEventListener('click', async ()=>{
     const plainBuf = new Uint8Array(await plainResp.arrayBuffer());
     log(`原始明文已获取：${plainBuf.length} 字节`);
 
-    // 读取刚才保存的解密文件：让用户手动选择本地文件来比对
-    let fileHandle;
-    if(window.showOpenFilePicker){
-      const [h] = await window.showOpenFilePicker({ types:[{description:'Binary', accept:{'application/octet-stream':['.bin']}}] });
-      fileHandle = h;
-      const f = await fileHandle.getFile();
-      const decBuf = new Uint8Array(await f.arrayBuffer());
-      log(`解密文件已选择：${decBuf.length} 字节，开始比对...`);
-      const equal = (a,b)=>{
-        if(a.length!==b.length) return false;
-        for(let i=0;i<a.length;i++){ if(a[i]!==b[i]) return false; }
-        return true;
-      };
-      const ok = equal(plainBuf, decBuf);
-      log(ok ? '比对一致 ✅' : '比对不一致 ❌');
-    } else {
-      log('当前浏览器不支持本地文件选择 API，请手动用其它工具比对。');
+    // 读取刚才保存的解密文件：优先使用 showOpenFilePicker，用户取消后降级到隐藏 file input
+    let decBuf = null;
+    try{
+      if(window.showOpenFilePicker){
+        const [h] = await window.showOpenFilePicker({ types:[{description:'Binary', accept:{'application/octet-stream':['.bin']}}] });
+        const f = await h.getFile();
+        decBuf = new Uint8Array(await f.arrayBuffer());
+      }
+    }catch(e){
+      // user aborted native picker or not allowed; fallback to hidden file input
+      log('本地打开被取消或不支持，使用页面文件选择作为后备');
+      decBuf = await new Promise((resolve, reject)=>{
+        hiddenFileInput.onchange = async ()=>{
+          try{ const f = hiddenFileInput.files[0]; if(!f) return reject(new Error('未选择文件')); const arr = new Uint8Array(await f.arrayBuffer()); resolve(arr); }catch(err){ reject(err); }
+        };
+        hiddenFileInput.click();
+      });
     }
+    if(!decBuf){ log('未能获取解密文件进行比对'); return; }
+    log(`解密文件已选择：${decBuf.length} 字节，开始比对...`);
+    const equal = (a,b)=>{
+      if(a.length!==b.length) return false;
+      for(let i=0;i<a.length;i++){ if(a[i]!==b[i]) return false; }
+      return true;
+    };
+    const ok = equal(plainBuf, decBuf);
+    log(ok ? '比对一致 ✅' : '比对不一致 ❌');
   }catch(e){
     log('检查失败: '+e.message);
   }
