@@ -18,10 +18,14 @@
       "buffer": "https://esm.sh/buffer@6.0.3?target=es2020",
       "keccak256": "https://esm.sh/keccak256@1.0.6?target=es2020",
       "aes-js": "https://esm.sh/aes-js@3.1.2?target=es2020",
-      "@noble/secp256k1": "https://esm.sh/@noble/secp256k1@2.1.0?target=es2020"
+      "@noble/secp256k1": "https://esm.sh/@noble/secp256k1@2.1.0?target=es2020",
+      "@noble/hashes/sha256": "https://esm.sh/@noble/hashes@1.4.0/sha256?target=es2020",
+      "@noble/hashes/utils": "https://esm.sh/@noble/hashes@1.4.0/utils?target=es2020"
     }
   }
   </script>
+  <!-- StreamSaver for native download progress in browser's download shelf -->
+  <script src="https://unpkg.com/streamsaver@2.0.6/StreamSaver.min.js"></script>
 </head>
 <body>
 <h1>在浏览器中使用 Unsealer 解密流</h1>
@@ -47,11 +51,11 @@
     <button id="verifyBtn">检查解密结果</button>
   </div>
   <div>
-    <button id="genAndRun">一键生成并解密</button>
+  <button id="genAndRun">一键生成加密文件</button>
     <button id="loadKeys">读取本地 keys.json</button>
     <button id="streamSaveBtn">边解密边保存</button>
     <button id="cleanBtn">清除临时文件</button>
-    <button id="chooseFileBtn">选择解密文件</button>
+  <button id="chooseFileBtn">计算解密文件的hash</button>
   </div>
 </fieldset>
 
@@ -61,6 +65,12 @@
   <div>已处理条目: <span id="processedItems">0</span></div>
   <div>已读字节: <span id="readBytes">0</span></div>
   <div>写出字节: <span id="writeBytes">0</span></div>
+</fieldset>
+
+<fieldset>
+  <legend>哈希</legend>
+  <div>原始明文 SHA-256: <span id="plainHash">未生成</span></div>
+  <div>解密文件 SHA-256: <span id="decFileHash">未计算</span></div>
 </fieldset>
 
 <h3>日志</h3>
@@ -73,8 +83,17 @@ if (!window.Buffer) {
   window.Buffer = BufferPolyfill;
 }
 
-// Load Unsealer after Buffer is available
+// Load Unsealer and HTTP tail-header transform
 const { unsealStream } = await import('../../src/browser/UnsealerBrowser.js');
+const { prepareSealedResponse } = await import('../../src/browser/SealedHttpTailHeaderTransform.js');
+const { sha256 } = await import('@noble/hashes/sha256');
+const { bytesToHex } = await import('@noble/hashes/utils');
+
+// Optionally configure StreamSaver (kept for fallback)
+if (window.streamSaver) {
+  window.streamSaver.mitm = 'https://jimmywarting.github.io/StreamSaver.js/mitm.html?version=2.0.6';
+  try{ window.streamSaver.useBlobFallback = false; }catch(e){}
+}
 
 const logDiv = document.getElementById('log');
 function log(m){const t=new Date().toISOString();logDiv.textContent += `[${t}] ${m}\n`;logDiv.scrollTop=logDiv.scrollHeight;}
@@ -93,8 +112,12 @@ const totalItemsSpan = document.getElementById('totalItems');
 const processedItemsSpan = document.getElementById('processedItems');
 const readBytesSpan = document.getElementById('readBytes');
 const writeBytesSpan = document.getElementById('writeBytes');
+const plainHashSpan = document.getElementById('plainHash');
+const decFileHashSpan = document.getElementById('decFileHash');
 
-let outputBuffers = [];
+// 仅保存少量预览，避免大文件占用内存
+let previewCaptured = false;
+let previewBuf = new Uint8Array(0);
 
 // Hidden file input fallback for browsers that don't support showOpenFilePicker or when the user aborts it
 const hiddenFileInput = document.createElement('input');
@@ -104,7 +127,57 @@ hiddenFileInput.style.display = 'none';
 document.body.appendChild(hiddenFileInput);
 
 const chooseFileBtn = document.getElementById('chooseFileBtn');
-chooseFileBtn.addEventListener('click', ()=> hiddenFileInput.click());
+chooseFileBtn.addEventListener('click', async ()=>{
+  decFileHashSpan.textContent = '计算中...';
+  try{
+    let file;
+    if(window.showOpenFilePicker){
+      try{ const [h] = await window.showOpenFilePicker({ types:[{description:'Binary', accept:{'application/octet-stream':['.bin']}}] }); file = await h.getFile(); }catch(e){ /* fallback */ }
+    }
+    if(!file){
+      await new Promise((resolve,reject)=>{
+        hiddenFileInput.onchange = ()=>{ if(hiddenFileInput.files[0]){ file = hiddenFileInput.files[0]; resolve(); } else reject(new Error('未选择文件')); };
+        hiddenFileInput.click();
+      });
+    }
+    if(!file) throw new Error('未获取到文件');
+    // 流式计算哈希，避免将整文件载入内存
+    const h = await streamHashFile(file);
+    decFileHashSpan.textContent = h;
+    log(`解密文件哈希: ${h} (${(file.size/1024/1024).toFixed(1)} MB)`);
+    const baseHash = plainHashSpan.textContent;
+    if(baseHash && baseHash.length===64){
+      log(h===baseHash ? '哈希比对一致 ✅' : '哈希比对不一致 ❌');
+    }
+  }catch(e){
+    decFileHashSpan.textContent = '失败';
+    log('计算解密文件哈希失败: '+e.message);
+  }
+});
+async function streamHashFile(file){
+  const reader = file.stream().getReader();
+  const h = sha256.create();
+  let total = 0;
+  for(;;){
+    const { value, done } = await reader.read();
+    if(done) break;
+    if(value && value.length){ h.update(value); total += value.length; }
+  }
+  return bytesToHex(h.digest());
+}
+async function streamHashResponse(resp){
+  if(!resp.ok) throw new Error('HTTP 状态: '+resp.status);
+  if(!resp.body) throw new Error('响应无 body');
+  const reader = resp.body.getReader();
+  const h = sha256.create();
+  let total = 0;
+  for(;;){
+    const { value, done } = await reader.read();
+    if(done) break;
+    if(value && value.length){ h.update(value); total += value.length; }
+  }
+  return { hex: bytesToHex(h.digest()), bytes: total };
+}
 
 async function withFileWriter(defaultName='unsealed.bin'){ 
   // Prefer File System Access API when available
@@ -132,6 +205,138 @@ async function withFileWriter(defaultName='unsealed.bin'){
   };
 }
 
+// Same constants as in SealedHttpTailHeaderTransform
+const HEADER_SIZE = 64;
+const BLOCK_INFO_SIZE = 32;
+function readUint64LE(u8, off){
+  const dv = new DataView(u8.buffer, u8.byteOffset, u8.byteLength);
+  const lo = dv.getUint32(off, true); const hi = dv.getUint32(off+4, true);
+  return hi * 0x100000000 + lo;
+}
+// Inspect sealed file by HEAD + Range(tail) to compute contentSize (plaintext total bytes)
+async function inspectSealed(url){
+  // Prefer HEAD to get total size
+  let totalSize = null;
+  try{
+    const head = await fetch(url, { method:'HEAD', cache:'no-store' });
+    if(head.ok){
+      const lenStr = head.headers.get('Content-Length');
+      if(lenStr) totalSize = Number(lenStr);
+    }
+  }catch(e){ /* ignore */ }
+  // Helper: parse total from Content-Range: bytes start-end/total
+  const parseTotal = (cr)=>{ if(!cr) return null; const m = /\/([0-9]+)$/.exec(cr); return m? Number(m[1]) : null; };
+  // Try to get tail header and total via suffix range
+  let headerBuf = null;
+  if(totalSize == null){
+    try{
+      const tail = await fetch(url, { headers: { Range: `bytes=-${HEADER_SIZE}` }, cache:'no-store' });
+      if(tail.status === 206){
+        const cr = tail.headers.get('Content-Range');
+        totalSize = parseTotal(cr);
+        headerBuf = new Uint8Array(await tail.arrayBuffer());
+      }
+    }catch(e){ /* ignore */ }
+  }
+  // If still no total, try 0-0 probe then a tail fetch
+  if(totalSize == null){
+    try{
+      const lr = await fetch(url, { headers:{ Range:'bytes=0-0' }, cache:'no-store' });
+      if(lr.status === 206){
+        totalSize = parseTotal(lr.headers.get('Content-Range'));
+      }
+    }catch(e){ /* ignore */ }
+  }
+  if(totalSize == null){
+    log('[TailHeader] 服务器未提供 Content-Length 且不支持 Range，无法精确计算明文大小，继续无大小模式');
+    return { totalSize: null, blockNumber: null, contentSize: null };
+  }
+  if(!Number.isFinite(totalSize) || totalSize < HEADER_SIZE) throw new Error('文件大小异常');
+  // Ensure we have header bytes
+  if(!headerBuf){
+    const start = totalSize - HEADER_SIZE;
+    const tail = await fetch(url, { headers: { Range: `bytes=${start}-${totalSize-1}` }, cache:'no-store' });
+    if(!(tail.status===206 || tail.status===200)) throw new Error('Range 读取尾部 header 失败: '+tail.status);
+    headerBuf = new Uint8Array(await tail.arrayBuffer());
+  }
+  if(headerBuf.length !== HEADER_SIZE){
+    log('[TailHeader] 尾部 header 长度不符，继续无大小模式');
+    return { totalSize, blockNumber: null, contentSize: null };
+  }
+  const blockNumber = readUint64LE(headerBuf, 16);
+  const contentSize = totalSize - HEADER_SIZE - BLOCK_INFO_SIZE * blockNumber;
+  if(contentSize <= 0){
+    log('[TailHeader] contentSize 计算结果 <= 0，继续无大小模式');
+    return { totalSize, blockNumber, contentSize: null };
+  }
+  return { totalSize, blockNumber, contentSize };
+}
+
+// Prefer native browser download shelf via StreamSaver when available
+async function withNativeDownloadWriter(filename, expectedSize){
+  // Prefer same-origin SW based native download to guarantee download shelf visibility
+  if ('serviceWorker' in navigator) {
+    try{
+      const reg = await navigator.serviceWorker.register('/example/browser/sw-download.js', { scope: '/example/browser/' });
+      // Wait for SW to be ready and controlling this page
+      await navigator.serviceWorker.ready;
+      async function ensureController(){
+        if (navigator.serviceWorker.controller) return navigator.serviceWorker.controller;
+        // try to message active worker directly
+        if (reg.active) return reg.active;
+        await new Promise((resolve)=>{
+          const to = setTimeout(resolve, 1500);
+          navigator.serviceWorker.addEventListener('controllerchange', ()=>{ clearTimeout(to); resolve(); }, { once:true });
+        });
+        return navigator.serviceWorker.controller || reg.active || null;
+      }
+      const controller = await ensureController();
+      if (!controller){ throw new Error('Service Worker 未接管此页面'); }
+
+      const id = Math.random().toString(36).slice(2);
+      const ch = new MessageChannel();
+      const size = (typeof expectedSize === 'number' && isFinite(expectedSize)) ? expectedSize : undefined;
+      // Post to the active/controller SW
+      let portReady = false;
+      const ackPromise = new Promise((resolve)=>{
+        const to = setTimeout(resolve, 800);
+        ch.port1.onmessage = (ev)=>{ if(ev.data && ev.data.type==='ready'){ portReady = true; clearTimeout(to); resolve(); } };
+      });
+      (reg.active || controller).postMessage({ type:'DOWNLOAD_PORT', id, name: filename, size }, [ch.port2]);
+      await ackPromise;
+
+      const downloadUrl = `/example/browser/download/unsealed?id=${encodeURIComponent(id)}`;
+      // Trigger native download in a new tab to keep current page streaming chunks
+      const w = window.open(downloadUrl, '_blank');
+      if(!w){
+        // Fallback if popup blocked: temporary anchor without download attribute (navigation)
+        const a = document.createElement('a'); a.href = downloadUrl; a.target = '_blank'; document.body.appendChild(a); a.click(); a.remove();
+      }
+      // window.open(downloadUrl, '_blank'); // optional alternative
+      log(`[Download] 使用同源 SW 原生下载，size=${size ?? '未知'}`);
+      return {
+        async write(u8){
+          // Always send a copy so the original (e.g., reusable batch buffer) is not detached
+          const copy = (u8 && u8.byteLength) ? (u8.slice ? u8.slice() : new Uint8Array(u8)) : new Uint8Array();
+          ch.port1.postMessage({ type:'chunk', data: copy }, [copy.buffer]);
+        },
+        async close(){ ch.port1.postMessage({ type:'end' }); ch.port1.close(); }
+      };
+    }catch(e){ log('[Download] 注册/使用同源 SW 失败: '+e.message); }
+  }
+  // Fallback: StreamSaver or File System Access/Blob
+  if (window.streamSaver && typeof window.streamSaver.createWriteStream === 'function'){
+    try{
+      const fileStream = window.streamSaver.createWriteStream(filename, { size: expectedSize });
+      const writer = fileStream.getWriter();
+      log(`[Download] 使用 StreamSaver 原生下载，size=${expectedSize ?? '未知'}`);
+      return { async write(u8){ await writer.write(u8); }, async close(){ await writer.close(); } };
+    }catch(e){ log('[Download] StreamSaver 失败，回退: '+e.message); }
+  }
+  log('[Download] 回退到 File System Access/Blob');
+  return withFileWriter(filename);
+}
+
 async function autoPrefillKeys(){
   try{
     const base = location.origin;
@@ -150,22 +355,56 @@ window.addEventListener('DOMContentLoaded', autoPrefillKeys);
 log('页面已加载，origin='+ location.origin);
 
 streamSaveBtn.addEventListener('click', async ()=>{
-  outputBuffers = [];
+  previewCaptured = false; previewBuf = new Uint8Array(0);
   const url = fileUrlInput.value.trim();
   const priv = privKeyInput.value.trim();
   if(!url || !priv){log('请填写 URL 和 私钥');return;}
   log('开始获取加密文件流...');
   try{
-  const resp = await fetch(url, { cache: 'no-store' });
+    // Inspect to get expected plaintext size for native download progress
+    const meta = await inspectSealed(url);
+    const expectedPlainBytes = meta.contentSize || undefined;
+    if(expectedPlainBytes){
+      log(`明文总大小(估算)=${expectedPlainBytes} 字节`);
+    } else {
+      log('未能获取明文总大小：以未知大小模式开始下载，浏览器下载栏进度可能不精确');
+    }
+    // 单段 Range 模式默认更少请求，性能更好
+    const resp = await prepareSealedResponse(url, { log, chunked: false });
     if(!resp.ok) throw new Error('HTTP 状态: '+resp.status);
     log('已连接，开始解密并写入文件...');
-    const writer = await withFileWriter('unsealed.bin');
+    // Use StreamSaver to show native download progress when available
+  const writer = await withNativeDownloadWriter('unsealed.bin', expectedPlainBytes);
+    // 增量哈希器，用于边解密边计算 SHA-256
+    const h = sha256.create();
+    // 写入批量缓冲，减少 write() 次数
+    const BATCH_SIZE = 512 * 1024; // 512KB
+    let batch = new Uint8Array(BATCH_SIZE);
+    let batchLen = 0;
     await unsealStream(resp, {
       privateKeyHex: priv,
       onChunk: async (plain)=>{
-        outputBuffers.push(plain);
-        try{ log(`收到明文块: ${plain?.length||0} 字节`); }catch(e){}
-        await writer.write(plain);
+        const len = plain?.length||0;
+        if(len===0) return;
+        // 记录预览（最多前256字节）
+        if(!previewCaptured){
+          const need = Math.min(256, len);
+          previewBuf = plain.slice(0, need);
+          previewCaptured = true;
+        }
+        // 增量哈希
+        h.update(plain);
+        // 批量写入
+        let off = 0;
+        while(off < len){
+          const can = Math.min(BATCH_SIZE - batchLen, len - off);
+          batch.set(plain.subarray(off, off+can), batchLen);
+          batchLen += can; off += can;
+          if(batchLen === BATCH_SIZE){
+            await writer.write(batch);
+            batchLen = 0;
+          }
+        }
       },
       progressHandler: (total, processed, readBytes, writeBytes)=>{
         totalItemsSpan.textContent = total;
@@ -174,18 +413,20 @@ streamSaveBtn.addEventListener('click', async ()=>{
         writeBytesSpan.textContent = writeBytes;
       }
     });
-    // 统计总明文字节
-    const totalLen = outputBuffers.reduce((acc,b)=> acc + (b?.length||0),0);
-    log(`解密结束并写入完成，总输出块: ${outputBuffers.length}，总明文字节: ${totalLen}`);
-    if(totalLen > 0){
+    // flush 剩余批次
+    if(batchLen > 0){ await writer.write(batch.subarray(0, batchLen)); }
+    // 输出预览
+    if(previewCaptured){
       try{
-        const merged = new Uint8Array(totalLen);
-        let o=0; for(const b of outputBuffers){ merged.set(b, o); o+=b.length; }
-        const preview = new TextDecoder().decode(merged.slice(0, 256));
+        const preview = new TextDecoder().decode(previewBuf);
         log('明文预览(前256字节 as UTF-8):');
         log(preview.replace(/\n/g,'\\n'));
-      }catch(e){ /* ignore preview errors */ }
+      }catch(e){ /* ignore */ }
     }
+    // 完成哈希
+    const decHash = bytesToHex(h.digest());
+    decFileHashSpan.textContent = decHash;
+    log('边解密边保存完成，解密文件哈希: ' + decHash);
     await writer.close();
   }catch(e){
     log('解密失败: '+e.message);
@@ -199,11 +440,18 @@ genAndRunBtn.addEventListener('click', async ()=>{
   const size = Number(sizeSel.value || (1024*1024*1024));
   const r = await fetch(`${base}/api/gen?size=${size}`);
     const j = await r.json();
-    if(!j.ok){ throw new Error(j.message || '生成失败'); }
-    // 预填并立即解密
+    if(!j.ok){ throw new Error(j.message || '生成失败'); }else{
+      log('生成成功');
+    }
+    // 预填但不解密
     privKeyInput.value = j.keys.private_key;
     fileUrlInput.value = j.files.stream;
-    await (async ()=>{ streamSaveBtn.click(); })();
+    if(j.plain_sha256){
+      plainHashSpan.textContent = j.plain_sha256;
+      log('原始明文哈希: '+ j.plain_sha256);
+    }
+    log('预填成功，点击‘边解密边保存’');
+    //await (async ()=>{ log('call streamSaveBtn.click()'); streamSaveBtn.click(); })();
   }catch(e){
     log('生成或预填失败: '+e.message);
   } finally {
@@ -214,39 +462,34 @@ verifyBtn.addEventListener('click', async ()=>{
   try{
     const size = Number(sizeSel.value || 0);
     if(!size){ log('请选择或输入正确的大小'); return; }
-    // 下载原始明文（按固定生成逻辑）
+    // 下载原始明文（按固定生成逻辑），流式计算哈希
     const base = location.origin;
     const plainResp = await fetch(`${base}/api/plain?size=${size}`, {cache:'no-store'});
-    if(!plainResp.ok) throw new Error('下载原始明文失败: '+plainResp.status);
-    const plainBuf = new Uint8Array(await plainResp.arrayBuffer());
-    log(`原始明文已获取：${plainBuf.length} 字节`);
+    const { hex: plainHex, bytes: plainBytes } = await streamHashResponse(plainResp);
+    plainHashSpan.textContent = plainHex;
+    log(`原始明文流式哈希完成：${plainBytes} 字节，SHA-256=${plainHex}`);
 
-    // 读取刚才保存的解密文件：优先使用 showOpenFilePicker，用户取消后降级到隐藏 file input
-    let decBuf = null;
+    // 读取解密文件并流式哈希：优先使用 showOpenFilePicker，用户取消后降级到隐藏 file input
+    let file = null;
     try{
       if(window.showOpenFilePicker){
         const [h] = await window.showOpenFilePicker({ types:[{description:'Binary', accept:{'application/octet-stream':['.bin']}}] });
-        const f = await h.getFile();
-        decBuf = new Uint8Array(await f.arrayBuffer());
+        file = await h.getFile();
       }
     }catch(e){
-      // user aborted native picker or not allowed; fallback to hidden file input
       log('本地打开被取消或不支持，使用页面文件选择作为后备');
-      decBuf = await new Promise((resolve, reject)=>{
-        hiddenFileInput.onchange = async ()=>{
-          try{ const f = hiddenFileInput.files[0]; if(!f) return reject(new Error('未选择文件')); const arr = new Uint8Array(await f.arrayBuffer()); resolve(arr); }catch(err){ reject(err); }
-        };
+    }
+    if(!file){
+      await new Promise((resolve,reject)=>{
+        hiddenFileInput.onchange = ()=>{ if(hiddenFileInput.files[0]){ file = hiddenFileInput.files[0]; resolve(); } else reject(new Error('未选择文件')); };
         hiddenFileInput.click();
       });
     }
-    if(!decBuf){ log('未能获取解密文件进行比对'); return; }
-    log(`解密文件已选择：${decBuf.length} 字节，开始比对...`);
-    const equal = (a,b)=>{
-      if(a.length!==b.length) return false;
-      for(let i=0;i<a.length;i++){ if(a[i]!==b[i]) return false; }
-      return true;
-    };
-    const ok = equal(plainBuf, decBuf);
+    if(!file){ log('未能获取解密文件进行比对'); return; }
+    const decHex = await streamHashFile(file);
+    decFileHashSpan.textContent = decHex;
+    log(`解密文件流式哈希完成：${(file.size/1024/1024).toFixed(1)} MB，SHA-256=${decHex}`);
+    const ok = (plainHex === decHex);
     log(ok ? '比对一致 ✅' : '比对不一致 ❌');
   }catch(e){
     log('检查失败: '+e.message);

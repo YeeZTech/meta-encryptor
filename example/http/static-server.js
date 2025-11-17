@@ -6,6 +6,7 @@ import { createRequire } from 'module';
 import ByteBufferPkg from 'bytebuffer';
 import { pipeline } from 'stream';
 import { promisify } from 'util';
+import crypto from 'crypto';
 const pipe = promisify(pipeline);
 
 // Serve the repository root so that /example/browser/index.html can import ../../src/browser/*.js
@@ -44,7 +45,7 @@ const server = http.createServer(async (req, res)=>{
       }
       const require = createRequire(import.meta.url);
       const built = require(builtPath);
-      const { DataProvider, YPCCrypto } = built;
+  const { Sealer, Unsealer, YPCCrypto } = built;
 
       const ByteBuffer = ByteBufferPkg.default || ByteBufferPkg; const LITTLE_ENDIAN = ByteBuffer.LITTLE_ENDIAN;
       const HeaderSize = 64; const BlockInfoSize = 32;
@@ -62,28 +63,27 @@ const server = http.createServer(async (req, res)=>{
   const targetBytes = Math.max(1, Number(sizeParam || (1024*1024)));
 
       // stream-seal to sealed_full.bin to avoid memory blow
-      const dp = new DataProvider(keyPair);
       const ws = fs.createWriteStream(sealedPath);
-      const writer = { write: (buf)=> new Promise((resolve)=>{ if(!ws.write(buf)) ws.once('drain', resolve); else resolve(); }) };
-
-      // Generate ~targetBytes of plaintext by repeating pattern
-  // Larger unit to speed up generation; use same pattern for /api/plain to ensure exact equality
-  const baseLine = 'The quick brown fox jumps over the lazy dog. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n';
-  const unit = baseLine.repeat(1024);
-  const unitByteLen = Buffer.byteLength(unit, 'utf8');
+      const baseLine = 'The quick brown fox jumps over the lazy dog. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n';
+      const unit = baseLine.repeat(1024); // ~ 1024 lines chunk base
+      const unitBuf = Buffer.from(unit, 'utf8');
+  const sealer = new Sealer({ keyPair });
+  const plainHash = crypto.createHash('sha256');
+      sealer.on('error', (e)=> console.error('[gen][sealer] error', e));
+      sealer.pipe(ws);
       let generated = 0;
       while(generated < targetBytes){
         const remain = targetBytes - generated;
-        const chunkStr = remain >= unitByteLen ? unit : unit.slice(0, remain);
-        dp.sealData(chunkStr, writer, false);
-        generated += Buffer.byteLength(chunkStr, 'utf8');
-        if(generated % (unitByteLen * 64) === 0){
+  const chunk = remain >= unitBuf.length ? unitBuf : unitBuf.subarray(0, remain);
+  plainHash.update(chunk);
+        sealer.write(chunk);
+        generated += chunk.length;
+        if(generated % (unitBuf.length * 64) === 0){
           await new Promise(r=>setImmediate(r));
         }
       }
-      // flush and finalize header/meta
-      dp.sealData(null, writer, true);
-      await new Promise((resolve)=> ws.end(resolve));
+      sealer.end();
+      await new Promise((resolve)=> ws.on('finish', resolve));
 
       // Read header/footer to build stream.bin as [header][content]
   const stats = fs.statSync(sealedPath);
@@ -118,7 +118,8 @@ const server = http.createServer(async (req, res)=>{
           stream: `${base}/example/browser/stream.bin`,
           keys: `${base}/example/browser/keys.json`
         },
-        size: { requestedBytes: targetBytes, sealedBytes: stats.size, contentBytes: contentSize }
+        size: { requestedBytes: targetBytes, sealedBytes: stats.size, contentBytes: contentSize },
+        plain_sha256: plainHash.digest('hex')
       };
       return send(res, 200, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify(data));
     }catch(e){
@@ -151,6 +152,31 @@ const server = http.createServer(async (req, res)=>{
       return;
     }catch(e){
       return send(res, 500, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({ok:false, error:'plain_failed', message: e.message}));
+    }
+  }
+  // API: unseal previously generated sealed_full.bin via Unsealer and stream plaintext
+  if(req.method === 'GET' && pathname === '/api/unseal'){
+    try{
+      const outDir = path.join(ROOT, 'example', 'browser');
+      const sealedPath = path.join(outDir, 'sealed_full.bin');
+      const keyPath = path.join(outDir, 'keys.json');
+      if(!fs.existsSync(sealedPath) || !fs.existsSync(keyPath)){
+        return send(res, 400, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({ok:false, error:'missing_files', message:'sealed_full.bin 或 keys.json 不存在, 请先调用 /api/gen'}));
+      }
+      const require = createRequire(import.meta.url);
+      const builtPath = path.join(ROOT, 'build', 'commonjs', 'index.cjs');
+      const built = require(builtPath);
+      const { Unsealer, SealedFileStream } = built;
+      const keyPair = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
+      res.writeHead(200, {'Content-Type':'application/octet-stream','Cache-Control':'no-store','Access-Control-Allow-Origin':'*'});
+      const sealedStream = new SealedFileStream(sealedPath);
+      const unsealer = new Unsealer({ keyPair, progressHandler: (total, processed)=>{ if(processed === total){ console.log('[unseal] 完成 total='+total); } }});
+      unsealer.on('error', (e)=>{ console.error('[unseal] error', e); try{ res.write(JSON.stringify({ok:false,error:e.message})); }catch(_){} res.end(); sealedStream.destroy(); });
+      sealedStream.on('error', (e)=>{ console.error('[sealedStream] error', e); unsealer.destroy(e); });
+      sealedStream.pipe(unsealer).pipe(res);
+      return;
+    }catch(e){
+      return send(res, 500, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({ok:false, error:'unseal_failed', message:e.message}));
     }
   }
   // API: clean generated files
