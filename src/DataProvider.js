@@ -50,6 +50,10 @@ const DataProvider = function(_key) {
 
 DataProvider.prototype.write_batch = function(batch, public_key, writable_stream) {
   let pkg_bytes = batch2ntpackage(batch);
+  // Ensure Node Buffer
+  if(!Buffer.isBuffer(pkg_bytes)){
+    pkg_bytes = Buffer.from(pkg_bytes);
+  }
   const ots = YPCCrypto.generatePrivateKey();
   let s = YPCCrypto._encryptMessage(
     Buffer.from(public_key, "hex"),
@@ -64,7 +68,8 @@ DataProvider.prototype.write_batch = function(batch, public_key, writable_stream
   data.writeUint64(s.length, 0);
   data.append(s, 8);
   if (writable_stream !== undefined && writable_stream !== null) {
-    writable_stream.write(data.toBuffer());
+    const out = data.toBuffer();
+    writable_stream.write(Buffer.isBuffer(out) ? out : Buffer.from(out));
   }
 }
 
@@ -73,8 +78,11 @@ DataProvider.prototype.sealData = function(input,
   is_end = false) {
   let ntInput = null;
   input && (ntInput = toNtInput(input));
-  ntInput && this.sealBatch.push(ntInput);
-  ntInput && (this.sealBatchSize += ntInput.length);
+  if(ntInput){
+    const bufNt = Buffer.isBuffer(ntInput) ? ntInput : Buffer.from(ntInput);
+    this.sealBatch.push(bufNt);
+    this.sealBatchSize += bufNt.length;
+  }
 
   if (this.sealBatchSize >= MaxItemSize || (is_end && this.sealBatchSize > 0)) {
     this.write_batch(this.sealBatch, this.key_pair["public_key"], writable_stream);
@@ -83,7 +91,8 @@ DataProvider.prototype.sealData = function(input,
   }
 
   if (ntInput) {
-    let k = Buffer.concat([Buffer.from(this.data_hash), ntInput]);
+    const rawNt = Buffer.isBuffer(ntInput) ? ntInput : Buffer.from(ntInput);
+    let k = Buffer.concat([Buffer.from(this.data_hash), rawNt]);
     this.data_hash = keccak256(k);
   }
 
@@ -124,9 +133,11 @@ DataProvider.prototype.setHeaderAndMeta = function() {
   };
   buf_header.reset();
   fileMeta.reset();
+  const headerInfo = buf_header.toBuffer();
+  const blockInfo = fileMeta.toBuffer();
   return {
-    headerInfo: buf_header.toBuffer(),
-    blockInfo: fileMeta.toBuffer(),
+    headerInfo: Buffer.isBuffer(headerInfo) ? headerInfo : Buffer.from(headerInfo),
+    blockInfo: Buffer.isBuffer(blockInfo) ? blockInfo : Buffer.from(blockInfo),
     meta,
   };
 };

@@ -19,8 +19,7 @@
       "keccak256": "https://esm.sh/keccak256@1.0.6?target=es2020",
       "aes-js": "https://esm.sh/aes-js@3.1.2?target=es2020",
       "@noble/secp256k1": "https://esm.sh/@noble/secp256k1@2.1.0?target=es2020",
-      "@noble/hashes/sha256": "https://esm.sh/@noble/hashes@1.4.0/sha256?target=es2020",
-      "@noble/hashes/utils": "https://esm.sh/@noble/hashes@1.4.0/utils?target=es2020"
+      "spark-md5": "https://esm.sh/spark-md5@3.0.2?target=es2020"
     }
   }
   </script>
@@ -69,8 +68,8 @@
 
 <fieldset>
   <legend>哈希</legend>
-  <div>原始明文 SHA-256: <span id="plainHash">未生成</span></div>
-  <div>解密文件 SHA-256: <span id="decFileHash">未计算</span></div>
+  <div>原始明文 MD5: <span id="plainHash">未生成</span></div>
+  <div>解密文件 MD5: <span id="decFileHash">未计算</span></div>
 </fieldset>
 
 <h3>日志</h3>
@@ -86,8 +85,7 @@ if (!window.Buffer) {
 // Load Unsealer and HTTP tail-header transform
 const { unsealStream } = await import('../../src/browser/UnsealerBrowser.js');
 const { prepareSealedResponse } = await import('../../src/browser/SealedHttpTailHeaderTransform.js');
-const { sha256 } = await import('@noble/hashes/sha256');
-const { bytesToHex } = await import('@noble/hashes/utils');
+import SparkMD5 from 'spark-md5';
 
 // Optionally configure StreamSaver (kept for fallback)
 if (window.streamSaver) {
@@ -141,42 +139,50 @@ chooseFileBtn.addEventListener('click', async ()=>{
       });
     }
     if(!file) throw new Error('未获取到文件');
-    // 流式计算哈希，避免将整文件载入内存
+    // 流式计算 MD5，避免将整文件载入内存
     const h = await streamHashFile(file);
     decFileHashSpan.textContent = h;
-    log(`解密文件哈希: ${h} (${(file.size/1024/1024).toFixed(1)} MB)`);
+    log(`解密文件 MD5: ${h} (${(file.size/1024/1024).toFixed(1)} MB)`);
     const baseHash = plainHashSpan.textContent;
-    if(baseHash && baseHash.length===64){
+    if(baseHash && baseHash.length===32){
       log(h===baseHash ? '哈希比对一致 ✅' : '哈希比对不一致 ❌');
     }
   }catch(e){
     decFileHashSpan.textContent = '失败';
-    log('计算解密文件哈希失败: '+e.message);
+    log('计算解密文件 MD5 失败: '+e.message);
   }
 });
 async function streamHashFile(file){
   const reader = file.stream().getReader();
-  const h = sha256.create();
+  const h = new SparkMD5.ArrayBuffer();
   let total = 0;
   for(;;){
     const { value, done } = await reader.read();
     if(done) break;
-    if(value && value.length){ h.update(value); total += value.length; }
+    if(value && value.length){
+      const ab = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      h.append(ab);
+      total += value.length;
+    }
   }
-  return bytesToHex(h.digest());
+  return h.end();
 }
 async function streamHashResponse(resp){
   if(!resp.ok) throw new Error('HTTP 状态: '+resp.status);
   if(!resp.body) throw new Error('响应无 body');
   const reader = resp.body.getReader();
-  const h = sha256.create();
+  const h = new SparkMD5.ArrayBuffer();
   let total = 0;
   for(;;){
     const { value, done } = await reader.read();
     if(done) break;
-    if(value && value.length){ h.update(value); total += value.length; }
+    if(value && value.length){
+      const ab = value.buffer.slice(value.byteOffset, value.byteOffset + value.byteLength);
+      h.append(ab);
+      total += value.length;
+    }
   }
-  return { hex: bytesToHex(h.digest()), bytes: total };
+  return { hex: h.end(), bytes: total };
 }
 
 async function withFileWriter(defaultName='unsealed.bin'){ 
@@ -375,8 +381,8 @@ streamSaveBtn.addEventListener('click', async ()=>{
     log('已连接，开始解密并写入文件...');
     // Use StreamSaver to show native download progress when available
   const writer = await withNativeDownloadWriter('unsealed.bin', expectedPlainBytes);
-    // 增量哈希器，用于边解密边计算 SHA-256
-    const h = sha256.create();
+  // 增量哈希器，用于边解密边计算 MD5
+  const h = new SparkMD5.ArrayBuffer();
     // 写入批量缓冲，减少 write() 次数
     const BATCH_SIZE = 512 * 1024; // 512KB
     let batch = new Uint8Array(BATCH_SIZE);
@@ -392,8 +398,9 @@ streamSaveBtn.addEventListener('click', async ()=>{
           previewBuf = plain.slice(0, need);
           previewCaptured = true;
         }
-        // 增量哈希
-        h.update(plain);
+  // 增量哈希（MD5）
+  const ab = plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength);
+  h.append(ab);
         // 批量写入
         let off = 0;
         while(off < len){
@@ -424,9 +431,13 @@ streamSaveBtn.addEventListener('click', async ()=>{
       }catch(e){ /* ignore */ }
     }
     // 完成哈希
-    const decHash = bytesToHex(h.digest());
+    const decHash = h.end();
     decFileHashSpan.textContent = decHash;
-    log('边解密边保存完成，解密文件哈希: ' + decHash);
+    log('边解密边保存完成，解密文件 MD5: ' + decHash);
+    const baseHash = plainHashSpan.textContent;
+    if(baseHash && baseHash.length===32){
+      log(decHash===baseHash ? '哈希比对一致 ✅' : '哈希比对不一致 ❌');
+    }
     await writer.close();
   }catch(e){
     log('解密失败: '+e.message);
@@ -448,7 +459,7 @@ genAndRunBtn.addEventListener('click', async ()=>{
     fileUrlInput.value = j.files.stream;
     if(j.plain_sha256){
       plainHashSpan.textContent = j.plain_sha256;
-      log('原始明文哈希: '+ j.plain_sha256);
+      log('原始明文 MD5: '+ j.plain_sha256);
     }
     log('预填成功，点击‘边解密边保存’');
     //await (async ()=>{ log('call streamSaveBtn.click()'); streamSaveBtn.click(); })();
@@ -460,16 +471,12 @@ genAndRunBtn.addEventListener('click', async ()=>{
 });
 verifyBtn.addEventListener('click', async ()=>{
   try{
-    const size = Number(sizeSel.value || 0);
-    if(!size){ log('请选择或输入正确的大小'); return; }
-    // 下载原始明文（按固定生成逻辑），流式计算哈希
-    const base = location.origin;
-    const plainResp = await fetch(`${base}/api/plain?size=${size}`, {cache:'no-store'});
-    const { hex: plainHex, bytes: plainBytes } = await streamHashResponse(plainResp);
-    plainHashSpan.textContent = plainHex;
-    log(`原始明文流式哈希完成：${plainBytes} 字节，SHA-256=${plainHex}`);
-
-    // 读取解密文件并流式哈希：优先使用 showOpenFilePicker，用户取消后降级到隐藏 file input
+    const serverMd5 = (plainHashSpan.textContent || '').trim();
+    if(!serverMd5 || serverMd5.length !== 32){
+      log('未获取到服务端 MD5，请先点击“一键生成加密文件”');
+      return;
+    }
+    // 读取解密文件并流式计算 MD5：优先使用 showOpenFilePicker，用户取消后降级到隐藏 file input
     let file = null;
     try{
       if(window.showOpenFilePicker){
@@ -488,8 +495,8 @@ verifyBtn.addEventListener('click', async ()=>{
     if(!file){ log('未能获取解密文件进行比对'); return; }
     const decHex = await streamHashFile(file);
     decFileHashSpan.textContent = decHex;
-    log(`解密文件流式哈希完成：${(file.size/1024/1024).toFixed(1)} MB，SHA-256=${decHex}`);
-    const ok = (plainHex === decHex);
+    log(`解密文件流式 MD5 完成：${(file.size/1024/1024).toFixed(1)} MB，MD5=${decHex}`);
+    const ok = (serverMd5 === decHex);
     log(ok ? '比对一致 ✅' : '比对不一致 ❌');
   }catch(e){
     log('检查失败: '+e.message);

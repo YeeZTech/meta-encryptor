@@ -17,6 +17,47 @@ function send(res, code, headers, body){
   res.writeHead(code, headers); res.end(body);
 }
 
+
+function generateFileWithSize(fp, size){
+  let b = Buffer.alloc(1024 * 64);
+  for(let i = 0; i < 1024 * 64; i++){
+    b[i] = i%256
+  }
+
+  for (let i = 0; i < size/(1024 * 64); i++) {
+    fs.writeFileSync(fp,
+      b,
+      {
+        flag: "a+",
+        mode: 0o666
+      });
+  }
+
+  //log.info("done generate file")
+}
+
+
+function calculateMD5(filePath) {
+    return new Promise((resolve, reject) => {
+        const stream = fs.createReadStream(filePath);
+        const hash = crypto.createHash('md5');
+
+        stream.on('data', chunk => {
+            hash.update(chunk, 'utf8');
+        });
+
+        stream.on('error', err => {
+            reject(err);
+        });
+
+        stream.on('end', () => {
+            const md5 = hash.digest('hex');
+            resolve(md5);
+        });
+    });
+}
+
+
 function mime(file){
   if(file.endsWith('.html')) return 'text/html; charset=utf-8';
   if(file.endsWith('.js')) return 'text/javascript; charset=utf-8';
@@ -53,8 +94,9 @@ const server = http.createServer(async (req, res)=>{
       const pk = YPCCrypto.generatePublicKeyFromPrivateKey(sk);
       const keyPair = { private_key: sk.toString('hex'), public_key: pk.toString('hex') };
       if(!fs.existsSync(outDir)) fs.mkdirSync(outDir, {recursive:true});
-      const sealedPath = path.join(outDir, 'sealed_full.bin');
-      const streamPath = path.join(outDir, 'stream.bin');
+  const sealedPath = path.join(outDir, 'sealed_full.bin');
+  const streamPath = path.join(outDir, 'stream.bin');
+  const plainPath = path.join(outDir, 'plain.bin');
       const keyPath = path.join(outDir, 'keys.json');
 
   // parse size param (bytes); default 1 MiB
@@ -62,30 +104,20 @@ const server = http.createServer(async (req, res)=>{
   const sizeParam = query.get('size');
   const targetBytes = Math.max(1, Number(sizeParam || (1024*1024)));
 
+  // 1) 先生成原始明文到 plain.bin
+  generateFileWithSize(plainPath, targetBytes);
+  // 2) 将明文流 seal 到 sealed_full.bin
+  let rs = fs.createReadStream(plainPath);
+  
+
       // stream-seal to sealed_full.bin to avoid memory blow
       const ws = fs.createWriteStream(sealedPath);
-      const baseLine = 'The quick brown fox jumps over the lazy dog. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n';
-      const unit = baseLine.repeat(1024); // ~ 1024 lines chunk base
-      const unitBuf = Buffer.from(unit, 'utf8');
-  const sealer = new Sealer({ keyPair });
-  const plainHash = crypto.createHash('sha256');
-      sealer.on('error', (e)=> console.error('[gen][sealer] error', e));
-      sealer.pipe(ws);
-      let generated = 0;
-      while(generated < targetBytes){
-        const remain = targetBytes - generated;
-  const chunk = remain >= unitBuf.length ? unitBuf : unitBuf.subarray(0, remain);
-  plainHash.update(chunk);
-        sealer.write(chunk);
-        generated += chunk.length;
-        if(generated % (unitBuf.length * 64) === 0){
-          await new Promise(r=>setImmediate(r));
-        }
-      }
-      sealer.end();
+
+      rs.pipe(new Sealer({keyPair: keyPair})).pipe(ws);
+      
       await new Promise((resolve)=> ws.on('finish', resolve));
 
-      // Read header/footer to build stream.bin as [header][content]
+  // Read header/footer to build stream.bin as [header][content]
   const stats = fs.statSync(sealedPath);
   console.log('[gen] sealed_full.bin size', stats.size, 'requested', targetBytes);
       if(stats.size <= HeaderSize) throw new Error('invalid sealed file size');
@@ -116,13 +148,16 @@ const server = http.createServer(async (req, res)=>{
         files: {
           sealed_full: `${base}/example/browser/sealed_full.bin`,
           stream: `${base}/example/browser/stream.bin`,
-          keys: `${base}/example/browser/keys.json`
+          keys: `${base}/example/browser/keys.json`,
+          plain: `${base}/example/browser/plain.bin`
         },
         size: { requestedBytes: targetBytes, sealedBytes: stats.size, contentBytes: contentSize },
-        plain_sha256: plainHash.digest('hex')
+        // 返回明文 MD5（字段名保持向后兼容）
+        plain_sha256: await calculateMD5(plainPath)
       };
       return send(res, 200, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify(data));
     }catch(e){
+      console.log(e);
       return send(res, 500, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({error:'gen_failed', message: e.message}));
     }
   }
@@ -182,7 +217,7 @@ const server = http.createServer(async (req, res)=>{
   // API: clean generated files
   if(req.method === 'POST' && pathname === '/api/clean'){
     const outDir = path.join(ROOT, 'example', 'browser');
-    const files = ['sealed_full.bin','stream.bin','keys.json'];
+    const files = ['sealed_full.bin','stream.bin','keys.json','plain.bin'];
     const removed = [];
     for(const f of files){
       const p = path.join(outDir, f);

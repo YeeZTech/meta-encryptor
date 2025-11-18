@@ -74,7 +74,8 @@ export class Sealer extends Transform {
     if (this.accumulatedBuffer.length >= this.threshold) {
       let rs = new streams.WritableStream()
       this.DP.sealData(this.accumulatedBuffer, rs, false);
-      this.push(rs.toBuffer());
+      const out = rs.toBuffer();
+      this.push(Buffer.isBuffer(out) ? out : Buffer.from(out));
       this.accumulatedBuffer = Buffer.alloc(0);
     }
     callback();
@@ -86,7 +87,8 @@ export class Sealer extends Transform {
       this.DP.sealData(this.accumulatedBuffer, rs, false);
     }
     let ret = this.DP.sealData(null, rs, true);
-    this.push(rs.toBuffer());
+    const out = rs.toBuffer();
+    this.push(Buffer.isBuffer(out) ? out : Buffer.from(out));
     this.accumulatedBuffer = Buffer.alloc(0);
     callback();
   }
