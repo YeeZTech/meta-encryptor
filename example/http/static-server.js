@@ -95,7 +95,6 @@ const server = http.createServer(async (req, res)=>{
       const keyPair = { private_key: sk.toString('hex'), public_key: pk.toString('hex') };
       if(!fs.existsSync(outDir)) fs.mkdirSync(outDir, {recursive:true});
   const sealedPath = path.join(outDir, 'sealed_full.bin');
-  const streamPath = path.join(outDir, 'stream.bin');
   const plainPath = path.join(outDir, 'plain.bin');
       const keyPath = path.join(outDir, 'keys.json');
 
@@ -104,6 +103,9 @@ const server = http.createServer(async (req, res)=>{
   const sizeParam = query.get('size');
   const targetBytes = Math.max(1, Number(sizeParam || (1024*1024)));
 
+  console.log("size: ", targetBytes)
+  try{fs.unlinkSync(sealedPath)}catch(e){console.log(e)}
+  try{fs.unlinkSync(plainPath)}catch(e){console.log(e)}
   // 1) 先生成原始明文到 plain.bin
   generateFileWithSize(plainPath, targetBytes);
   // 2) 将明文流 seal 到 sealed_full.bin
@@ -118,26 +120,9 @@ const server = http.createServer(async (req, res)=>{
       await new Promise((resolve)=> ws.on('finish', resolve));
 
   // Read header/footer to build stream.bin as [header][content]
+  const plain_stats = fs.statSync(plainPath);
   const stats = fs.statSync(sealedPath);
-  console.log('[gen] sealed_full.bin size', stats.size, 'requested', targetBytes);
-      if(stats.size <= HeaderSize) throw new Error('invalid sealed file size');
-      const headerBuf = Buffer.alloc(HeaderSize);
-      const fd = fs.openSync(sealedPath, 'r');
-      try{
-        fs.readSync(fd, headerBuf, 0, HeaderSize, stats.size - HeaderSize);
-      } finally { fs.closeSync(fd); }
-      const bb = ByteBuffer.wrap(headerBuf, LITTLE_ENDIAN);
-      const block_number = bb.readUint64(16).toNumber();
-      const contentSize = stats.size - HeaderSize - BlockInfoSize * block_number;
-      if(contentSize <= 0) throw new Error('computed contentSize <= 0');
-
-      // stream build stream.bin without loading all data
-      const ws2 = fs.createWriteStream(streamPath);
-      await new Promise((resolve, reject)=>{
-        ws2.write(headerBuf, (err)=>{ if(err) reject(err); else resolve(); });
-      });
-      const rsContent = fs.createReadStream(sealedPath, { start: 0, end: contentSize - 1 });
-      await pipe(rsContent, ws2);
+  console.log('[gen] sealed_full.bin size', stats.size, 'requested', targetBytes, 'generated size: ', plain_stats.size);
 
       fs.writeFileSync(keyPath, JSON.stringify(keyPair, null, 2));
 
@@ -147,11 +132,10 @@ const server = http.createServer(async (req, res)=>{
         keys: keyPair,
         files: {
           sealed_full: `${base}/example/browser/sealed_full.bin`,
-          stream: `${base}/example/browser/stream.bin`,
           keys: `${base}/example/browser/keys.json`,
           plain: `${base}/example/browser/plain.bin`
         },
-        size: { requestedBytes: targetBytes, sealedBytes: stats.size, contentBytes: contentSize },
+        size: { requestedBytes: targetBytes, sealedBytes: stats.size, contentBytes: plain_stats.size },
         // 返回明文 MD5（字段名保持向后兼容）
         plain_sha256: await calculateMD5(plainPath)
       };
@@ -217,7 +201,7 @@ const server = http.createServer(async (req, res)=>{
   // API: clean generated files
   if(req.method === 'POST' && pathname === '/api/clean'){
     const outDir = path.join(ROOT, 'example', 'browser');
-    const files = ['sealed_full.bin','stream.bin','keys.json','plain.bin'];
+    const files = ['sealed_full.bin','keys.json','plain.bin'];
     const removed = [];
     for(const f of files){
       const p = path.join(outDir, f);
@@ -236,15 +220,45 @@ const server = http.createServer(async (req, res)=>{
     if(stat.isDirectory()){
       const idx = path.join(filePath, 'index.html');
       if(fs.existsSync(idx)){
-        const stream = fs.createReadStream(idx);
-        res.writeHead(200, {...cors, 'Content-Type': mime(idx)});
-        return stream.pipe(res);
+        const size = fs.statSync(idx).size;
+        if(req.method === 'HEAD'){
+          res.writeHead(200, {...cors, 'Content-Type': mime(idx), 'Content-Length': size, 'Accept-Ranges':'bytes'});
+          return res.end();
+        }
+        if(req.headers.range){
+          const range = req.headers.range;
+          const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+          if(!m){ return send(res, 416, {...cors}, 'Bad Range'); }
+          let start = m[1] ? Number(m[1]) : 0;
+          let end = m[2] ? Number(m[2]) : (size - 1);
+          if(!(start <= end && end < size)) return send(res, 416, {...cors}, 'Bad Range');
+          const chunkSize = end - start + 1;
+          res.writeHead(206, {...cors, 'Content-Type': mime(idx), 'Content-Length': chunkSize, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Accept-Ranges':'bytes'});
+          return fs.createReadStream(idx, { start, end }).pipe(res);
+        }
+        res.writeHead(200, {...cors, 'Content-Type': mime(idx), 'Content-Length': size, 'Accept-Ranges':'bytes'});
+        return fs.createReadStream(idx).pipe(res);
       }
       return send(res, 403, {...cors}, 'Forbidden');
     }
-    const stream = fs.createReadStream(filePath);
-    res.writeHead(200, {...cors, 'Content-Type': mime(filePath)});
-    stream.pipe(res);
+    const size = stat.size;
+    if(req.method === 'HEAD'){
+      res.writeHead(200, {...cors, 'Content-Type': mime(filePath), 'Content-Length': size, 'Accept-Ranges':'bytes'});
+      return res.end();
+    }
+    if(req.headers.range){
+      const range = req.headers.range;
+      const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+      if(!m){ return send(res, 416, {...cors}, 'Bad Range'); }
+      let start = m[1] ? Number(m[1]) : 0;
+      let end = m[2] ? Number(m[2]) : (size - 1);
+      if(!(start <= end && end < size)) return send(res, 416, {...cors}, 'Bad Range');
+      const chunkSize = end - start + 1;
+      res.writeHead(206, {...cors, 'Content-Type': mime(filePath), 'Content-Length': chunkSize, 'Content-Range': `bytes ${start}-${end}/${size}`, 'Accept-Ranges':'bytes'});
+      return fs.createReadStream(filePath, { start, end }).pipe(res);
+    }
+    res.writeHead(200, {...cors, 'Content-Type': mime(filePath), 'Content-Length': size, 'Accept-Ranges':'bytes'});
+    fs.createReadStream(filePath).pipe(res);
   });
 });
 

@@ -28,7 +28,7 @@
 </head>
 <body>
 <h1>在浏览器中使用 Unsealer 解密流</h1>
-<p>你可以一键生成样本（自动生成 stream.bin 与 keys.json 并预填私钥），或者手动填写 URL 和私钥进行解密。</p>
+<p>你可以一键生成样本（自动生成 sealed_full.bin 与 keys.json 并预填私钥），或者手动填写 URL 和私钥进行解密。</p>
 
 <fieldset>
   <legend>输入</legend>
@@ -350,7 +350,7 @@ async function autoPrefillKeys(){
     if(r.ok){
       const j = await r.json();
       if(j?.private_key){ privKeyInput.value = j.private_key; }
-      if(!fileUrlInput.value){ fileUrlInput.value = `${base}/example/browser/stream.bin`; }
+  if(!fileUrlInput.value){ fileUrlInput.value = `${base}/example/browser/sealed_full.bin`; }
     }
   }catch(e){ /* ignore */ }
 }
@@ -456,7 +456,7 @@ genAndRunBtn.addEventListener('click', async ()=>{
     }
     // 预填但不解密
     privKeyInput.value = j.keys.private_key;
-    fileUrlInput.value = j.files.stream;
+    fileUrlInput.value = j.files.sealed_full;
     if(j.plain_sha256){
       plainHashSpan.textContent = j.plain_sha256;
       log('原始明文 MD5: '+ j.plain_sha256);
@@ -527,7 +527,7 @@ loadKeysBtn.addEventListener('click', async ()=>{
     if(!r.ok) throw new Error('未找到 keys.json');
     const j = await r.json();
     privKeyInput.value = j.private_key || '';
-    if(!fileUrlInput.value){ fileUrlInput.value = `${base}/example/browser/stream.bin`; }
+  if(!fileUrlInput.value){ fileUrlInput.value = `${base}/example/browser/sealed_full.bin`; }
     log('已加载 keys.json 并预填');
   }catch(e){ log('加载 keys.json 失败: '+e.message); }
 });
