@@ -1,12 +1,14 @@
 // Browser implementation of ypccrypto decrypt logic using @noble/secp256k1 and WebCrypto
 // Derivation mimics aes-cmac based scheme from node version using pure JS AES-CMAC.
 import {getPublicKey, getSharedSecret} from '@noble/secp256k1';
-import AES from 'aes-js';
+// 直接从 aes-js 顶层入口导入 ECB 模式（4.x import 指向 ESM lib.esm/index.js）
+// 旧版用的是 AES.ModeOfOperation.ecb，这里在 4.x 中等价于单独导出的 ECB 类
+import { ECB } from 'aes-js';
 
 // aes-cmac implementation (simplified) based on AES-128
 function aesCmac(key, message){
   // Generate subkeys per RFC 4493
-  const aes = new AES.ModeOfOperation.ecb(key);
+  const aes = new ECB(key);
   const blockSize = 16;
   function leftShift(buf){
     const out = new Uint8Array(buf.length);

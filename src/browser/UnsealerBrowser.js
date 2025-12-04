@@ -1,6 +1,36 @@
-import { ntpackage2batch, fromNtInput } from '../header_util.js';
+// 使用浏览器兼容版本的 header_util，避免 bytebuffer 依赖问题
+import { ntpackage2batch, fromNtInput } from './header_util.browser.js';
 import { HeaderSize, MagicNum, CurrentBlockFileVersion } from '../limits.js';
-import BrowserCrypto from './ypccrypto.browser.js';
+// SSR兼容：BrowserCrypto 在不同构建环境下导出方式不同
+import * as BrowserCryptoModule from './ypccrypto.browser.js';
+const BrowserCrypto = BrowserCryptoModule.default || BrowserCryptoModule.BrowserCrypto || BrowserCryptoModule;
+
+// SSR兼容：将 MagicNum 转换为 Uint8Array（避免 Buffer 依赖）
+const MAGIC_NUM_BYTES = (() => {
+  if (MagicNum instanceof Uint8Array) {
+    return MagicNum;
+  }
+  // 如果 MagicNum 是 Buffer 或其他类型，转换为 Uint8Array
+  if (MagicNum && typeof MagicNum === 'object' && 'buffer' in MagicNum) {
+    return new Uint8Array(MagicNum.buffer, MagicNum.byteOffset || 0, MagicNum.byteLength || MagicNum.length);
+  }
+  // 如果 MagicNum 是字符串（hex），手动解析
+  if (typeof MagicNum === 'string') {
+    const hex = MagicNum.replace(/^0x/, '');
+    const arr = new Uint8Array(hex.length / 2);
+    for (let i = 0; i < arr.length; i++) {
+      arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+    }
+    return arr;
+  }
+  // 默认：MagicNum 应该是 "1fe2ef7f3ed18847" 的 hex 表示
+  const hex = '1fe2ef7f3ed18847';
+  const arr = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < arr.length; i++) {
+    arr[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }
+  return arr;
+})();
 
 // Incremental parser working on Uint8Array chunks.
 export class UnsealerBrowser {
@@ -35,9 +65,14 @@ export class UnsealerBrowser {
       throw new Error('Unsupported version: '+version_number);
     }
     const magic = headerBytes.slice(0,8);
-    const magicBuf = Buffer.from(magic);
-    if(!magicBuf.equals(MagicNum)){
+    // SSR兼容：使用纯 Uint8Array 比较，避免 Buffer 依赖
+    if(magic.length !== MAGIC_NUM_BYTES.length){
       throw new Error('Magic number mismatch');
+    }
+    for(let i = 0; i < magic.length; i++){
+      if(magic[i] !== MAGIC_NUM_BYTES[i]){
+        throw new Error('Magic number mismatch');
+      }
     }
     const item_number = readUint64LE(24);
     this.totalItems = item_number;
