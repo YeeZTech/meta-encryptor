@@ -1,7 +1,4 @@
-import * as ByteBufferNS from "bytebuffer";
-
-const ByteBuffer = /** @type {any} */ (ByteBufferNS);
-const LITTLE_ENDIAN = ByteBuffer.LITTLE_ENDIAN;
+import ByteBuffer, { LITTLE_ENDIAN } from "bytebuffer";
 // 32 bytes
 export const header_t = function(magic_number, version_number, block_number, item_number) {
   if (new.target == undefined) {

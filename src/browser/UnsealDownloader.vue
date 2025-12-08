@@ -218,35 +218,48 @@ async function withNativeDownloadWriter(filename, expectedSize) {
   // 方案1: Service Worker（完全按照demo的实现）
   if ('serviceWorker' in navigator) {
     try {
-      // 尝试多个可能的路径
-      // 1. 如果用户将sw-download.js放到public目录（最常见）
-      // 2. 如果构建工具自动复制了（通过vite.config.js配置）
-      // 3. demo路径（兼容demo）
-      const swPaths = [
-        '/sw-download.js',  // 最常见：放到public根目录
-        '/example/browser/sw-download.js',  // demo路径（兼容demo）
-      ]
-      
+      // 先检查是否已经有注册的 Service Worker，避免重复注册导致正在进行的下载中断
       let reg = null
-      let swPath = null
       let scope = '/'
       
-      // 尝试注册Service Worker（按优先级尝试）
-      for (const pathStr of swPaths) {
-        try {
-          scope = pathStr.replace(/\/[^/]*$/, '/') || '/'
-          reg = await navigator.serviceWorker.register(pathStr, { scope })
-          swPath = pathStr
-          log(`[Download] 注册 Service Worker: ${pathStr}, scope: ${scope}`)
-          break  // 成功就退出
-        } catch (e) {
-          // 继续尝试下一个路径
-          continue
+      // 检查现有的注册
+      const existingRegistrations = await navigator.serviceWorker.getRegistrations()
+      for (const existingReg of existingRegistrations) {
+        // 检查是否是我们需要的 Service Worker（通过 scope 判断）
+        if (existingReg.scope === '/' || existingReg.scope.startsWith('/')) {
+          reg = existingReg
+          scope = existingReg.scope
+          log(`[Download] 复用已注册的 Service Worker: ${scope}`)
+          break
         }
       }
       
+      // 如果没有找到已注册的，才进行注册
       if (!reg) {
-        throw new Error('无法注册 Service Worker，所有路径都失败')
+        // 尝试多个可能的路径
+        // 1. 如果用户将sw-download.js放到public目录（最常见）
+        // 2. 如果构建工具自动复制了（通过vite.config.js配置）
+        // 3. demo路径（兼容demo）
+        const swPaths = [
+          '/sw-download.js',  // 最常见：放到public根目录
+          '/example/browser/sw-download.js',  // demo路径（兼容demo）
+        ]
+        
+        for (const pathStr of swPaths) {
+          try {
+            scope = pathStr.replace(/\/[^/]*$/, '/') || '/'
+            reg = await navigator.serviceWorker.register(pathStr, { scope })
+            log(`[Download] 注册 Service Worker: ${pathStr}, scope: ${scope}`)
+            break  // 成功就退出
+          } catch (e) {
+            // 继续尝试下一个路径
+            continue
+          }
+        }
+        
+        if (!reg) {
+          throw new Error('无法注册 Service Worker，所有路径都失败')
+        }
       }
       
       // Wait for SW to be ready and controlling this page
@@ -301,19 +314,57 @@ async function withNativeDownloadWriter(filename, expectedSize) {
       // Service Worker支持 /download/unsealed 或 endsWith('/download/unsealed')
       const downloadUrl = `/download/unsealed?id=${encodeURIComponent(id)}`
       
-      // Trigger native download in a new tab to keep current page streaming chunks
-      const w = window.open(downloadUrl, '_blank')
-      if (!w) {
-        // Fallback if popup blocked: temporary anchor without download attribute (navigation)
-        const a = document.createElement('a')
-        a.href = downloadUrl
-        a.target = '_blank'
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
+      // 使用隐藏的 iframe 触发下载，避免新标签页闪屏
+      // Service Worker 会拦截请求并返回下载响应，iframe 仅用于触发请求
+      try {
+        const iframe = document.createElement('iframe')
+        iframe.style.cssText = 'position:absolute;width:0;height:0;border:none;opacity:0;pointer-events:none;'
+        document.body.appendChild(iframe)
+        
+        let iframeRemoved = false
+        const removeIframe = () => {
+          if (!iframeRemoved && iframe.parentNode) {
+            document.body.removeChild(iframe)
+            iframeRemoved = true
+          }
+        }
+        
+        // 监听 load 事件，加载完成后移除 iframe
+        // Service Worker 拦截后，iframe 会快速加载完成，此时下载已开始
+        iframe.onload = () => {
+          setTimeout(() => {
+            removeIframe()
+          }, 100) // 短暂延迟确保下载已触发
+        }
+        
+        // 设置超时，防止 iframe 加载失败时永远不清理
+        setTimeout(() => {
+          if (!iframeRemoved) {
+            removeIframe()
+          }
+        }, 5000)
+        
+        iframe.src = downloadUrl
+      } catch (e) {
+        // iframe 失败，回退到 window.open
+        try {
+          const w = window.open(downloadUrl, '_blank')
+          if (!w) {
+            // Fallback if popup blocked: temporary anchor without download attribute (navigation)
+            const a = document.createElement('a')
+            a.href = downloadUrl
+            a.target = '_blank'
+            document.body.appendChild(a)
+            a.click()
+            a.remove()
+          }
+        } catch (e2) {
+          // 如果所有方法都失败，抛出错误
+          throw new Error(`无法触发下载: ${e2.message}`)
+        }
       }
       
-      log(`[Download] 使用同源 SW 原生下载，size=${size ?? '未知'}`)
+      log(`[Download] 使用同源 SW 原生下载（隐藏 iframe，减少闪屏），size=${size ?? '未知'}`)
       return {
         async write(u8) {
           // Always send a copy so the original (e.g., reusable batch buffer) is not detached
