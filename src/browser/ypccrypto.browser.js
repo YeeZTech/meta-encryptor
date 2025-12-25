@@ -1,13 +1,13 @@
-// Browser implementation of ypccrypto decrypt logic using @noble/secp256k1 and WebCrypto
-// Derivation mimics aes-cmac based scheme from node version using pure JS AES-CMAC.
-import {getPublicKey, getSharedSecret} from '@noble/secp256k1';
-// 直接从 aes-js 顶层入口导入 ECB 模式（4.x import 指向 ESM lib.esm/index.js）
-// 旧版用的是 AES.ModeOfOperation.ecb，这里在 4.x 中等价于单独导出的 ECB 类
+import {getPublicKey, getSharedSecret, utils, sign, etc} from '@noble/secp256k1';
 import { ECB } from 'aes-js';
+import { keccak_256 } from '@noble/hashes/sha3';
+import { hmac } from '@noble/hashes/hmac';
+import { sha256 } from '@noble/hashes/sha256';
 
-// aes-cmac implementation (simplified) based on AES-128
+etc.hmacSha256Sync = (key, ...msgs) => {
+  return hmac(sha256, key, etc.concatBytes(...msgs));
+};
 function aesCmac(key, message){
-  // Generate subkeys per RFC 4493
   const aes = new ECB(key);
   const blockSize = 16;
   function leftShift(buf){
@@ -29,7 +29,6 @@ function aesCmac(key, message){
   if((L[0] & 0x80)!==0){K1[15] ^= constRb;}
   let K2 = leftShift(K1);
   if((K1[0] & 0x80)!==0){K2[15] ^= constRb;}
-  // Split message into 16 byte blocks
   const m = new Uint8Array(message);
   const n = Math.ceil(m.length / blockSize);
   let flagComplete = m.length>0 && (m.length % blockSize === 0);
@@ -44,7 +43,7 @@ function aesCmac(key, message){
       lastBlock = xor16(lb,K1);
     }else{
       let pad = new Uint8Array(blockSize);
-      pad.set(lb); pad[lb.length]=0x80; // rest zeros
+      pad.set(lb); pad[lb.length]=0x80;
       lastBlock = xor16(pad,K2);
     }
   }
@@ -63,31 +62,27 @@ const aad = new TextEncoder().encode(aadStr);
 function hexToBytes(hex){
   const clean = hex.startsWith('0x')? hex.slice(2): hex;
   const arr = new Uint8Array(clean.length/2);
-  for(let i=0;i<arr.length;i++){ arr[i] = parseInt(clean.substr(i*2,2),16); }
+  for(let i=0;i<arr.length;i++){ arr[i] = parseInt(hex.substr(i*2,2),16); }
   return arr;
 }
 const cmac_key = hexToBytes('7965657a2e746563682e7374626f7800');
 
-// emulate libsecp256k1 ecdh with custom hashfn by hashing compressed shared point (WebCrypto)
 async function sha256Bytes(u8){
   const digest = await crypto.subtle.digest('SHA-256', u8);
   return new Uint8Array(digest);
 }
 
 function generatePublicKeyFromPrivateKey(priv){
-  // Uncompressed (04 + x + y) then drop leading 0x04
-  const full = getPublicKey(priv, false); // 65 bytes
-  return full.slice(1); // 64 bytes
+  const full = getPublicKey(priv, false);
+  return full.slice(1);
 }
 
 async function generateAESKeyFrom(pkey, skey){
-  // expect pkey length 64, add 0x04
   if(pkey.length === 64){
     pkey = new Uint8Array([0x04,...pkey]);
   }
-  // noble 返回压缩形式的共享点(33字节)时，将其再过一层 sha256，与 Node 端 hashfn 行为等价
-  const sharedCompressed = getSharedSecret(skey, pkey, true); // 33 bytes
-  const ecdhHash = await sha256Bytes(sharedCompressed); // 32 bytes
+  const sharedCompressed = getSharedSecret(skey, pkey, true);
+  const ecdhHash = await sha256Bytes(sharedCompressed);
   const key_derive_key = aesCmac(cmac_key, ecdhHash);
   let derivation_buffer = new Uint8Array(aad.length + 4);
   derivation_buffer[0] = 0x01;
@@ -96,7 +91,7 @@ async function generateAESKeyFrom(pkey, skey){
   derivation_buffer[aad.length+2]=0x80;
   derivation_buffer[aad.length+3]=0x00;
   const derived_key = aesCmac(key_derive_key, derivation_buffer);
-  return derived_key; // 16 bytes for AES-128-GCM
+  return derived_key;
 }
 
 async function decryptMessage(privKeyHex, msg){
@@ -104,21 +99,231 @@ async function decryptMessage(privKeyHex, msg){
   const total = msg.length;
   const encrypted = msg.slice(0, total - 64 - 16 - 12);
   const liv = msg.slice(encrypted.length, total - 64 - 16);
-  const pkey = msg.slice(encrypted.length + 12, total - 16); // 64 bytes
+  const pkey = msg.slice(encrypted.length + 12, total - 16);
   const tag = msg.slice(total - 16);
   const enc_key = await generateAESKeyFrom(pkey, skey);
-  // WebCrypto decrypt
   const key = await crypto.subtle.importKey('raw', enc_key, {name:'AES-GCM'}, false, ['decrypt']);
   const tad = new Uint8Array(64);
   tad.set(aad);
-  tad[24] = 0x2; // prefix
-  // Need concat encrypted+tag? WebCrypto expects separate tag appended to ciphertext (last 16 bytes). Already separated; we must reconstruct
+  tad[24] = 0x2;
   const cipherAll = new Uint8Array(encrypted.length + tag.length);
   cipherAll.set(encrypted,0); cipherAll.set(tag, encrypted.length);
   const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv: liv, additionalData: tad, tagLength:128}, key, cipherAll);
-  // 与 Node 端逻辑保持一致：Node 在解密后返回的是原始明文字节（不是 ASCII hex），这里直接返回原始 bytes
   return new Uint8Array(plain);
 }
 
-export const BrowserCrypto = { decryptMessage, generatePublicKeyFromPrivateKey };
-export default BrowserCrypto;
+const YPCCrypto = function () {
+  if (!(this instanceof YPCCrypto)) {
+    return new YPCCrypto();
+  }
+
+  const toUint8Array = (data) => {
+    if (data instanceof Uint8Array) return data;
+    if (typeof data === 'string') {
+      if (data.startsWith('0x')) data = data.slice(2);
+      const arr = new Uint8Array(data.length / 2);
+      for (let i = 0; i < arr.length; i++) {
+        arr[i] = parseInt(data.substr(i * 2, 2), 16);
+      }
+      return arr;
+    }
+    if (data && data.buffer) {
+      return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || data.length);
+    }
+    return new Uint8Array(data);
+  };
+
+  const toKeccakInput = (v) => {
+    if (v instanceof Uint8Array) {
+      if (v.byteOffset === 0 && v.byteLength === v.buffer.byteLength) {
+        return v;
+      }
+      return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+    }
+
+    if (v instanceof ArrayBuffer) {
+      return new Uint8Array(v);
+    }
+
+    if (typeof v === 'string') {
+      return new TextEncoder().encode(v);
+    }
+
+    try {
+      return new Uint8Array(v);
+    } catch (e) {
+      throw new Error('keccak256 input must be Uint8Array-compatible: ' + typeof v);
+    }
+  };
+
+  const toHex = (bytes) => {
+    const arr = Array.from(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes));
+    return arr.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  this.generatePublicKeyFromPrivateKey = function (skey) {
+    const skeyBytes = toUint8Array(skey);
+    if (!utils.isValidPrivateKey(skeyBytes)) {
+      throw new Error("invalid private key");
+    }
+    return generatePublicKeyFromPrivateKey(skeyBytes);
+  };
+
+  this.decryptMessage = async function (skey, msg) {
+    const skeyBytes = toUint8Array(skey);
+    const skeyHex = typeof skey === 'string' ? skey : toHex(skeyBytes);
+    return await decryptMessage(skeyHex, toUint8Array(msg));
+  };
+
+  this.generatePrivateKey = function () {
+    let privKey;
+    do {
+      privKey = new Uint8Array(32);
+      crypto.getRandomValues(privKey);
+    } while (!utils.isValidPrivateKey(privKey));
+    return privKey;
+  };
+
+  this.generateAESKeyFrom = async function (pkey, skey) {
+    return await generateAESKeyFrom(toUint8Array(pkey), toUint8Array(skey));
+  };
+
+  this._encryptMessage = async function (pkey, skey, msg, prefix) {
+    const enc_key = await this.generateAESKeyFrom(pkey, skey);
+    const msgBytes = toUint8Array(msg);
+    
+    const iv = new Uint8Array(12);
+    crypto.getRandomValues(iv);
+
+    const tad = new Uint8Array(64);
+    tad.set(aad);
+    tad[24] = prefix;
+
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc_key,
+      { name: 'AES-GCM' },
+      false,
+      ['encrypt']
+    );
+
+    const encrypted = await crypto.subtle.encrypt(
+      {
+        name: 'AES-GCM',
+        iv: iv,
+        additionalData: tad,
+        tagLength: 128
+      },
+      key,
+      msgBytes
+    );
+
+    const encryptedBytes = new Uint8Array(encrypted);
+    const tag = encryptedBytes.slice(-16);
+    const ciphertext = encryptedBytes.slice(0, -16);
+
+    const generatedPublicKey = this.generatePublicKeyFromPrivateKey(skey);
+    const length = ciphertext.length + 64 + 16 + 12;
+    const result = new Uint8Array(length);
+    result.set(ciphertext, 0);
+    result.set(iv, ciphertext.length);
+    result.set(generatedPublicKey, ciphertext.length + 12);
+    result.set(tag, ciphertext.length + 64 + 12);
+    
+    return result;
+  };
+
+  this.generateForwardSecretKey = async function (remote_pkey, skey) {
+    const ots = this.generatePrivateKey();
+    return await this._encryptMessage(remote_pkey, ots, skey, 0x1);
+  };
+
+  this.generateEncryptedInput = async function (local_pkey, input) {
+    const ots = this.generatePrivateKey();
+    const inputBytes = toUint8Array(input.buffer || input);
+    return await this._encryptMessage(local_pkey, ots, inputBytes, 0x2);
+  };
+
+  this._decryptMessageWithPrefix = async function (skey, msg, prefix) {
+    const skeyBytes = toUint8Array(skey);
+    const skeyHex = typeof skey === 'string' ? skey : toHex(skeyBytes);
+    const msgBytes = toUint8Array(msg);
+    const total = msgBytes.length;
+    
+    const encrypted = msgBytes.slice(0, total - 64 - 16 - 12);
+    const liv = msgBytes.slice(encrypted.length, total - 64 - 16);
+    const pkey = msgBytes.slice(encrypted.length + 12, total - 16);
+    const tag = msgBytes.slice(total - 16);
+    
+    const enc_key = await generateAESKeyFrom(pkey, skeyBytes);
+    const key = await crypto.subtle.importKey('raw', enc_key, {name:'AES-GCM'}, false, ['decrypt']);
+    const tad = new Uint8Array(64);
+    tad.set(aad);
+    tad[24] = prefix;
+    const cipherAll = new Uint8Array(encrypted.length + tag.length);
+    cipherAll.set(encrypted, 0);
+    cipherAll.set(tag, encrypted.length);
+    const plain = await crypto.subtle.decrypt({name:'AES-GCM', iv: liv, additionalData: tad, tagLength:128}, key, cipherAll);
+    return new Uint8Array(plain);
+  };
+
+  this.decryptForwardMessage = async function (skey, msg) {
+    return await this._decryptMessageWithPrefix(skey, msg, 0x1);
+  };
+
+  const eth_hash_prefix = new TextEncoder().encode("\x19Ethereum Signed Message:\n32");
+
+  this.signMessage = function (skey, raw) {
+    const skeyBytes = toUint8Array(skey);
+
+    const rawBytes = toKeccakInput(raw);
+    const rawHash = keccak_256(rawBytes);
+
+    const msg0 = new Uint8Array(eth_hash_prefix.length + rawHash.length);
+    msg0.set(eth_hash_prefix);
+    msg0.set(rawHash, eth_hash_prefix.length);
+
+    const msg = keccak_256(msg0);
+
+    const signature = sign(msg, skeyBytes, { lowS: true });
+    
+    const rBytes = etc.numberToBytesBE(signature.r);
+    const sBytes = etc.numberToBytesBE(signature.s);
+
+    const sig = new Uint8Array(65);
+    sig.set(rBytes, 0);
+    sig.set(sBytes, 32);
+    sig[64] = (signature.recovery ?? 0) + 27;
+
+    return sig;
+  };
+
+  this.generateSignature = function (skey, epkey, ehash) {
+    const epkeyBytes = toUint8Array(epkey);
+    const ehashBytes = toUint8Array(ehash);
+    const data = new Uint8Array(epkeyBytes.length + ehashBytes.length);
+    data.set(epkeyBytes, 0);
+    data.set(ehashBytes, epkeyBytes.length);
+    return this.signMessage(skey, data);
+  };
+
+  this.generateFileNameFromPKey = function (pkey) {
+    const pkeyBytes = toUint8Array(pkey);
+    const hex = toHex(pkeyBytes);
+    return hex.slice(0, 8) + ".json";
+  };
+
+  this.generateFileContentFromSKey = function (skey) {
+    const skeyBytes = toUint8Array(skey);
+    const c = {};
+    c["private_key"] = toHex(skeyBytes);
+    c["public_key"] = toHex(this.generatePublicKeyFromPrivateKey(skeyBytes));
+    return JSON.stringify(c);
+  };
+};
+
+const browserCryptoInstance = new YPCCrypto();
+
+export const BrowserCrypto = browserCryptoInstance;
+
+export default YPCCrypto;

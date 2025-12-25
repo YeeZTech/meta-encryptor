@@ -1,9 +1,7 @@
 // 使用浏览器兼容版本的 header_util，避免 bytebuffer 依赖问题
 import { ntpackage2batch, fromNtInput } from './header_util.browser.js';
 import { HeaderSize, MagicNum, CurrentBlockFileVersion } from '../limits.js';
-// SSR兼容：BrowserCrypto 在不同构建环境下导出方式不同
-import * as BrowserCryptoModule from './ypccrypto.browser.js';
-const BrowserCrypto = BrowserCryptoModule.default || BrowserCryptoModule.BrowserCrypto || BrowserCryptoModule;
+import { BrowserCrypto } from './ypccrypto.browser.js';
 
 // SSR兼容：将 MagicNum 转换为 Uint8Array（避免 Buffer 依赖）
 const MAGIC_NUM_BYTES = (() => {

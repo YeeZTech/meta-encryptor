@@ -31,55 +31,71 @@ yarn install
 yarn test
 ```
 
+#### 快速开始
+
+```js
+import { YPCCrypto } from "@yeez-tech/meta-encryptor";
+
+// YPCCrypto 是单例对象（Node / Browser / SSR 通用）
+// 不需要、也不能调用 ()
+const crypto = YPCCrypto;
+
+// 生成密钥对
+const sKey = crypto.generatePrivateKey();
+const pKey = crypto.generatePublicKeyFromPrivateKey(sKey);
+
+// 生成文件名和文件内容
+const fileName = crypto.generateFileNameFromPKey(pKey);
+const fileContent = crypto.generateFileContentFromSKey(sKey);
+
+// 解密消息（浏览器环境需要 await）
+await crypto.decryptMessage(sKey, encryptedMessage);
+```
+
 #### API
 
-##### crypto.generatePrivateKey
+##### YPCCrypto.generatePrivateKey
 
 生成私钥
 
 ```js
-import {crypto} from '@yeez-tech/meta-encryptor';
+import { YPCCrypto } from "@yeez-tech/meta-encryptor";
 
+const crypto = YPCCrypto;
 const sKey = crypto.generatePrivateKey();
-
-console.log('私钥=', sKey);
-const pKey = meta.crypto.generatePublicKeyFromPrivateKey(sKey);
-useStore().commit(ConfigMutationTypes.SET_ENCRYPTION_CONFIG, {
-    privateKey: sKey.toString('hex'),
-    publicKey: pKey.toString('hex')
-});
-const ypcName = meta.crypto.generateFileNameFromPKey(pKey);
-const ypcJson = meta.crypto.generateFileContentFromSKey(sKey);
 ```
 
-##### crypto.generatePublicKeyFromPrivateKey
+##### YPCCrypto.generatePublicKeyFromPrivateKey
 
 通过私钥生成公钥
 
 ```js
-import {crypto} from '@yeez-tech/meta-encryptor';
+import { YPCCrypto } from "@yeez-tech/meta-encryptor";
+
+const crypto = YPCCrypto;
 const pKey = crypto.generatePublicKeyFromPrivateKey(sKey);
-console.log('公钥钥=', pKey);
 ```
 
-##### crypto.generateFileNameFromPKey
+##### YPCCrypto.generateFileNameFromPKey
 
 通过公钥生成文件名
 
 ```js
-import {crypto} from '@yeez-tech/meta-encryptor';
-const ypcName = crypto.generateFileNameFromPKey(pKey);
-console.log('文件名=', ypcName);
+import { YPCCrypto } from "@yeez-tech/meta-encryptor";
+
+const crypto = YPCCrypto;
+const fileName = crypto.generateFileNameFromPKey(pKey);
 ```
 
-##### crypto.generateFileContentFromSKey
+##### YPCCrypto.generateFileContentFromSKey
 
 通过私钥获取密钥文件内容
 
 ```js
-import {crypto} from '@yeez-tech/meta-encryptor';
-const ypcJson = crypto.generateFileContentFromSKey(sKey);
-console.log('文件内容=', ypcJson);
+import { YPCCrypto } from "@yeez-tech/meta-encryptor";
+
+const crypto = YPCCrypto;
+const fileContent = crypto.generateFileContentFromSKey(sKey);
 ```
 
 ##### Sealer
@@ -103,7 +119,7 @@ rs.pipe(csv())
 Unsealer 用来解密流，并且将结果输出到流.
 
 ```js
-import {Sealer, Unsealer, SealedFileStream} from '@yeez-tech/meta-encryptor';
+import { Sealer, Unsealer, SealedFileStream } from "@yeez-tech/meta-encryptor";
 
 /*
 let src = "./tsconfig.json"
@@ -119,13 +135,13 @@ await new Promise(resolve=>{
 });
 */
 
-let unsealer = new Unsealer({keyPair: key_pair});
+let unsealer = new Unsealer({ keyPair: key_pair });
 let rrs = new SealedFileStream(dst);
-let wws = fs.createWriteStream(src + '.new');
+let wws = fs.createWriteStream(src + ".new");
 
 rrs.pipe(unsealer).pipe(wws);
 await new Promise((resolve) => {
-    wws.on('finish', () => resolve());
+  wws.on("finish", () => resolve());
 });
 ```
 
@@ -134,46 +150,53 @@ await new Promise((resolve) => {
 用于判断一个文件是否为一个有效的封装文件，如果为真，返回`true`，否则，返回`false`。
 
 ```js
-import {isSealedFile} from '@yeez-tech/meta-encryptor';
+import { isSealedFile } from "@yeez-tech/meta-encryptor";
 
 let r = isSealedFile(path);
 ```
 
-#### 浏览器端 Unsealer (实验性)
+#### 浏览器环境支持
 
-为了在纯浏览器环境中直接解密后端通过 HTTP 以二进制流提供的加密文件，本仓库提供了实验性实现：`src/browser/UnsealerBrowser.js` 与 `src/browser/ypccrypto.browser.js`。它通过 `fetch` 的 `ReadableStream` 增量读取加密文件，对照 Node 版 `Unsealer` 的协议解析 header 和每个 item 的长度前缀，调用浏览器版 `decryptMessage` 还原批次，再拼接为明文。
+本库同时支持 Node.js 和浏览器环境，使用方法完全一致。
 
-示例页面：`example/browser/index.html`。
-
-使用要点：
-1. 后端需提供已使用 Node 版 `Sealer` 生成的加密文件（格式：header | blocks(items with size prefix) | blockMeta | headerMeta）。当前浏览器版仍处于验证阶段，可能不支持全部边界情况。
-2. 在页面输入加密文件 URL 与私钥（hex）。公钥从加密文件的每段中动态获取。
-3. 点击“开始解密”后实时显示进度，完成后可下载合并后的明文。
-
-导入方式 (通过打包器或原始源码)：
 ```js
-import { UnsealerBrowser, unsealStream } from '@yeez-tech/meta-encryptor/dist/browser';
-// 或直接引用源码路径: import { unsealStream } from '.../src/browser/UnsealerBrowser.js'
+import { YPCCrypto } from '@yeez-tech/meta-encryptor'
+
+// YPCCrypto 是单例对象（Node / Browser / SSR 通用）
+// 不需要、也不能调用 ()
+const crypto = YPCCrypto
+
+await crypto.decryptMessage(...)
 ```
 
-核心 API：
+**注意**：
+
+- 库会自动检测运行环境并使用对应的实现（Node.js 或浏览器）
+- 由于 Web Crypto API 的限制，浏览器环境中部分方法（如 `decryptMessage`、`_encryptMessage` 等）是异步的，需要使用 `await` 调用
+
+##### 浏览器端下载功能
+
+在浏览器环境中，可以使用 `downloadUnsealed` 直接下载并解密文件：
+
 ```js
-await unsealStream(fetchResponse, {
-  privateKeyHex: 'YOUR_PRIVATE_KEY_HEX',
-  onChunk: (plaintextUint8) => { /* 每个数据块 */ },
-  progressHandler: (totalItems, processedItems, readBytes, writeBytes) => {}
+import { downloadUnsealed } from "@yeez-tech/meta-encryptor";
+
+await downloadUnsealed({
+  url: "https://example.com/encrypted file",
+  privateKeyHex: "YOUR_PRIVATE_KEY_HEX",
+  filename: "decrypted-file.txt",
+  progressHandler: (totalItems, processedItems, readBytes, writeBytes) => {
+    console.log(`Progress: ${processedItems}/${totalItems}`);
+  },
 });
 ```
-
-注意：浏览器版实现中 AES-CMAC 与 ECDH 派生流程是通过纯 JS 复刻，尚未经过完整安全审计，不建议在生产环境直接替换 Node 端实现。若需要生产支持，应将 Node 端逻辑通过打包工具（Rollup/Webpack）与适配层（例如 polyfill `crypto`）严格对齐后再使用。
-
 
 ##### sealedFileVersion
 
 返回封装文件的版本号。
 
 ```js
-import {sealedFileVersion} from '@yeez-tech/meta-encryptor';
+import { sealedFileVersion } from "@yeez-tech/meta-encryptor";
 
 let r = sealedFileVersion(path);
 ```
@@ -183,7 +206,7 @@ let r = sealedFileVersion(path);
 返回封装文件对应的原始数据的 hash。注意，该函数直接读取的是记录在文件头的 hash，如果文件被篡改，该函数有可能返回错误的 hash，因此，如果有可能，应该在解密之后，对 hash 进行校验。
 
 ```js
-import {dataHashOfSealedFile} from '@yeez-tech/meta-encryptor';
+import { dataHashOfSealedFile } from "@yeez-tech/meta-encryptor";
 
 let r = dataHashOfSealedFile(path);
 ```
@@ -193,7 +216,7 @@ let r = dataHashOfSealedFile(path);
 对数据 hash 进行签名。
 
 ```js
-import {signedDataHash} from '@yeez-tech/meta-encryptor';
+import { signedDataHash } from "@yeez-tech/meta-encryptor";
 
 //keyPair应该是{'private-key':'hex string of private key',
 //dataHash应该是一个Buffer，长度为32字节
@@ -205,7 +228,7 @@ let r = signedDataHash(keyPair, dataHash);
 生成转发枢私钥的信息。
 
 ```js
-import {forwardSkey} from '@yeez-tech/meta-encryptor';
+import { forwardSkey } from "@yeez-tech/meta-encryptor";
 
 //keyPair应该是{'private-key':'hex string of private key',
 //dianPKey应该是一个Buffer，包含了典公钥，
@@ -231,10 +254,10 @@ meta-encryptor 提供了支持断点续传的可恢复流功能，主要包含�
 用于支持断点续传的读取流，可以从指定位置恢复读取。
 
 ```js
-import {RecoverableReadStream} from '@yeez-tech/meta-encryptor';
+import { RecoverableReadStream } from "@yeez-tech/meta-encryptor";
 
-const context = new PipelineContextInFile('context.dat');
-const readStream = new RecoverableReadStream('input.file', context);
+const context = new PipelineContextInFile("context.dat");
+const readStream = new RecoverableReadStream("input.file", context);
 
 readStream.pipe(someWriteStream);
 ```
@@ -244,10 +267,10 @@ readStream.pipe(someWriteStream);
 用于支持断点续传的写入流，可以从指定位置恢复写入。
 
 ```js
-import {RecoverableWriteStream} from '@yeez-tech/meta-encryptor';
+import { RecoverableWriteStream } from "@yeez-tech/meta-encryptor";
 
-const context = new PipelineContextInFile('context.dat');
-const writeStream = new RecoverableWriteStream('output.file', context);
+const context = new PipelineContextInFile("context.dat");
+const writeStream = new RecoverableWriteStream("output.file", context);
 
 someReadStream.pipe(writeStream);
 ```
@@ -257,16 +280,16 @@ someReadStream.pipe(writeStream);
 用于管理断点续传过程中的上下文信息的基类。
 
 ```js
-import {PipelineContext} from '@yeez-tech/meta-encryptor';
+import { PipelineContext } from "@yeez-tech/meta-encryptor";
 
 class MyContext extends PipelineContext {
-    saveContext() {
-        // 实现保存上下文的逻辑
-    }
+  saveContext() {
+    // 实现保存上下文的逻辑
+  }
 
-    loadContext() {
-        // 实现加载上下文的逻辑
-    }
+  loadContext() {
+    // 实现加载上下文的逻辑
+  }
 }
 ```
 
@@ -275,9 +298,9 @@ class MyContext extends PipelineContext {
 基于文件存储的上下文管理实现，支持二进制数据。
 
 ```js
-import {PipelineContextInFile} from '@yeez-tech/meta-encryptor';
+import { PipelineContextInFile } from "@yeez-tech/meta-encryptor";
 
-const context = new PipelineContextInFile('context.dat');
+const context = new PipelineContextInFile("context.dat");
 
 // 保存上下文
 await context.saveContext();
@@ -289,21 +312,25 @@ await context.loadContext();
 使用示例：
 
 ```js
-import {RecoverableReadStream, RecoverableWriteStream, PipelineContextInFile} from '@yeez-tech/meta-encryptor';
+import {
+  RecoverableReadStream,
+  RecoverableWriteStream,
+  PipelineContextInFile,
+} from "@yeez-tech/meta-encryptor";
 
 // 创建上下文管理器
-const context = new PipelineContextInFile('transfer.context');
+const context = new PipelineContextInFile("transfer.context");
 
 // 创建可恢复的读写流
-const readStream = new RecoverableReadStream('source.file', context);
-const writeStream = new RecoverableWriteStream('target.file', context);
+const readStream = new RecoverableReadStream("source.file", context);
+const writeStream = new RecoverableWriteStream("target.file", context);
 
 // 处理传输
 readStream.pipe(writeStream);
 
 // 如果传输中断，可以使用相同的上下文重新创建流来继续传输
-const resumeReadStream = new RecoverableReadStream('source.file', context);
-const resumeWriteStream = new RecoverableWriteStream('target.file', context);
+const resumeReadStream = new RecoverableReadStream("source.file", context);
+const resumeWriteStream = new RecoverableWriteStream("target.file", context);
 resumeReadStream.pipe(resumeWriteStream);
 ```
 
@@ -315,24 +342,24 @@ meta-encryptor 支持将可恢复流与 Unsealer 结合使用，实现加密文�
 
 ```js
 import {
-    RecoverableReadStream,
-    RecoverableWriteStream,
-    PipelineContextInFile,
-    Unsealer
-} from '@yeez-tech/meta-encryptor';
+  RecoverableReadStream,
+  RecoverableWriteStream,
+  PipelineContextInFile,
+  Unsealer,
+} from "@yeez-tech/meta-encryptor";
 
 // 创建上下文管理器
-const context = new PipelineContextInFile('context.dat');
+const context = new PipelineContextInFile("context.dat");
 await context.loadContext();
 
 // 创建解密管道
 const readStream = new RecoverableReadStream(encryptedFile, context);
 const unsealer = new Unsealer({
-    keyPair,
-    context,
-    progressHandler: (totalItem, readItem, bytes, writeBytes) => {
-        console.log(`Progress: ${(bytes / (1024 * 1024)).toFixed(2)}MB`);
-    }
+  keyPair,
+  context,
+  progressHandler: (totalItem, readItem, bytes, writeBytes) => {
+    console.log(`Progress: ${(bytes / (1024 * 1024)).toFixed(2)}MB`);
+  },
 });
 const writeStream = new RecoverableWriteStream(decryptedFile, context);
 
