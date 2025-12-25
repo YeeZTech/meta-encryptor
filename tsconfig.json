@@ -3,6 +3,7 @@
     "esModuleInterop": true,
     "resolveJsonModule": true,
     "noEmit": false,
+    "allowJs": true,
     "rootDir": "./src",
     "outDir": "./dist",
     "emitDeclarationOnly": true,
@@ -10,8 +11,7 @@
     "declarationDir": "./dist/types"
   },
   "include": [
-    "src/*",
-    "test/UnsealerWithTus.js"
+    "src/**/*"
   ],
   "exclude": [
     "node_modules"

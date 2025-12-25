@@ -245,7 +245,7 @@ let r = forwardSkey(keyPair, dianPKey, enclaveHash);
 }
 ```
 
-##### 可恢复流
+##### 可恢复流（仅适用于Node环境）
 
 meta-encryptor 提供了支持断点续传的可恢复流功能，主要包含以下组件：
 

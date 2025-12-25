@@ -1,7 +1,3 @@
-// 命令式 API：下载并解密加密文件
-// 使用方式：
-// import { downloadUnsealed } from '@yeez-tech/meta-encryptor/src/browser/downloadUnsealed.js'
-// downloadUnsealed({ url: '...', privateKey: '...', filename: '...' })
 
 import { unsealStream } from './UnsealerBrowser.js'
 import { prepareSealedResponse } from './SealedHttpTailHeaderTransform.js'

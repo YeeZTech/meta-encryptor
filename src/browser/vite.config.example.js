@@ -26,6 +26,5 @@ function copyServiceWorker() {
 copyServiceWorker()
 
 export default defineConfig({
-  // 你的其他配置...
 })
 

@@ -1,9 +1,8 @@
-// 使用浏览器兼容版本的 header_util，避免 bytebuffer 依赖问题
+
 import { ntpackage2batch, fromNtInput } from './header_util.browser.js';
 import { HeaderSize, MagicNum, CurrentBlockFileVersion } from '../limits.js';
 import { BrowserCrypto } from './ypccrypto.browser.js';
 
-// SSR兼容：将 MagicNum 转换为 Uint8Array（避免 Buffer 依赖）
 const MAGIC_NUM_BYTES = (() => {
   if (MagicNum instanceof Uint8Array) {
     return MagicNum;
@@ -63,7 +62,6 @@ export class UnsealerBrowser {
       throw new Error('Unsupported version: '+version_number);
     }
     const magic = headerBytes.slice(0,8);
-    // SSR兼容：使用纯 Uint8Array 比较，避免 Buffer 依赖
     if(magic.length !== MAGIC_NUM_BYTES.length){
       throw new Error('Magic number mismatch');
     }

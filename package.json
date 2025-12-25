@@ -4,7 +4,7 @@
     "description": "Data Seal/Unseal for Fidelius",
     "main": "build/commonjs/index.node.cjs",
     "module": "build/es/index.node.js",
-    "types": "src/index.d.ts",
+    "types": "index.d.ts",
     "exports": {
         ".": {
             "browser": {
@@ -20,10 +20,9 @@
     "type": "module",
     "files": [
         "build",
-        "src/index.d.ts",
-        "src/browser",
-        "src/header_util.js",
-        "src/limits.js"
+        "README.md",
+        "README.en.md",
+        "LICENSE"
     ],
     "scripts": {
         "build": "rollup-cli-build --no-uglify",
