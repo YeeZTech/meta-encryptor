@@ -1,7 +1,11 @@
 import commonjs from "@rollup/plugin-commonjs";
 import json from "@rollup/plugin-json";
 export default {
-  input: ["src/index.js", "src/utils.js"],
+  input: [
+    "src/index.node.js",
+    "src/index.browser.js",
+    "src/utils.js"
+  ],
   plugins: [
     json(),
     commonjs({
@@ -16,6 +20,7 @@ export default {
     {
       dir: "build/es",
       format: "es",
+      entryFileNames: "[name].js",
     },
     {
       dir: "build/commonjs",

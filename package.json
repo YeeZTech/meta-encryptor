@@ -1,18 +1,35 @@
 {
     "name": "@yeez-tech/meta-encryptor",
-    "version": "4.0.0",
+    "version": "4.2.0",
     "description": "Data Seal/Unseal for Fidelius",
-    "main": "build/commonjs/index.cjs",
-    "module": "build/es/index.js",
+    "main": "build/commonjs/index.node.cjs",
+    "module": "build/es/index.node.js",
     "types": "src/index.d.ts",
+    "exports": {
+        ".": {
+            "browser": {
+                "import": "./build/es/index.browser.js"
+            },
+            "node": {
+                "import": "./build/es/index.node.js",
+                "require": "./build/commonjs/index.node.cjs"
+            },
+            "default": "./build/es/index.node.js"
+        }
+    },
     "type": "module",
     "files": [
         "build",
-        "src/index.d.ts"
+        "src/index.d.ts",
+        "src/browser",
+        "src/header_util.js",
+        "src/limits.js"
     ],
     "scripts": {
         "build": "rollup-cli-build --no-uglify",
         "test": "jest",
+        "serve:example": "node example/http/static-server.js",
+        "gen:sealed": "node example/http/gen-sealed-stream.js",
         "version": "changeset version",
         "release": "changeset publish"
     },
@@ -48,7 +65,10 @@
         "keccak256": "^1.0.6",
         "loglevel": "^1.9.1",
         "memory-streams": "^0.1.3",
-        "secp256k1": "^5.0.1"
+        "secp256k1": "^5.0.1",
+        "@noble/secp256k1": "^2.1.0",
+        "@noble/hashes": "^1.3.3",
+        "aes-js": "4.0.0-beta.5"
     },
     "publishConfig": {
         "access": "public"

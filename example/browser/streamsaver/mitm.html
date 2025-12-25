@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>StreamSaver MITM</title>
+<script>
+// This is a minimal MITM page for StreamSaver to enable native download with progress.
+// It should be hosted on the same origin as the page using StreamSaver.
+
+/* eslint-disable */
+;(function(){
+  if (!('serviceWorker' in navigator)) return;
+  // Register a service worker the StreamSaver library expects by posting messages
+  const swScope = location.pathname.replace(/mitm\.html$/, '');
+  navigator.serviceWorker.register(swScope + 'sw.js', { scope: swScope })
+    .then(() => navigator.serviceWorker.ready)
+    .then(() => {
+      // Keep the page alive; StreamSaver library will handshake via postMessage
+      console.log('[StreamSaver] MITM ready, scope=', swScope);
+    })
+    .catch(err => console.error('[StreamSaver] MITM SW register error:', err));
+})();
+</script>

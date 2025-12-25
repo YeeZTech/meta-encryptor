@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import keccak256 from "keccak256";
-import { aesCmac } from "./node-aes-cmac/index";
+import { aesCmac } from "./node-aes-cmac/index.js";
 import secp256k1 from "secp256k1";
 import { sha256 } from "js-sha256";
 
