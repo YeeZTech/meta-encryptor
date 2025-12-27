@@ -4,23 +4,18 @@ import ByteBuffer, {
 } from "bytebuffer";
 
 import {
-  header_t,
-  header_t2buffer,
   buffer2header_t,
-  block_info_t2buffer,
-  buffer2block_info_t,
   ntpackage2batch,
-  toNtInput,
-  fromNtInput,
-  batch2ntpackage
+  fromNtInput
 } from "./header_util.js"
 const {
   Transform
 } = require('stream');
-var log = require("loglevel").getLogger("meta-encryptor/Unsealer");
+const logger = require("loglevel").getLogger("meta-encryptor/Unsealer");
+
 import YPCNt_Object from "./ypcntobject"
 
-import{MaxItemSize, HeaderSize, MagicNum, CurrentBlockFileVersion} from "./limits.js";
+import{HeaderSize, MagicNum, CurrentBlockFileVersion} from "./limits.js";
 
 const YPCNtObject = YPCNt_Object()
 import YPCCryptoFun from "./ypccrypto.js";
@@ -38,13 +33,12 @@ export class Unsealer extends Transform{
     this.processedBytes = options ? options.processedBytes || 0 : 0;
     this.writeBytes = options ? (options.writeBytes || 0) : 0;
     this.context = options? (options.context) : undefined
-    log.debug("Unsealer : ", this)
+    logger.debug("Unsealer : ", this)
   }
 
   _transform(chunk, encoding, callback) {
-    //log.debug("enter transform")
     this.accumulatedBuffer = Buffer.concat([this.accumulatedBuffer, chunk]);
-    log.debug("accu buffer " + this.accumulatedBuffer.length)
+    logger.debug("accu buffer " + this.accumulatedBuffer.length)
     try{
       if(!this.isHeaderReady){
         if(this.accumulatedBuffer.length >= HeaderSize){
@@ -60,47 +54,51 @@ export class Unsealer extends Transform{
           }
           this.accumulatedBuffer = this.accumulatedBuffer.slice(HeaderSize);
           this.isHeaderReady = true;
-          log.debug("header is ready")
-          log.debug("total item number: ", this.header.item_number)
+          logger.debug("header is ready")
+          logger.debug("total item number: ", this.header.item_number)
         }
       }
     }catch(err){
-      log.error("err " + err)
+      logger.error("err " + err)
       callback(err);
       return ;
     }
 
     try{
-
       if(this.isHeaderReady){
         while(this.accumulatedBuffer.length > 8){
-          log.debug("got enough bytes ", this.accumulatedBuffer.length)
+          logger.debug("got enough bytes ", this.accumulatedBuffer.length)
           let offset = 0;
           let buf = ByteBuffer.wrap(this.accumulatedBuffer.slice(0, 8), LITTLE_ENDIAN);
           let item_size = buf.readUint64(offset).toNumber()
           offset += 8;
           if(this.accumulatedBuffer.length >= item_size + offset){
+            /*
             if(this.context !== undefined && this.context.context !== undefined
               &&this.context.context["status"] === "file"){
               this.context.context["data"] = this.accumulatedBuffer;
               this.context.saveContext();
-            }
-            log.debug("got enough data ", item_size)
+            }*/
+            logger.debug("got enough data ", item_size)
             let cipher = this.accumulatedBuffer.slice(offset, offset + item_size);
-            log.debug("offset + item_size: ", offset + item_size)
-            log.debug("this.processedBytes: ", this.processedBytes)
+            logger.debug("offset + item_size: ", offset + item_size)
+            logger.debug("this.processedBytes: ", this.processedBytes)
             this.processedBytes = this.processedBytes + (offset + item_size);
-            log.debug("this.processedBytes: ", this.processedBytes)
+            logger.debug("this.processedBytes: ", this.processedBytes)
             this.accumulatedBuffer = this.accumulatedBuffer.slice(offset + item_size);
 
             let msg = YPCCrypto.decryptMessage(Buffer.from(this.keyPair["private_key"], 'hex'), cipher);
             //TODO check if msg is null, i.e., decrypt failed
             let batch = ntpackage2batch(msg);
-            log.debug("got batch with length " + batch.length)
+            logger.debug("got batch with length " + batch.length);
+
+            let plainSize = 0;
+
             for(let i = 0; i < batch.length; i++){
-              //log.debug("start from n")
+              //logger.debug("start from n")
               let b = fromNtInput(batch[i]);
-              //log.debug("end from n")
+              //logger.debug("end from n")
+              plainSize += b.length;
 
               this.push(b);
               this.writeBytes += b.length;
@@ -110,6 +108,34 @@ export class Unsealer extends Transform{
                 "hex"
               );
              this.dataHash = keccak256(k);
+            }
+            logger.debug("context before update:", this.context);
+            // update runtime info in context for recoverable unsealing
+            if(this.context !== undefined && 
+              this.context.context !== undefined &&
+               this.context.context["status"] === "file"){
+              if(!this.context.runtime){
+                this.context.runtime = {
+                  rawCommitted: this.context.context.readStart || 0,
+                  plainCommitted: this.context.context.writeStart || 0,
+                  pendingBlocks: []
+                };
+              }else{
+                if (this.context.runtime.rawCommitted === undefined) {
+                  this.context.runtime.rawCommitted = this.context.context.readStart || 0;
+                }
+                if (this.context.runtime.plainCommitted === undefined) {
+                  this.context.runtime.plainCommitted = this.context.context.writeStart || 0;
+                }
+                if (!Array.isArray(this.context.runtime.pendingBlocks)) {
+                  this.context.runtime.pendingBlocks = [];
+                }
+              }
+              this.context.runtime.pendingBlocks.push({
+                rawSize: offset + item_size,   // 本块消耗的密文字节数（含 8 字节长度前缀）
+                plainSize: plainSize,          // 本块对应的明文字节数
+                remainingPlain: plainSize      // 写入端还需写入的明文字节数
+              });
             }
             this.readItemCount += 1;
             if(this.progressHandler !== undefined &&
@@ -123,10 +149,17 @@ export class Unsealer extends Transform{
             break;
           }
         }
+        // 在完成本次可用数据的处理后，再保存上下文，确保只保存未消费的密文数据
+        
+        if(this.context !== undefined && this.context.context !== undefined
+          && this.context.context["status"] === "file"){
+          this.context.context["data"] = this.accumulatedBuffer;
+          //this.context.saveContext();
+        }
       }
       callback();
     }catch(err){
-      log.error("err " + err)
+      logger.error("err " + err)
       callback(err);
     }
   }

@@ -13,7 +13,7 @@ var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFi
 import{calculateMD5, key_pair, generateFileWithSize} from "./helper"
 
 // 设置日志级别
-//log.setLevel('trace');
+log.setLevel('trace');
 //unsealer_log.setLevel("trace")
 //unsealer_stream_log.setLevel("trace")
 
@@ -67,9 +67,18 @@ test('seal small file', async()=>{
   await sealAndUnsealFile(src);
 })
 
+
 test('test medium file', async()=>{
-  let src = './yarn.lock';
+  let src = './medium.file';
+  try{
+    fs.unlinkSync(src)
+  }catch(error){
+
+  }
+  //100KB
+  generateFileWithSize(src,  1024 * 100)
   await sealAndUnsealFile(src);
+  fs.unlinkSync(src)
 })
 
 

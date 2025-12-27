@@ -1,13 +1,21 @@
+import log from 'loglevel';
+
 const fs = require('fs');
 const { promisify } = require('util');
 
 const readFile = promisify(fs.readFile);
 const writeFile = promisify(fs.writeFile);
+const logger = log.getLogger("meta-encryptor/PipelineContext");
 
 export class PipelineContext {
     constructor(options) {
         this.context = {};
         this.options = options || {};
+        this.runtime = {
+            rawCommitted: 0,
+            plainCommitted: 0,
+            pendingBlocks: [] //[{rawSize, plainSize, remainingPlain}]
+        };
     }
 
     update(key, value) {
@@ -33,6 +41,9 @@ export class PipelineContextInFile extends PipelineContext {
         const binaryChunks = [];
         const meta = {};
         let offset = 0;
+
+        logger.debug("Context before save:", this.context);
+        logger.debug("PipelineContextInFile::saveContext saving to ", this.filePath);
 
         for (const [key, value] of Object.entries(this.context)) {
             if (Buffer.isBuffer(value)) {
@@ -77,6 +88,9 @@ export class PipelineContextInFile extends PipelineContext {
         try {
             if (!fs.existsSync(this.filePath)) {
                 this.context = {};
+                this.runtime.rawCommitted = 0;
+                this.runtime.plainCommitted = 0;
+                this.runtime.pendingBlocks = [];
                 return;
             }
 
@@ -103,8 +117,16 @@ export class PipelineContextInFile extends PipelineContext {
             }
 
             await promisify(fs.close)(fd);
+
+            const readStart = this.context.readStart || 0;
+            const writeStart = this.context.writeStart || 0;
+            this.runtime.rawCommitted = readStart;
+            this.runtime.plainCommitted = writeStart;
+            this.runtime.pendingBlocks = [];
         } catch (error) {
             console.error('PipelineContextInFile::loadContext error:', error.message);
+            // 当上下文文件损坏或内容不完整时，视为无上下文，避免直接中断流程
+            this.context = {};
             throw error;
         }
     }

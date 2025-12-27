@@ -1,6 +1,10 @@
-const meta = require('../src/index.js');
+const meta = require('../src/index.node.js');
 import {Sealer, ToString} from '../src/Sealer';
 import {Unsealer} from '../src/Unsealer';
+import log from 'loglevel';
+const logger = log.getLogger("meta-encryptor/Recoverable");
+log.setLevel('error');
+logger.setLevel('error');
 
 const {PipelineContextInFile} = require('../src/PipelineConext.js');
 const {RecoverableReadStream, RecoverableWriteStream} = require('../src/Recoverable.js');
@@ -30,6 +34,7 @@ async function compare(src, ret_src) {
     expect(m1).toStrictEqual(m2);
 }
 
+
 test('test pipeline context basic', async () => {
     //let src = "Unsealerlarge.file";
     //let src = './rollup.config.js'
@@ -47,7 +52,7 @@ test('test pipeline context basic', async () => {
     context.loadContext();
     let rs = new RecoverableReadStream(dst, context);
     let ws = new RecoverableWriteStream(ret_src, context);
-    let unsealer = new meta.Unsealer({keyPair: key_pair});
+    let unsealer = new meta.Unsealer({keyPair: key_pair, context: context});
     rs.pipe(unsealer).pipe(ws);
 
     await new Promise((resolve) => {
@@ -89,7 +94,8 @@ test('test pipeline context large', async () => {
         keyPair: key_pair,
         progressHandler: (...args) => {
             _progressHandler(args[0], args[1], args[2], args[3]);
-        }
+        },
+        context: context
     });
     let bytesRead = 0;
     let bytesWritten = 0;
@@ -149,6 +155,7 @@ test('test pipeline context large', async () => {
     } catch (error) {}
 });
 
+
 test('test pipeline context with pause and resume from large file', async () => {
     let src = 'pause_resume_large.file';
     let context_path = 'pause_resume_large_context';
@@ -162,10 +169,9 @@ test('test pipeline context with pause and resume from large file', async () => 
     } catch (error) {}
 
     // 第一步：准备测试文件
-    generateFileWithSize(src, 1024 * 1024 * 20); // 20MB测试文件
+    generateFileWithSize(src, 1024  * 1024 * 20); // 20MB测试文件
     dst = await sealFile(src);
-    //ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
-
+    
     // 第二步：第一阶段处理（处理部分后暂停）
     let context = new PipelineContextInFile(context_path);
     await context.loadContext();
@@ -194,6 +200,7 @@ test('test pipeline context with pause and resume from large file', async () => 
     // 第一阶段的处理
     await new Promise((resolve, reject) => {
         const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+            log.debug(`Progress: ${bytes} bytes read, ${writeBytes} bytes written`);
         };
 
         let rs = new RecoverableReadStream(dst, context);
@@ -210,6 +217,7 @@ test('test pipeline context with pause and resume from large file', async () => 
             if (pauseTriggered) {
                 clearInterval(checkInterval);
 
+                log.debug('Pausing pipeline...');
                 // 优雅地停止管道
                 rs.unpipe(unsealer);
                 unsealer.unpipe(pauseController);
@@ -221,7 +229,7 @@ test('test pipeline context with pause and resume from large file', async () => 
                     pauseController.destroy();
                     ws.end();
                     resolve();
-                }, 1000);
+                }, 100);
             }
         }, 100);
 
@@ -231,12 +239,13 @@ test('test pipeline context with pause and resume from large file', async () => 
         ws.on('error', reject);
     });
 
+    log.debug('First stage processing paused.');
 
     // 打印第一阶段状态
     const firstStageSize = fs.existsSync(ret_src) ? fs.statSync(ret_src).size : 0;
     
-    context = new PipelineContextInFile(context_path);
-    await context.loadContext();
+    //context = new PipelineContextInFile(context_path);
+    //await context.loadContext();
     
 
     // 第三步：恢复处理（完成剩余部分）
@@ -245,9 +254,11 @@ test('test pipeline context with pause and resume from large file', async () => 
     context = new PipelineContextInFile(context_path);
     await context.loadContext();
 
+    log.debug("context is loaded for resume:", context);
     // 恢复处理
     await new Promise((resolve, reject) => {
         const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+            log.debug(`Resuming Progress: ${bytes} bytes read, ${writeBytes} bytes written`);
         };
 
         let rs = new RecoverableReadStream(dst, context);
@@ -264,14 +275,15 @@ test('test pipeline context with pause and resume from large file', async () => 
         // 监听完成事件
         ws.on('finish', () => {
             resolve();
+            log.debug("Resume processing finished.");
         });
         ws.on('error', reject);
 
         // 连接管道
         rs.pipe(unsealer).pipe(ws);
     });
-    context = new PipelineContextInFile(context_path);
-    await context.loadContext();
+    
+    log.debug("context after resume is finished:", context);
     
 
     // 第四步：验证结果
@@ -287,6 +299,8 @@ test('test pipeline context with pause and resume from large file', async () => 
         console.warn('Cleanup error:', error.message);
     }
 }, 180000);
+
+
 
 test('test pipeline context with multiple random pause and resume', async () => {
     let src = 'pause_resume_large.file';
