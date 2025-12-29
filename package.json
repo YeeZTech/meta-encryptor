@@ -25,7 +25,8 @@
         "LICENSE"
     ],
     "scripts": {
-        "build": "rollup-cli-build --no-uglify",
+        "build": "rollup-cli-build --no-uglify && npm run copy-sw",
+        "copy-sw": "node scripts/copy-sw.js",
         "test": "jest",
         "serve:example": "node example/http/static-server.js",
         "gen:sealed": "node example/http/gen-sealed-stream.js",

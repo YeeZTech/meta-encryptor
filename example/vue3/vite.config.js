@@ -6,8 +6,8 @@ import { copyFileSync, existsSync } from 'fs'
 // 自动从node_modules复制Service Worker文件到public目录
 // 这样用户无需手动复制，构建时会自动处理
 function copyServiceWorker() {
-  // 优先尝试从node_modules（npm包）复制
-  const swSourceFromNpm = resolve(__dirname, '../../node_modules/@yeez-tech/meta-encryptor/src/browser/sw-download.js')
+  // 从npm包的build目录中复制（sw-download.js会被构建到build/browser/）
+  const swSourceFromNpm = resolve(__dirname, '../../node_modules/@yeez-tech/meta-encryptor/build/browser/sw-download.js')
   // 回退到本地源码路径（开发时）
   const swSourceFromLocal = resolve(__dirname, '../../src/browser/sw-download.js')
   const swDest = resolve(__dirname, './public/sw-download.js')
@@ -19,9 +19,11 @@ function copyServiceWorker() {
     swSource = swSourceFromLocal
   }
   
-  if (swSource && !existsSync(swDest)) {
+  if (swSource) {
     copyFileSync(swSource, swDest)
     console.log('[Vite] 已自动复制 Service Worker 文件到 public 目录')
+  } else {
+    console.warn('[Vite] Service Worker 文件未找到，请确保已安装 @yeez-tech/meta-encryptor 并运行了构建')
   }
 }
 
