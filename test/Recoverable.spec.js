@@ -34,7 +34,6 @@ async function compare(src, ret_src) {
     expect(m1).toStrictEqual(m2);
 }
 
-
 test('test pipeline context basic', async () => {
     //let src = "Unsealerlarge.file";
     //let src = './rollup.config.js'
@@ -303,8 +302,8 @@ test('test pipeline context with pause and resume from large file', async () => 
 
 
 test('test pipeline context with multiple random pause and resume', async () => {
-    let src = 'pause_resume_large.file';
-    let context_path = 'pause_resume_large_context';
+    let src = 'pause_resume_large.rand.file';
+    let context_path = 'pause_resume_large_context.rand';
     let dst, ret_src;
 
     ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
@@ -488,8 +487,8 @@ test('test pipeline context large same file', async () => {
     
 });
 test('test pipeline context with pause and resume on same file', async () => {
-    let src = 'pause_resume_large.file';
-    let context_path = 'pause_resume_large_context';
+    let src = 'pause_resume_large.same.file';
+    let context_path = 'pause_resume_large_context.same';
     let dst;
 
     try {
@@ -627,8 +626,8 @@ test('test pipeline context with pause and resume on same file', async () => {
 }, 180000);
 
 test('test pipeline context with multiple random pause and resume on same file', async () => {
-    let src = 'multi_pause_resume_large.file';
-    let context_path = 'multi_pause_resume_large_context';
+    let src = 'multi_pause_resume_large.rand_same.file';
+    let context_path = 'multi_pause_resume_large_context.rand_same';
     let dst;
 
     try {

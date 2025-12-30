@@ -1,4 +1,4 @@
-const meta = require("../src/index.js");
+const meta = require("../src/index.node.js");
 const ByteBuffer = require("bytebuffer");
 var streams = require('memory-streams');
 import DP from "../src/DataProvider.js"

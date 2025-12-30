@@ -63,7 +63,12 @@ async function sealAndUnsealFile(src){
 }
 test('seal small file', async()=>{
 
-  let src = './tsconfig.json';
+  let src = './small.file';
+  try{
+    fs.unlinkSync(src);
+  }catch(error){}
+
+  generateFileWithSize(src,  1024 * 10);
   await sealAndUnsealFile(src);
 })
 

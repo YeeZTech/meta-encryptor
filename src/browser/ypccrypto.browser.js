@@ -1,12 +1,19 @@
 import {getPublicKey, getSharedSecret, utils, sign, etc} from '@noble/secp256k1';
+import * as secp from '@noble/secp256k1';
 import { ECB } from 'aes-js';
-import { keccak_256 } from '@noble/hashes/sha3';
-import { hmac } from '@noble/hashes/hmac';
-import { sha256 } from '@noble/hashes/sha256';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { hmac } from '@noble/hashes/hmac.js';
+import { sha256 } from '@noble/hashes/sha2.js';
 
+
+secp.hashes.sha256 = sha256;
+secp.hashes.hmacSha256 = (key, msg) => {
+  return hmac(sha256, key, msg);
+};
 etc.hmacSha256Sync = (key, ...msgs) => {
   return hmac(sha256, key, etc.concatBytes(...msgs));
 };
+
 function aesCmac(key, message){
   const aes = new ECB(key);
   const blockSize = 16;
@@ -163,7 +170,7 @@ const YPCCrypto = function () {
 
   this.generatePublicKeyFromPrivateKey = function (skey) {
     const skeyBytes = toUint8Array(skey);
-    if (!utils.isValidPrivateKey(skeyBytes)) {
+    if (!utils.isValidSecretKey(skeyBytes)) {
       throw new Error("invalid private key");
     }
     return generatePublicKeyFromPrivateKey(skeyBytes);
@@ -180,7 +187,7 @@ const YPCCrypto = function () {
     do {
       privKey = new Uint8Array(32);
       crypto.getRandomValues(privKey);
-    } while (!utils.isValidPrivateKey(privKey));
+    } while (!utils.isValidSecretKey(privKey));
     return privKey;
   };
 
@@ -285,16 +292,10 @@ const YPCCrypto = function () {
 
     const msg = keccak_256(msg0);
 
-    const signature = sign(msg, skeyBytes, { lowS: true });
-    
-    const rBytes = etc.numberToBytesBE(signature.r);
-    const sBytes = etc.numberToBytesBE(signature.s);
-
+    const signature = sign(msg, skeyBytes, {prehash: false, extraEntropy:false, format: 'recovered'});
     const sig = new Uint8Array(65);
-    sig.set(rBytes, 0);
-    sig.set(sBytes, 32);
-    sig[64] = (signature.recovery ?? 0) + 27;
-
+    sig.set(signature.subarray(1, 65), 0);
+    sig[64] = signature[0];
     return sig;
   };
 
