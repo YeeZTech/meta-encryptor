@@ -4,6 +4,8 @@ globalThis.crypto = webcrypto;
 
 
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
+import fs from 'fs/promises';
+import path from 'path';
 
 describe('BrowserCrypto compatibility with Node YPCCrypto', () => {
   let browserCrypto;
@@ -258,5 +260,44 @@ describe('BrowserCrypto compatibility with Node YPCCrypto', () => {
       const sig2 = browserCrypto.signMessage(keyB, testMessage);
       expect(Buffer.from(sig2).toString('hex')).not.toBe(Buffer.from(sig1).toString('hex'));
     });
+  });
+});
+
+// --- Fixtures-based consistency checks ---
+function hexToBytes(hex){
+  if (hex.startsWith('0x')) hex = hex.slice(2);
+  return new Uint8Array(Buffer.from(hex, 'hex'));
+}
+
+describe('Fixtures consistency with BrowserCrypto', () => {
+  let fixtures;
+  beforeAll(async () => {
+    const fp = path.resolve('test/fixtures/ypc-browser-fixtures.json');
+    const buf = await fs.readFile(fp, 'utf8');
+    fixtures = JSON.parse(buf);
+  });
+
+  test('Browser decrypts Node-generated encrypted inputs', async () => {
+    for (const f of fixtures){
+      const enc = hexToBytes(f.encrypted);
+      const sk = hexToBytes(f.sKey);
+      const plain = await BrowserCrypto.decryptMessage(sk, enc);
+      const msg = new TextDecoder().decode(plain);
+      expect(msg).toBe(f.message);
+    }
+  }, 10000);
+
+  test('Browser signatures match Node-generated signatures', () => {
+    for (const f of fixtures){
+      const sk = hexToBytes(f.sKey);
+      const sig = BrowserCrypto.signMessage(sk, Buffer.from(f.message, 'utf8'));
+      const sigArr = new Uint8Array(sig);
+      // Normalize recovery byte: node fixtures use 27/28; browser may return 0/1
+      /*
+      if (sigArr[64] === 0 || sigArr[64] === 1) {
+        sigArr[64] = sigArr[64] + 27;
+      }*/
+      expect(Buffer.from(sigArr).toString('hex')).toBe(f.signature);
+    }
   });
 });
