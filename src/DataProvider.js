@@ -1,6 +1,3 @@
-import ByteBuffer, {
-  LITTLE_ENDIAN
-} from "bytebuffer";
 import {
   header_t,
   header_t2buffer,
@@ -64,12 +61,15 @@ DataProvider.prototype.write_batch = function(batch, public_key, writable_stream
   let all = BlockFile.append_item(s, this.header, this.block_meta_info);
   this.header = all[0];
   this.block_meta_info = all[1];
-  let data = new ByteBuffer(8 + s.length, LITTLE_ENDIAN);
-  data.writeUint64(s.length, 0);
-  data.append(s, 8);
+  const outBuf = Buffer.alloc(8 + s.length);
+  outBuf.writeBigUInt64LE(BigInt(s.length), 0);
+  if (Buffer.isBuffer(s)) {
+    s.copy(outBuf, 8);
+  } else {
+    Buffer.from(s).copy(outBuf, 8);
+  }
   if (writable_stream !== undefined && writable_stream !== null) {
-    const out = data.toBuffer();
-    writable_stream.write(Buffer.isBuffer(out) ? out : Buffer.from(out));
+    writable_stream.write(outBuf);
   }
 }
 
@@ -110,7 +110,7 @@ DataProvider.prototype.sealData = function(input,
 DataProvider.prototype.setHeaderAndMeta = function() {
   //let block_start_offset = 32 + 32 * BlockNumLimit;
   let block_start_offset = BlockInfoSize * this.header.block_number;
-  let fileMeta = new ByteBuffer(block_start_offset, LITTLE_ENDIAN);
+  const fileMetaBuf = Buffer.alloc(block_start_offset);
   let offset = 0;
   //set header
   this.header.data_hash = Buffer.from(this.data_hash);
@@ -121,7 +121,8 @@ DataProvider.prototype.setHeaderAndMeta = function() {
   for (let i = 0; i < this.header.block_number; i++) {
     let bi = this.block_meta_info[i];
     let buf_bi = block_info_t2buffer(bi);
-    fileMeta.append(buf_bi, offset);
+    if (!Buffer.isBuffer(buf_bi)) buf_bi = Buffer.from(buf_bi);
+    buf_bi.copy(fileMetaBuf, offset);
     offset += BlockInfoSize;
   }
   let b_skey = Buffer.from(this.key_pair["private_key"], "hex");
@@ -131,10 +132,10 @@ DataProvider.prototype.setHeaderAndMeta = function() {
     shu_public_key: this.key_pair["public_key"],
     hash_sig: Buffer.from(hash_sig).toString("hex"),
   };
-  buf_header.reset();
-  fileMeta.reset();
-  const headerInfo = buf_header.toBuffer();
-  const blockInfo = fileMeta.toBuffer();
+  
+  const headerInfo = Buffer.isBuffer(buf_header) ? buf_header : Buffer.from(buf_header);
+  const blockInfo = Buffer.isBuffer(fileMetaBuf) ? fileMetaBuf : Buffer.from(fileMetaBuf);
+  
   return {
     headerInfo: Buffer.isBuffer(headerInfo) ? headerInfo : Buffer.from(headerInfo),
     blockInfo: Buffer.isBuffer(blockInfo) ? blockInfo : Buffer.from(blockInfo),
@@ -147,7 +148,7 @@ const headerAndBlockBufferFromBuffer = function(buf) {
     return null;
   }
   const buffer = buf.subarray(buf.length - HeaderSize);
-  const header = buffer2header_t(ByteBuffer.wrap(buffer, LITTLE_ENDIAN));
+  const header = buffer2header_t(buffer);
   if (header.version_number != CurrentBlockFileVersion) {
     throw new Error("only support version ", CurrentBlockFileVersion, ", yet got ", header.version_number);
   }

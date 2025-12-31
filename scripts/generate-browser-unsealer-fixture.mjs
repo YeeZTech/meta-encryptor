@@ -1,6 +1,5 @@
 import fs from 'fs';
 import path from 'path';
-import streams from 'memory-streams';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const built = require('../build/commonjs/index.node.cjs');

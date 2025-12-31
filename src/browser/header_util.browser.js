@@ -1,5 +1,5 @@
 // Browser-compatible header_util using Uint8Array + DataView
-// 完全使用原生浏览器 API，避免 bytebuffer 依赖和兼容性问题
+// 完全使用原生浏览器 API
 
 /**
  * Read uint64 (little-endian) from Uint8Array at offset

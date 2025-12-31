@@ -167,17 +167,6 @@ const YPCCrypto = function () {
 
     data.set(epkey, 0);
     data.set(ehash, epkey.length);
-    //const raw_hash = keccak256(Buffer.from(data));
-    //let msg = new Uint8Array(eth_hash_prefix.length + raw_hash.length);
-    //msg.set(eth_hash_prefix);
-    //msg.set(raw_hash, eth_hash_prefix.length);
-    //msg = keccak256(Buffer.from(msg));
-
-    //const rsig = secp256k1.ecdsaSign(msg, skey);
-    //const sig = new Uint8Array(65);
-    //sig.set(rsig.signature);
-    //sig[64] = rsig.recid + 27;
-    //return Buffer.from(sig);
     return this.signMessage(skey, Buffer.from(data));
   };
 

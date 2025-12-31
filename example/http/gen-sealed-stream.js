@@ -2,10 +2,6 @@ import streams from 'memory-streams';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
-import ByteBufferPkg from 'bytebuffer';
-
-const ByteBuffer = ByteBufferPkg.default || ByteBufferPkg;
-const LITTLE_ENDIAN = ByteBuffer.LITTLE_ENDIAN;
 
 const require = createRequire(import.meta.url);
 // use built commonjs bundle to avoid ESM/CJS interop issues

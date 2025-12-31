@@ -1,5 +1,4 @@
 import { header_t, block_info_t, buffer2header_t } from './header_util.js';
-import ByteBuffer, { LITTLE_ENDIAN } from 'bytebuffer';
 import YPCCryptoFun from './ypccrypto.js';
 const YPCCrypto = YPCCryptoFun();
 import fs from 'fs';
@@ -29,7 +28,7 @@ const getFileHeader = function (filePath) {
     fs.closeSync(fd);
     return null;
   }
-  const header = buffer2header_t(ByteBuffer.wrap(buffer, LITTLE_ENDIAN));
+  const header = buffer2header_t(buffer);
   return header;
 };
 
@@ -116,7 +115,7 @@ export function calculateSealedHash(filePath) {
 
       console.log('Header raw bytes:', buffer.toString('hex'));
 
-      const bb = ByteBuffer.wrap(buffer, ByteBuffer.LITTLE_ENDIAN);
+      const bb = buffer;
       return bb;
     } finally {
       fs.closeSync(fd);
@@ -169,7 +168,7 @@ export function calculateSealedHash(filePath) {
         );
       }
 
-      let b = ByteBuffer.wrap(buf, ByteBuffer.LITTLE_ENDIAN);
+      let b = buf;
       let len = b.readUint64(0).toNumber();
 
       // 验证单个item的长度合理性

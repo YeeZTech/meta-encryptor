@@ -1,6 +1,4 @@
-import ByteBuffer, {
-  LITTLE_ENDIAN
-} from "bytebuffer";
+import { Buffer } from 'buffer';
 const YPCNtObject = function() {
   if (!(this instanceof YPCNtObject)) {
     return new YPCNtObject();
@@ -25,7 +23,6 @@ const YPCNtObject = function() {
         break;
       case value instanceof ArrayBuffer:
       case value instanceof Buffer:
-      case value instanceof ByteBuffer:
         text = "bytes";
         break;
       default:
@@ -54,7 +51,6 @@ const YPCNtObject = function() {
   // {"type":"bytes", "value":0xdadfdfdfdfd}]
   this.generateBytes = function(input) {
     let length = this.getLengthOf(input);
-    //let buffer = new ByteBuffer(length, ByteBuffer.LITTLE_ENDIAN)
     let buffer = Buffer.alloc(length);
     var inputLength = input.length;
     let offset = 4;

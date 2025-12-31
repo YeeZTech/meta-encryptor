@@ -1,9 +1,6 @@
 const {
   Readable
 } = require('stream');
-import ByteBuffer, {
-  LITTLE_ENDIAN
-} from "bytebuffer";
 const fs = require('fs');
 import{HeaderSize, BlockInfoSize,
   MagicNum, CurrentBlockFileVersion} from "./limits.js";
@@ -55,7 +52,7 @@ export class SealedFileStream extends Readable{
             throw new Error("Cannot read header. File too small");
           }
 
-          const header = buffer2header_t(ByteBuffer.wrap(this.header, LITTLE_ENDIAN));
+          const header = buffer2header_t(this.header);
 
           if (header.version_number != CurrentBlockFileVersion) {
             throw new Error("only support version ", CurrentBlockFileVersion, ", yet got ", header.version_number);

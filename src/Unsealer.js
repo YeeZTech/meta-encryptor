@@ -1,7 +1,4 @@
 import keccak256 from "keccak256";
-import ByteBuffer, {
-  LITTLE_ENDIAN
-} from "bytebuffer";
 
 import {
   buffer2header_t,
@@ -43,7 +40,7 @@ export class Unsealer extends Transform{
       if(!this.isHeaderReady){
         if(this.accumulatedBuffer.length >= HeaderSize){
           const header = this.accumulatedBuffer.subarray(0, HeaderSize);
-          this.header = buffer2header_t(ByteBuffer.wrap(header, LITTLE_ENDIAN));
+          this.header = buffer2header_t(header);
           if (this.header.version_number != CurrentBlockFileVersion) {
             callback(new Error("only support version ", CurrentBlockFileVersion, ", yet got ", header.version_number));
             return ;
@@ -69,8 +66,8 @@ export class Unsealer extends Transform{
         while(this.accumulatedBuffer.length > 8){
           logger.debug("got enough bytes ", this.accumulatedBuffer.length)
           let offset = 0;
-          let buf = ByteBuffer.wrap(this.accumulatedBuffer.subarray(0, 8), LITTLE_ENDIAN);
-          let item_size = buf.readUint64(offset).toNumber()
+          let buf = this.accumulatedBuffer.subarray(0, 8);
+          let item_size = Number(buf.readBigUInt64LE(offset));
           offset += 8;
           if(this.accumulatedBuffer.length >= item_size + offset){
             /*
