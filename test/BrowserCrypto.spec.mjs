@@ -1,8 +1,3 @@
-// BrowserCrypto comprehensive test - compare with Node YPCCrypto for consistency
-import { webcrypto} from 'crypto';
-globalThis.crypto = webcrypto;
-
-
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
 import fs from 'fs/promises';
 import path from 'path';

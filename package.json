@@ -29,7 +29,7 @@
         "copy-sw": "node scripts/copy-sw.js",
         "test:node": "jest --config jest.config.node.cjs",
         "test:browser": "npm run gen:fixtures && node --experimental-vm-modules node_modules/.bin/jest --config jest.config.browser.mjs",
-        "gen:fixtures": "node --experimental-vm-modules scripts/generate-fixtures.mjs",
+        "gen:fixtures": "node --experimental-vm-modules scripts/generate-fixtures.mjs && node --experimental-vm-modules scripts/generate-browser-unsealer-fixture.mjs",
         "test": "npm run test:node && npm run test:browser",
         "serve:example": "node example/http/static-server.js",
         "gen:sealed": "node example/http/gen-sealed-stream.js",
