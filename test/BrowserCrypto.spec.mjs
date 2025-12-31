@@ -292,11 +292,6 @@ describe('Fixtures consistency with BrowserCrypto', () => {
       const sk = hexToBytes(f.sKey);
       const sig = BrowserCrypto.signMessage(sk, Buffer.from(f.message, 'utf8'));
       const sigArr = new Uint8Array(sig);
-      // Normalize recovery byte: node fixtures use 27/28; browser may return 0/1
-      /*
-      if (sigArr[64] === 0 || sigArr[64] === 1) {
-        sigArr[64] = sigArr[64] + 27;
-      }*/
       expect(Buffer.from(sigArr).toString('hex')).toBe(f.signature);
     }
   });

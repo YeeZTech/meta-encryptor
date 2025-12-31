@@ -295,7 +295,7 @@ const YPCCrypto = function () {
     const signature = sign(msg, skeyBytes, {prehash: false, extraEntropy:false, format: 'recovered'});
     const sig = new Uint8Array(65);
     sig.set(signature.subarray(1, 65), 0);
-    sig[64] = signature[0];
+    sig[64] = signature[0] + 27;
     return sig;
   };
 
