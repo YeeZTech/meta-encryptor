@@ -1,8 +1,9 @@
 import crypto from "crypto";
 import keccak256 from "keccak256";
-import { aesCmac } from "./node-aes-cmac/index.js";
 import secp256k1 from "secp256k1";
 import { sha256 } from "js-sha256";
+import { ECB } from 'aes-js';
+
 
 const { randomBytes } = crypto;
 
@@ -15,6 +16,56 @@ function hashfn(x, y) {
   version.set(x, 1);
   sha.update(version);
   return new Uint8Array(sha.array());
+}
+
+function aesCmac(key, message){
+  const aes = new ECB(key);
+  const blockSize = 16;
+  function leftShift(buf){
+    const out = new Uint8Array(buf.length);
+    let carry = 0;
+    for(let i=buf.length-1;i>=0;i--){
+      const val = buf[i];
+      out[i] = ((val<<1)&0xFF) | carry;
+      carry = (val & 0x80)?1:0;
+    }
+    return out;
+  }
+  const constRb = 0x87;
+  function xor16(a,b){const o=new Uint8Array(16);for(let i=0;i<16;i++)o[i]=a[i]^b[i];return o;}
+  let zeros = new Uint8Array(16);
+  let L = aes.encrypt(zeros);
+  L = new Uint8Array(L);
+  let K1 = leftShift(L);
+  if((L[0] & 0x80)!==0){K1[15] ^= constRb;}
+  let K2 = leftShift(K1);
+  if((K1[0] & 0x80)!==0){K2[15] ^= constRb;}
+  const m = new Uint8Array(message);
+  const n = Math.ceil(m.length / blockSize);
+  let flagComplete = m.length>0 && (m.length % blockSize === 0);
+  let lastBlock;
+  if(n===0){
+    flagComplete = false;
+    lastBlock = xor16(xor16(zeros,K2),new Uint8Array([0x80,...new Array(15).fill(0)]));
+  }else{
+    const startLast = (n-1)*blockSize;
+    let lb = m.slice(startLast, startLast+blockSize);
+    if(flagComplete){
+      lastBlock = xor16(lb,K1);
+    }else{
+      let pad = new Uint8Array(blockSize);
+      pad.set(lb); pad[lb.length]=0x80;
+      lastBlock = xor16(pad,K2);
+    }
+  }
+  let X = new Uint8Array(16);
+  for(let i=0;i<n-1;i++){
+    const block = m.slice(i*blockSize,(i+1)*blockSize);
+    X = aes.encrypt(xor16(X, block));
+    X = new Uint8Array(X);
+  }
+  let T = aes.encrypt(xor16(X,lastBlock));
+  return new Uint8Array(T);
 }
 
 function gen_ecdh_key_from(skey, pkey) {
