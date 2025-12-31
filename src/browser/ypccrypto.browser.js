@@ -1,18 +1,25 @@
-import {getPublicKey, getSharedSecret, utils, sign, etc} from '@noble/secp256k1';
-import * as secp from '@noble/secp256k1';
+
 import { ECB } from 'aes-js';
-import { keccak_256 } from '@noble/hashes/sha3.js';
-import { hmac } from '@noble/hashes/hmac.js';
-import { sha256 } from '@noble/hashes/sha2.js';
+import { Buffer } from 'buffer';
+import keccak256 from "keccak256";
+import { sha256 } from "js-sha256";
+import secp256k1 from "secp256k1";
 
+function hashfn(x, y) {
+  const version = new Uint8Array(33);
 
-secp.hashes.sha256 = sha256;
-secp.hashes.hmacSha256 = (key, msg) => {
-  return hmac(sha256, key, msg);
-};
-etc.hmacSha256Sync = (key, ...msgs) => {
-  return hmac(sha256, key, etc.concatBytes(...msgs));
-};
+  const sha = sha256.create();
+
+  version[0] = (y[31] & 1) === 0 ? 0x02 : 0x03;
+  version.set(x, 1);
+  sha.update(version);
+  return new Uint8Array(sha.array());
+}
+function gen_ecdh_key_from(skey, pkey) {
+  const out = new Uint8Array(32);
+  const ecdhPointX = secp256k1.ecdh(pkey, skey, { hashfn }, out);
+  return ecdhPointX;
+}
 
 function aesCmac(key, message){
   const aes = new ECB(key);
@@ -73,32 +80,43 @@ function hexToBytes(hex){
   return arr;
 }
 const cmac_key = hexToBytes('7965657a2e746563682e7374626f7800');
+let derivation_buffer = new Uint8Array(aad.length + 4);
+ derivation_buffer[0] = 0x01;
+  derivation_buffer.set(aad, 1);
+  derivation_buffer[aad.length + 1] = 0;
+  derivation_buffer[aad.length + 2] = 0x80;
+  derivation_buffer[aad.length + 3] = 0x00;
+  derivation_buffer = Buffer.from(derivation_buffer);
 
 async function sha256Bytes(u8){
   const digest = await crypto.subtle.digest('SHA-256', u8);
   return new Uint8Array(digest);
 }
 
-function generatePublicKeyFromPrivateKey(priv){
-  const full = getPublicKey(priv, false);
-  return full.slice(1);
+function generatePublicKeyFromPrivateKey(skey){
+  if (!secp256k1.privateKeyVerify(skey)) {
+      throw new Error("invalid private key");
+    }
+    // false for compress
+    // we ignore the first byte, which is '0x04' according to
+    // https://davidederosa.com/basic-blockchain-programming/elliptic-curve-keys/;
+    const pkey = secp256k1.publicKeyCreate(skey, false).subarray(1);
+
+    return Buffer.from(pkey);
 }
 
-async function generateAESKeyFrom(pkey, skey){
-  if(pkey.length === 64){
-    pkey = new Uint8Array([0x04,...pkey]);
-  }
-  const sharedCompressed = getSharedSecret(skey, pkey, true);
-  const ecdhHash = await sha256Bytes(sharedCompressed);
-  const key_derive_key = aesCmac(cmac_key, ecdhHash);
-  let derivation_buffer = new Uint8Array(aad.length + 4);
-  derivation_buffer[0] = 0x01;
-  derivation_buffer.set(aad,1);
-  derivation_buffer[aad.length+1]=0;
-  derivation_buffer[aad.length+2]=0x80;
-  derivation_buffer[aad.length+3]=0x00;
-  const derived_key = aesCmac(key_derive_key, derivation_buffer);
-  return derived_key;
+async function generateAESKeyFrom(pkey, skey){    
+  if (pkey.length === 64) {
+      const prefix = new Uint8Array([0x04]);
+      pkey = new Uint8Array(pkey);
+      pkey = Uint8Array.from([...prefix, ...pkey]);
+    }
+    const shared_key = gen_ecdh_key_from(skey, pkey);
+    // The following algorithm is from ypc/stbox/src/tsgx/crypto/ecp.cpp
+    const options = { returnAsBuffer: true };
+    const key_derive_key = aesCmac(cmac_key, shared_key, options);
+    const derived_key = aesCmac(key_derive_key, derivation_buffer, options);
+    return derived_key;
 }
 
 async function decryptMessage(privKeyHex, msg){
@@ -170,9 +188,6 @@ const YPCCrypto = function () {
 
   this.generatePublicKeyFromPrivateKey = function (skey) {
     const skeyBytes = toUint8Array(skey);
-    if (!utils.isValidSecretKey(skeyBytes)) {
-      throw new Error("invalid private key");
-    }
     return generatePublicKeyFromPrivateKey(skeyBytes);
   };
 
@@ -187,7 +202,7 @@ const YPCCrypto = function () {
     do {
       privKey = new Uint8Array(32);
       crypto.getRandomValues(privKey);
-    } while (!utils.isValidSecretKey(privKey));
+    } while (!secp256k1.privateKeyVerify(privKey));
     return privKey;
   };
 
@@ -278,9 +293,25 @@ const YPCCrypto = function () {
     return await this._decryptMessageWithPrefix(skey, msg, 0x1);
   };
 
-  const eth_hash_prefix = new TextEncoder().encode("\x19Ethereum Signed Message:\n32");
+  const eth_hash_prefix = Buffer.from("\x19Ethereum Signed Message:\n32");
 
   this.signMessage = function (skey, raw) {
+
+    let raw_hash = keccak256(Buffer.from(raw));
+    let msg = new Uint8Array(eth_hash_prefix.length + raw_hash.length)
+    msg.set(eth_hash_prefix)
+    msg.set(raw_hash, eth_hash_prefix.length)
+    msg = keccak256(Buffer.from(msg))
+
+    const msgBytes = toUint8Array(msg);
+    const skeyBytes = toUint8Array(skey);
+    const rsig = secp256k1.ecdsaSign(msgBytes, skeyBytes);
+    const sig = new Uint8Array(65);
+    sig.set(rsig.signature);
+    sig[64] = rsig.recid + 27;
+    return Buffer.from(sig);
+
+    /*
     const skeyBytes = toUint8Array(skey);
 
     const rawBytes = toKeccakInput(raw);
@@ -297,6 +328,7 @@ const YPCCrypto = function () {
     sig.set(signature.subarray(1, 65), 0);
     sig[64] = signature[0] + 27;
     return sig;
+    */
   };
 
   this.generateSignature = function (skey, epkey, ehash) {

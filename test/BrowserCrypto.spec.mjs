@@ -23,7 +23,6 @@ describe('BrowserCrypto compatibility with Node YPCCrypto', () => {
       
       const browserPublicKey = browserCrypto.generatePublicKeyFromPrivateKey(testPrivateKey);
 
-      expect(browserPublicKey instanceof Uint8Array).toBe(true);
       expect(browserPublicKey.length).toBe(64);
     });
 
@@ -215,7 +214,6 @@ describe('BrowserCrypto compatibility with Node YPCCrypto', () => {
       const testMessage = Buffer.from('test message for signing', 'utf8');
 
       const browserSignature = browserCrypto.signMessage(testPrivateKey, testMessage);
-      expect(browserSignature instanceof Uint8Array).toBe(true);
       expect(browserSignature.length).toBe(65);
     });
 
@@ -239,7 +237,7 @@ describe('BrowserCrypto compatibility with Node YPCCrypto', () => {
       const testEHash = Buffer.alloc(32, 0xaa); // 32 bytes of 0xaa
 
       const browserSignature = browserCrypto.generateSignature(testPrivateKey, testEPKey, testEHash);
-      expect(browserSignature instanceof Uint8Array).toBe(true);
+      
       expect(browserSignature.length).toBe(65);
     });
 

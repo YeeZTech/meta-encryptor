@@ -64,8 +64,6 @@
     "author": "contact@yeez.tech",
     "license": "MIT",
     "dependencies": {
-        "@noble/hashes": "^2.0.1",
-        "@noble/secp256k1": "^3.0.0",
         "aes-cmac": "^4.0.0",
         "aes-js": "4.0.0-beta.5",
         "buffer": "^6.0.3",
