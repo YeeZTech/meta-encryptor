@@ -310,25 +310,6 @@ const YPCCrypto = function () {
     sig.set(rsig.signature);
     sig[64] = rsig.recid + 27;
     return Buffer.from(sig);
-
-    /*
-    const skeyBytes = toUint8Array(skey);
-
-    const rawBytes = toKeccakInput(raw);
-    const rawHash = keccak_256(rawBytes);
-
-    const msg0 = new Uint8Array(eth_hash_prefix.length + rawHash.length);
-    msg0.set(eth_hash_prefix);
-    msg0.set(rawHash, eth_hash_prefix.length);
-
-    const msg = keccak_256(msg0);
-
-    const signature = sign(msg, skeyBytes, {prehash: false, extraEntropy:false, format: 'recovered'});
-    const sig = new Uint8Array(65);
-    sig.set(signature.subarray(1, 65), 0);
-    sig[64] = signature[0] + 27;
-    return sig;
-    */
   };
 
   this.generateSignature = function (skey, epkey, ehash) {
