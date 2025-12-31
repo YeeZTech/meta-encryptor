@@ -90,7 +90,7 @@ export class SealedFileStream extends Readable{
     }
     if(!this.isHeaderSent){
       if(size < HeaderSize - this.startReadPos){
-        this.push(this.header.slice(this.startReadPos, this.startReadPos + size));
+        this.push(this.header.subarray(this.startReadPos, this.startReadPos + size));
         this.startReadPos += size;
         if(this.startReadPos == HeaderSize){
           this.startReadPos = this.start;
@@ -117,7 +117,7 @@ export class SealedFileStream extends Readable{
 
             log.debug("push data " + bytesRead);
             this.startReadPos += bytesRead;
-            this.push(buffer.slice(0, bytesRead));
+            this.push(buffer.subarray(0, bytesRead));
             if(reachEnd){
               log.debug("reach end done");
               this.push(null);

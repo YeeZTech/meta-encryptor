@@ -42,7 +42,7 @@ export class Unsealer extends Transform{
     try{
       if(!this.isHeaderReady){
         if(this.accumulatedBuffer.length >= HeaderSize){
-          const header = this.accumulatedBuffer.slice(0, HeaderSize);
+          const header = this.accumulatedBuffer.subarray(0, HeaderSize);
           this.header = buffer2header_t(ByteBuffer.wrap(header, LITTLE_ENDIAN));
           if (this.header.version_number != CurrentBlockFileVersion) {
             callback(new Error("only support version ", CurrentBlockFileVersion, ", yet got ", header.version_number));
@@ -52,7 +52,7 @@ export class Unsealer extends Transform{
             callback(new Error("Invalid magic number, maybe wrong file"));
             return ;
           }
-          this.accumulatedBuffer = this.accumulatedBuffer.slice(HeaderSize);
+          this.accumulatedBuffer = this.accumulatedBuffer.subarray(HeaderSize);
           this.isHeaderReady = true;
           logger.debug("header is ready")
           logger.debug("total item number: ", this.header.item_number)
@@ -69,7 +69,7 @@ export class Unsealer extends Transform{
         while(this.accumulatedBuffer.length > 8){
           logger.debug("got enough bytes ", this.accumulatedBuffer.length)
           let offset = 0;
-          let buf = ByteBuffer.wrap(this.accumulatedBuffer.slice(0, 8), LITTLE_ENDIAN);
+          let buf = ByteBuffer.wrap(this.accumulatedBuffer.subarray(0, 8), LITTLE_ENDIAN);
           let item_size = buf.readUint64(offset).toNumber()
           offset += 8;
           if(this.accumulatedBuffer.length >= item_size + offset){
@@ -80,12 +80,12 @@ export class Unsealer extends Transform{
               this.context.saveContext();
             }*/
             logger.debug("got enough data ", item_size)
-            let cipher = this.accumulatedBuffer.slice(offset, offset + item_size);
+            let cipher = this.accumulatedBuffer.subarray(offset, offset + item_size);
             logger.debug("offset + item_size: ", offset + item_size)
             logger.debug("this.processedBytes: ", this.processedBytes)
             this.processedBytes = this.processedBytes + (offset + item_size);
             logger.debug("this.processedBytes: ", this.processedBytes)
-            this.accumulatedBuffer = this.accumulatedBuffer.slice(offset + item_size);
+            this.accumulatedBuffer = this.accumulatedBuffer.subarray(offset + item_size);
 
             let msg = YPCCrypto.decryptMessage(Buffer.from(this.keyPair["private_key"], 'hex'), cipher);
             //TODO check if msg is null, i.e., decrypt failed
