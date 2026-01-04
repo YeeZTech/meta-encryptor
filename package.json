@@ -1,6 +1,6 @@
 {
     "name": "@yeez-tech/meta-encryptor",
-    "version": "4.3.0",
+    "version": "4.3.1",
     "description": "Data Seal/Unseal for Fidelius",
     "main": "build/commonjs/index.node.cjs",
     "module": "build/es/index.node.js",
@@ -38,7 +38,7 @@
     },
     "repository": {
         "type": "git",
-        "url": "https://github.com/YeeZTech/meta-encryptor.git"
+        "url": "git+https://github.com/YeeZTech/meta-encryptor.git"
     },
     "devDependencies": {
         "@babel/core": "^7.28.5",
