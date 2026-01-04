@@ -33,6 +33,10 @@ jobs:
     - name: Build project
       run: yarn build  # 假设你的项目有一个构建步骤
 
+    - name: Debug OIDC Token (Trusted Publisher)
+      run: |
+      echo "OIDC 令牌是否存在: ${{ runner.oidc.token != '' }}"
+
     - name: Publish
       id: changesets
       uses: changesets/action@v1
