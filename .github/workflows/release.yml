@@ -35,7 +35,7 @@ jobs:
 
 
     - name: Build project
-      run: npm build  # 假设你的项目有一个构建步骤
+      run: npm run build  # 假设你的项目有一个构建步骤
 
     - name: Debug OIDC Token (Trusted Publisher)
       run: |
@@ -46,8 +46,8 @@ jobs:
       uses: changesets/action@v1
       with:
         # Note: pnpm install after versioning is necessary to refresh lockfile
-        version: npm version
-        publish: npm release
+        version: npm run version
+        publish: npm run release
         commit: '[ci] release'
         title: '[ci] release'
       env:
