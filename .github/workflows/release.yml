@@ -35,7 +35,7 @@ jobs:
 
     - name: Debug OIDC Token (Trusted Publisher)
       run: |
-      echo "OIDC 令牌是否存在: ${{ runner.oidc.token != '' }}"
+        echo "OIDC 令牌是否存在: ${{ runner.oidc.token != '' }}"
 
     - name: Publish
       id: changesets
