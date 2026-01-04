@@ -12,7 +12,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    
+
     permissions:
       id-token: write 
       contents: read
@@ -24,18 +24,20 @@ jobs:
     - name: Setup Node.js
       uses: actions/setup-node@v4
       with:
-        node-version: '18'  # 你项目使用的 Node.js 版本
+        node-version: '24' 
         registry-url: 'https://registry.npmjs.org'
         always-auth: true
 
     - name: Install Yarn
       run: npm install -g yarn
 
+    - run: npm install -g npm@latest
+
     - name: Install
-      run: yarn
+      run: npm
 
     - name: Build project
-      run: yarn build  # 假设你的项目有一个构建步骤
+      run: npm build  # 假设你的项目有一个构建步骤
 
     - name: Debug OIDC Token (Trusted Publisher)
       run: |
@@ -46,8 +48,8 @@ jobs:
       uses: changesets/action@v1
       with:
         # Note: pnpm install after versioning is necessary to refresh lockfile
-        version: yarn version
-        publish: yarn release
+        version: npm version
+        publish: npm release
         commit: '[ci] release'
         title: '[ci] release'
       env:
