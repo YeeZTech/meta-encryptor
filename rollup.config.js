@@ -93,7 +93,7 @@ const browserConfig = {
     {
       dir: "build/es",
       format: "es",
-      entryFileNames: "[name].browser.js",
+      entryFileNames: "[name].js",
       exports: "named"
     }
   ],
