@@ -7,7 +7,7 @@ on:
 
 permissions:
   id-token: write
-  contents: read
+  contents: write
   
 jobs:
   release:
@@ -15,7 +15,7 @@ jobs:
 
     permissions:
       id-token: write 
-      contents: read
+      contents: write
 
     steps:
     - name: Checkout code
