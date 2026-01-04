@@ -32,8 +32,8 @@ jobs:
 
     - run: npm install -g npm@latest
 
-    -name: Install
-      run: npm install
+    - name: Install
+      run : npm install
 
     - name: Build project
       run: npm run build  # 假设你的项目有一个构建步骤
