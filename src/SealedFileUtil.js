@@ -1,4 +1,4 @@
-import { header_t, block_info_t, buffer2header_t } from './header_util.js';
+import { header_t, block_info_t, buffer2header_t } from './common/header_util.js';
 import YPCCryptoFun from './ypccrypto.js';
 const YPCCrypto = YPCCryptoFun();
 import fs from 'fs';

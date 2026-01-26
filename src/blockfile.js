@@ -1,7 +1,7 @@
 import {
   header_t,
   block_info_t
-} from "./header_util.js"
+} from "./common/header_util.js"
 
 const BlockFile = function(MagicNumber, BlockNumLimit, ItemNumPerBlockLimit) {
   if (!(this instanceof BlockFile)) {

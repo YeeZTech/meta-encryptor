@@ -1,5 +1,5 @@
 
-import { ntpackage2batch, fromNtInput } from './header_util.browser.js';
+import { ntpackage2batch, fromNtInput } from '../common/header_util.js';
 import { HeaderSize, MagicNum, CurrentBlockFileVersion } from '../limits.js';
 import { BrowserCrypto } from './ypccrypto.browser.js';
 

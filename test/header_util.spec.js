@@ -1,4 +1,4 @@
-import {header_t, header_t2buffer, buffer2header_t, block_info_t2buffer, block_info_t, buffer2block_info_t, ntpackage2batch, batch2ntpackage} from "../src/header_util"
+import {header_t, header_t2buffer, buffer2header_t, block_info_t2buffer, block_info_t, buffer2block_info_t, ntpackage2batch, batch2ntpackage} from "../src/common/header_util"
 
 let magic_number =
   Buffer.from("1fe2ef7f3ed18847", "hex");

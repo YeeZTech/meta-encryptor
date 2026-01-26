@@ -6,7 +6,7 @@ import{HeaderSize, BlockInfoSize,
   MagicNum, CurrentBlockFileVersion} from "./limits.js";
 import {
   buffer2header_t
-} from "./header_util.js"
+} from "./common/header_util.js"
 
 const {supportsConstruct} =require( "./utils.js")
 

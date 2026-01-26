@@ -4,7 +4,7 @@ import {
   buffer2header_t,
   ntpackage2batch,
   fromNtInput
-} from "./header_util.js"
+} from "./common/header_util.js"
 const {
   Transform
 } = require('stream');
