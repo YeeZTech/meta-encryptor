@@ -9,6 +9,7 @@ async function inspectSealed(url) {
   
   try {
     const headResp = await fetch(url, { method: 'HEAD' })
+    console.log('[inspect] HEAD resp:', headResp.status, headResp.headers);
     const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10)
     
     if (totalSize < HEADER_SIZE) {
@@ -292,7 +293,7 @@ export async function downloadUnsealed({
       throw new Error('HTTP 状态: ' + resp.status)
     }
 
-    log('已连接，开始解密并写入文件...')
+    log('1已连接，开始解密并写入文件...')
 
     // 创建下载写入器
     const writer = await withNativeDownloadWriter(filename, expectedPlainBytes, log)

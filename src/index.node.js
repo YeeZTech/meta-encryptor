@@ -1,6 +1,6 @@
 /* eslint-disable */
-import Provider from "./DataProvider";
-import YPCNt_Object from "./ypcntobject";
+import Provider from "./DataProvider.js";
+import YPCNt_Object from "./ypcntobject.js";
 import nodeYPCCrypto from "./ypccrypto.js";
 
 export { Sealer, ToString } from "./Sealer.js";

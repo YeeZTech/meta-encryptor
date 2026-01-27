@@ -1,10 +1,7 @@
-const {
-  Transform
-} = require('stream');
-var log = require("loglevel").getLogger("meta-encryptor/dataprovider");
-import Provider from "./DataProvider";
-var streams = require('memory-streams');
-import YPCNt_Object from "./ypcntobject"
+import { Transform } from "stream";
+import Provider from "./DataProvider.js";
+import streams from 'memory-streams';
+import YPCNt_Object from "./ypcntobject.js"
 
 const {
   DataProvider,

@@ -13,9 +13,7 @@ import keccak256 from "keccak256";
 import YPCCryptoFun from "./ypccrypto.js";
 import YPCNtObjectFun from "./ypcntobject.js";
 import BlockFileFun from "./blockfile.js";
-var log = require("loglevel").getLogger("meta-encryptor/dataprovider");
 const YPCCrypto = YPCCryptoFun();
-const YPCNtObject = YPCNtObjectFun();
 
 import {BlockNumLimit, MaxItemSize,
   HeaderSize, MagicNum,

@@ -1,5 +1,5 @@
-import ypccrypto from "./ypccrypto";
-import YPCNt_Object from './ypcntobject';
+import ypccrypto from "./ypccrypto.js";
+import YPCNt_Object from './ypcntobject.js';
 
 export const YPCNtObject = YPCNt_Object()
 export const YPCCrypto = ypccrypto();

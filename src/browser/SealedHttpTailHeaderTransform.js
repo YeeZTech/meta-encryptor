@@ -19,7 +19,9 @@ function readUint64LE(buf, offset){
 
 async function fetchSealedHeaderFirst(url, opts={}){
   const { log = console.log, chunked=false, chunkSize=DEFAULT_CHUNK_SIZE } = opts;
+  console.log("url=", url);
   log('[TailHeader] HEAD 请求: ', url);
+  console.log('[TailHeader] HEAD 请求: ', url);
   let totalSize = null;
   try{
     const headResp = await fetch(url, {method:'HEAD'});
@@ -47,11 +49,13 @@ async function fetchSealedHeaderFirst(url, opts={}){
     totalSize = parseTotal(probe.headers.get('Content-Range'));
   }
   log('[TailHeader] totalSize =', totalSize);
+  console.log('[TailHeader] totalSize =', totalSize);
   if(!Number.isFinite(totalSize) || totalSize < HEADER_SIZE) throw new Error('文件大小异常');
 
   let headerStart = totalSize - HEADER_SIZE;
   if(!headerBuf){
     log('[TailHeader] 读取尾部 header range=', headerStart, '-', totalSize-1);
+    console.log('[TailHeader] 读取尾部 header range=', headerStart, '-', totalSize-1);
     const headerResp = await fetch(url, { headers:{ Range: `bytes=${headerStart}-${totalSize-1}` }});
     if(!(headerResp.status === 206 || headerResp.status === 200)) throw new Error('获取尾部 header 失败: HTTP '+headerResp.status);
     headerBuf = new Uint8Array(await headerResp.arrayBuffer());
@@ -60,6 +64,7 @@ async function fetchSealedHeaderFirst(url, opts={}){
   const blockNumber = readUint64LE(headerBuf, 16);
   const contentSize = totalSize - HEADER_SIZE - BLOCK_INFO_SIZE * blockNumber;
   log('[TailHeader] blockNumber=', blockNumber, 'contentSize=', contentSize);
+  console.log('[TailHeader] blockNumber=', blockNumber, 'contentSize=', contentSize);
   if(contentSize <= 0) throw new Error('计算得到 contentSize <= 0');
 
   if(!chunked){
@@ -70,6 +75,7 @@ async function fetchSealedHeaderFirst(url, opts={}){
     if(!contentResp.body) throw new Error('内容区无 body');
     const reader = contentResp.body.getReader();
     let fetchedBytes = 0;
+    console.log("reader=", reader);
     const combinedStream = new ReadableStream({
       async start(controller){ controller.enqueue(headerBuf); },
       async pull(controller){

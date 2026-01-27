@@ -5,12 +5,11 @@ import {
   ntpackage2batch,
   fromNtInput
 } from "./common/header_util.js"
-const {
-  Transform
-} = require('stream');
-const logger = require("loglevel").getLogger("meta-encryptor/Unsealer");
+import { Transform } from "stream";
+import log from "loglevel";
+const logger = log.getLogger("meta-encryptor/Unsealer");
 
-import YPCNt_Object from "./ypcntobject"
+import YPCNt_Object from "./ypcntobject.js"
 
 import{HeaderSize, MagicNum, CurrentBlockFileVersion} from "./limits.js";
 

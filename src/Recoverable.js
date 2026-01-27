@@ -1,9 +1,8 @@
 import {WriteStream} from 'fs';
-
-const {Readable, Writable} = require('stream');
-const {SealedFileStream} = require('./SealedFileStream.js');
-const {HeaderSize} = require('./limits.js');
-const fs = require('fs');
+import {Readable, Writable} from 'stream';
+import { SealedFileStream } from './SealedFileStream.js';
+import { HeaderSize } from './limits.js';
+import fs from 'fs';
 import log from 'loglevel';
 
 const logger = log.getLogger("meta-encryptor/Recoverable");

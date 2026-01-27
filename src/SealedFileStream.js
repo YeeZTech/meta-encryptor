@@ -1,17 +1,16 @@
-const {
-  Readable
-} = require('stream');
-const fs = require('fs');
+import {Readable} from "stream";
+import fs from "fs";
 import{HeaderSize, BlockInfoSize,
   MagicNum, CurrentBlockFileVersion} from "./limits.js";
 import {
   buffer2header_t
 } from "./common/header_util.js"
 
-const {supportsConstruct} =require( "./utils.js")
 
+import { supportsConstruct } from "./utils.js";
 
-var log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
+import log from "loglevel";
+const logger = log.getLogger("meta-encryptor/SealedFileStream");
 
 export class SealedFileStream extends Readable{
   constructor(filePath, options){
@@ -24,9 +23,9 @@ export class SealedFileStream extends Readable{
     this.startReadPos = 0;
     this.initialized = false;
     this.streamSize = 0;
-    log.debug("SealedFileStream: ", this)
+    logger.debug("SealedFileStream: ", this)
     if (!supportsConstruct()) {
-      log.debug("no support construct");
+      logger.debug("no support construct");
       this._construct((err) => {
         if (err) {
           this.emit("error", err);
@@ -34,17 +33,17 @@ export class SealedFileStream extends Readable{
         }
       })
     } else {
-      log.debug("support construct");
+      logger.debug("support construct");
     }
   }
 
   async _construct(callback) {
     try {
-      log.debug("open file " + this.filePath)
+      logger.debug("open file " + this.filePath)
       this.fileHandle = await fs.promises.open(this.filePath, 'r');
       const fileStats = await this.fileHandle.stat();
       this.header = Buffer.alloc(HeaderSize);
-      log.debug("to read, " + fileStats.size);
+      logger.debug("to read, " + fileStats.size);
       await new Promise((resolve)=>{
         this.fileHandle.read(this.header, 0, HeaderSize, fileStats.size - HeaderSize)
         .then(({bytesRead}) =>{
@@ -74,13 +73,13 @@ export class SealedFileStream extends Readable{
       callback();
       this.emit('ready');
     } catch (err) {
-      log.error("got err " + err)
+      logger.error("got err " + err)
       callback(err);
     }
   }
 
   _read(size) {
-    log.debug("_read initialized:", this.initialized);
+    logger.debug("_read initialized:", this.initialized);
     if (!this.initialized && !supportsConstruct()) {
       this.once('ready', () => this._read(size));
       return;
@@ -100,23 +99,23 @@ export class SealedFileStream extends Readable{
       }
     }else{
       const buffer = Buffer.alloc(size);
-      log.debug("read file from ", this.startReadPos);
+      logger.debug("read file from ", this.startReadPos);
       this.fileHandle.read(buffer, 0, size, this.startReadPos)
         .then(({ bytesRead }) => {
           if (bytesRead > 0) {
-            log.debug("read data " + bytesRead + ", " + this.contentSize + ", " + this.startReadPos);
+            logger.debug("read data " + bytesRead + ", " + this.contentSize + ", " + this.startReadPos);
             let reachEnd = false;
             if(this.end - this.startReadPos <= bytesRead){
               bytesRead = this.end - this.startReadPos;
               reachEnd = true;
-              log.debug("reach end");
+              logger.debug("reach end");
             }
 
-            log.debug("push data " + bytesRead);
+            logger.debug("push data " + bytesRead);
             this.startReadPos += bytesRead;
             this.push(buffer.subarray(0, bytesRead));
             if(reachEnd){
-              log.debug("reach end done");
+              logger.debug("reach end done");
               this.push(null);
             }
         } else {
@@ -127,7 +126,7 @@ export class SealedFileStream extends Readable{
         }
       })
       .catch(err => {
-        log.error("err: ", err)
+        logger.error("err: ", err)
         this.destroy(err);
       });
     }
