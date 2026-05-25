@@ -94,15 +94,15 @@
 \section{术语与记号}
 \subsection{术语}
 \begin{itemize}
-  \item \textbf{Item}：\texttt{.sealed} 内容区中最小加密单元；
+  \item \textbf{Item}：\texttt{.sealed} 内容区中\textbf{最小不可分}加密单元；本标准在格式与流程上的规范性边界以 Item 为准（见第~\ref{sec:content-region} 节）；
   \item \textbf{Block}：由若干 Item 组成的逻辑分组，并在元信息区有对应索引项；
   \item \textbf{Header}：文件尾部固定 64 字节头结构；
   \item \textbf{Block Info}：描述单个 Block 的 32 字节索引结构；\textbf{Block Infos 区}为由若干条 Block Info 顺序拼接而成的索引区域；
-  \item \textbf{Data Hash}：Header 字段 \ttf{data_hash} 所承载的摘要；对全部规范化输入记录（\ttf{nt_input}）按封装顺序滚动计算，见第~\ref{sec:rolling-hash} 节；
-  \item \textbf{业务载荷}：宿主提交的一段载荷字节串，记为 \ttf{payload}，长度为 \ttf{L}；解封侧按封装顺序输出的字节串为 \ttf{payload}（见第~\ref{sec:input-normalization} 节）；
-  \item \textbf{规范化输入记录}：将一条业务载荷按固定规则编码后的\textbf{明文侧}容器字节串（常记 \ttf{nt_input}），含 \ttf{reserved}、\ttf{payload_len} 与 \ttf{payload}；位于 Item 加密之前，是第~\ref{sec:rolling-hash} 节滚动摘要与批包拼接的基本单元，格式见第~\ref{sec:input-normalization} 节；
-  \item \textbf{批包}：将若干条规范化输入记录按固定容器格式首尾拼接后的字节串，记为 \ttf{B}；一条批包经加密后对应内容区中的一条 Item。容器字节布局见第~\ref{sec:batch-package} 节；
-  \item \textbf{批刷写阈值} \ttf{T_batch}：封装实现参数，判定何时将一批 \ttf{nt_input} 送入批包封装；规则见第~\ref{sec:batch-flush-threshold} 节；队列调度见第~\ref{sec:seal-total-algorithm} 节；
+  \item \textbf{Data Hash}：Header 字段 \ttf{data_hash} 所承载的摘要；对全部\textbf{输入单元}按封装全局顺序滚动计算，见第~\ref{sec:rolling-hash} 节；
+  \item \textbf{业务载荷}：宿主提交的一段载荷字节串，记为 \ttf{payload}，长度为 \ttf{L}；业务语义与切分由应用层决定；解封侧按封装顺序还原的 \ttf{payload} 由集成层从输入单元解码得到（见第~\ref{sec:input-normalization} 节）；
+  \item \textbf{输入单元}：写入批包前的变长字节串（实现中常记 \ttf{nt_input}），须满足第~\ref{sec:input-normalization} 节；多条输入单元可装入同一 Item 的批包 \ttf{B}，再整体加密为一条 Item；
+  \item \textbf{批包}：将若干条输入单元按第~\ref{sec:batch-package} 节容器格式首尾拼接后的字节串，记为 \ttf{B}；一个 \ttf{B} 经加密后对应内容区\textbf{一条} Item；
+  \item \textbf{批刷写阈值} \ttf{T_batch}：封装实现参数，判定何时将一批输入单元打成 \ttf{B} 并写出 Item；规则见第~\ref{sec:batch-flush-threshold} 节；队列调度见第~\ref{sec:seal-total-algorithm} 节；
   \item \textbf{Block 内 Item 数上限} \ttf{N_block}：封装实现参数，限定单个 Block 所含 Item 条数的上界；划分规则见第~\ref{sec:block-split} 节；与 Block Info 字段的对应见第~\ref{sec:block-meta-fields} 节。
 \end{itemize}
 
@@ -213,8 +213,8 @@ Header 记录占用 64 字节，字段布局如下：
   \item \ttf{version_number}：格式版本；
   \item \ttf{block_number}：Block Info 条目数量；维护规则见第~\ref{sec:block-meta} 节；
   \item \ttf{item_number}：内容区 Item 总数量（见第~\ref{sec:content-region} 节）；每写出一条 Item 递增，见第~\ref{sec:item-generation} 节；
-  \item \ttf{data_hash}：对全部 \ttf{nt_input}（按封装顺序）滚动计算得到的最终摘要（\ttf{BYTESTRING[32]}）。
-        记录格式见第~\ref{sec:input-normalization} 节；
+  \item \ttf{data_hash}：对全部输入单元（按封装全局顺序，字节串与批包记录体一致）滚动计算得到的最终摘要（\ttf{BYTESTRING[32]}）。
+        累计规则见第~\ref{sec:rolling-hash} 节；输入单元要求见第~\ref{sec:input-normalization} 节；
         算法与写入见第~\ref{sec:rolling-hash}、\ref{sec:seal-finalize} 节；
         解封校验见第~\ref{sec:integrity-check} 节。
 \end{itemize}
@@ -277,7 +277,7 @@ Block Infos 区位于 Content Region 与尾部 Header 之间，总长度 \ttf{bl
 Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之前；总长度 \ttf{content_size}
 及其在文件中的起止位置由第~\ref{sec:region-length} 节给出。
 
-本区由 \ttf{item_number} 条 Item 顺序拼接而成。本文所称单条 \textbf{Item}，即内容区最小加密单元；\textbf{Content Region 区}即上述全部 Item 按序拼接形成的区域。内容区按块组织，每块由若干连续的 Item 组成。各条 Item 长度随密文载荷变化，Item 之间无固定步长。
+本区由 \ttf{item_number} 条 Item 顺序拼接而成。本文所称单条 \textbf{Item}，即内容区\textbf{最小不可分}加密单元；\textbf{Content Region 区}即上述全部 Item 按序拼接形成的区域。内容区按块组织，每块由若干连续的 Item 组成。各条 Item 长度随密文载荷变化，Item 之间无固定步长。
 
 \subsubsection{Item 记录}\label{sec:item-record}
 每条 Item 由前置长度字段与密文载荷顺序组成，按字节从前到后布局如下：
@@ -310,7 +310,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \end{enumerate}
 \textbf{字段语义：}
 \begin{itemize}
-  \item \ttf{encrypted_data}：\ttf{AES-128-GCM} 密文；其明文为批包，即本条 Item 内全部规范化输入记录按固定格式拼接后、加密前的那段字节串，加解密参数见第~\ref{sec:crypto-chapter} 节；
+  \item \ttf{encrypted_data}：\ttf{AES-128-GCM} 密文；其明文为批包 \ttf{B}，即本条 Item 对应的整段加密前批包字节串（见第~\ref{sec:batch-package} 节），加解密参数见第~\ref{sec:crypto-chapter} 节；
   \item \ttf{iv}：本条 Item 的 \ttf{AES-128-GCM} Nonce（常称 IV）；供加解密双方标识本次独立 GCM 运算，避免同一密钥下因 Nonce 复用而产出相同密文。长度固定 12 字节，取值由安全随机源逐 Item 生成，见第~\ref{sec:randomness} 节；
   \item \ttf{ephemeral_public_key}：本 Item 临时密钥对的公钥；采用椭圆曲线型号 \texttt{secp256k1} 的未压缩公钥，去掉首字节 \texttt{0x04} 后保留 \texttt{x||y}，长度固定 64 字节；
   \item \ttf{gcm_tag}：\ttf{AES-128-GCM} 认证标签；长度固定 16 字节，由 GCM 运算得到。
@@ -336,20 +336,21 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \end{center}
 其中每条 \texttt{record} 为：
 \begin{center}
-  \texttt{[record\_len (8B)][nt\_input (record\_len B)]}
+  \texttt{[record\_len (8B)][unit (record\_len B)]}
 \end{center}
+其中 \texttt{unit} 为一条输入单元的完整字节串（须满足第~\ref{sec:input-normalization} 节）。
 字段语义：
 \begin{itemize}
   \item \ttf{package_id}：\ttf{UINT32(LE)}，当前版本 MUST 为 \texttt{0x82c4e8d8}；
-  \item \ttf{record_count}：\ttf{UINT64(LE)}，批内规范化输入记录条数；
-  \item \ttf{record_len}：本条记录的 \ttf{nt_input} 总字节数（含 \ttf{reserved}、\ttf{payload_len} 与 \ttf{payload}）；
-  \item 批内记录顺序 MUST 与封装侧接收业务载荷的顺序一致。
+  \item \ttf{record_count}：\ttf{UINT64(LE)}，批内输入单元条数；
+  \item \ttf{record_len}：本条 \texttt{unit} 的字节长度（\ttf{UINT64(LE)}）；
+  \item 批内记录顺序 MUST 与封装侧提交输入单元的全局顺序一致。
 \end{itemize}
 
 \textbf{构造与拆分：}
 \begin{itemize}
-  \item \textbf{构造}：将若干条 \ttf{nt_input} 按上述布局首尾拼接为 \ttf{B}；
-  \item \textbf{拆分}：从 \ttf{B} 解析各字段并依次取出完整 \ttf{nt_input}；\ttf{package_id}、长度字段与剩余字节不一致时 MUST 判为格式错误。
+  \item \textbf{构造}：将若干条输入单元按上述布局首尾拼接为 \ttf{B}；
+  \item \textbf{拆分}：从 \ttf{B} 解析各字段并依次取出各条 \texttt{unit}；\ttf{package_id}、长度字段与剩余字节不一致时 MUST 判为格式错误。
 \end{itemize}
 实现行为 MUST 与本节布局一致；与参考实现源码符号的对照见附录~\ref{app:ref-impl-symbols}。
 
@@ -372,6 +373,8 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
   \item 每个 Item 执行长度合法性检查和密码学认证检查；
   \item 当解析 Item 数量达到 \ttf{item_number} 时结束并进入完整性校验阶段。
 \end{enumerate}
+全量顺序解封时，上述 MUST 条款与第~\ref{sec:unseal-chapter} 章参考流程及第~\ref{sec:unseal-total-algorithm} 节应对齐；块级随机访问见第 9 章。
+
 \subsection{规范性校验规则}
 \begin{itemize}
   \item \textbf{计数校验}：实际解析 Item 数 MUST 等于 \ttf{item_number}；
@@ -552,7 +555,7 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 
 该步骤与第~\ref{sec:seal-chapter} 章「业务输入」中的 \textbf{UTF-8 文本编码}无关：
 前者作用于已形成的 \ttf{B}；
-后者在更早阶段将 Unicode 文本转为载荷字节串，再进入 \ttf{nt_input} 与 \ttf{B}。
+后者在更早阶段将 Unicode 文本转为载荷字节串，再由集成层表示为输入单元并装入 \ttf{B}。
 启用文本输入且采用当前版本 GCM 时，\textbf{二者均须执行}。
 
 \begin{itemize}
@@ -597,15 +600,14 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 
 \textbf{输出：}
 \begin{itemize}
-  \item 认证成功：批包 \ttf{B}；
-  \item 认证失败：见第~\ref{sec:auth-failure} 节（MUST NOT 输出 \ttf{B}）。
+  \item 批包 \ttf{B}（认证成功后）。
 \end{itemize}
 
 \textbf{模块实施步骤：}
 \begin{enumerate}
   \item 按下文「解析 \ttf{cipher_payload}」取得密文字段；
   \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节派生会话密钥；
-  \item 按下文「GCM 解密」与第~\ref{sec:aes-gcm} 节完成认证解密；
+  \item 按下文「GCM 解密」与第~\ref{sec:aes-gcm} 节完成认证解密；若认证失败（第~\ref{sec:auth-failure} 节），MUST NOT 输出 \ttf{B}；
   \item 按下文「明文解码」得批包 \ttf{B}。
 \end{enumerate}
 
@@ -649,11 +651,11 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 
 \section{封装流程（参考）}\label{sec:seal-chapter}
 本章给出将业务输入写入 \texttt{.sealed} 文件的\textbf{参考流程}。
-\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；下文各节为信息性步骤说明，除非某条明确要求校验或布局。
+\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；\texttt{.sealed} 内容区的最小不可分单元为 \textbf{Item}，输入单元须满足第~\ref{sec:input-normalization} 节规范性要求。下文各节为信息性步骤说明，除非某条明确要求校验或布局。
 
 \textbf{子流程（独立说明）：}
 \begin{itemize}
-  \item 输入规范化（第~\ref{sec:input-normalization} 节）；
+  \item 标准化输入基本规范（第~\ref{sec:input-normalization} 节）；
   \item 滚动摘要累计（第~\ref{sec:rolling-hash} 节）；
   \item 批包封装与 Item 写出（第~\ref{sec:item-generation} 节）；
   \item 批刷写阈值（第~\ref{sec:batch-flush-threshold} 节）；
@@ -664,55 +666,28 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{itemize}
 全局一致性见第~\ref{sec:seal-consistency} 节。
 
-\subsection{输入规范化}\label{sec:input-normalization}
-将宿主提交的业务载荷编码为一条规范化输入记录 \ttf{nt_input}。
+\subsection{标准化输入基本规范}\label{sec:input-normalization}
+本标准以 \textbf{Item} 为 \texttt{.sealed} 内容区最小不可分单元（第~\ref{sec:content-region} 节）。宿主逐段提交的逻辑数据，在写入批包前由集成层表示为变长字节串，下文统称\textbf{输入单元}（实现中常记 \ttf{nt_input}）。\textbf{本标准不规定}输入单元的具体字节布局；本节仅列出输入单元\textbf{应满足}的规范性要求，以便与批包、滚动摘要及解封输出对齐。如何由 \ttf{payload} 得到输入单元属于集成层实现，不在本节展开。
 
-\textbf{输入：}
+\textbf{规范性要求：}
 \begin{itemize}
-  \item 一段载荷字节串，长度为 \ttf{L}（由宿主决定切分策略）；
-  \item 若上层以 Unicode 文本提交，须先经 UTF-8 编码为字节串（见下文说明）。
+  \item 封装与解封 MUST 对输入单元采用同一套、且在实现文档中声明的语义；
+  \item 每条输入单元 MUST 对应一段可还原的业务载荷 \ttf{payload}（还原方式由集成层定义，不属于 \texttt{.sealed} 文件布局）；
+  \item 每条输入单元 MUST 完整地落入一个批包记录体（第~\ref{sec:batch-package} 节），MUST NOT 为凑批而在单元内部截断；
+  \item 全部输入单元 MUST 具有确定的\textbf{全局总序}；该顺序 MUST 与第~\ref{sec:rolling-hash} 节累计顺序及解封侧输出顺序一致；
+  \item 参与滚动摘要的字节串 MUST 与写入批包记录体 \texttt{unit} 逐字节相同；
+  \item 输入单元明文不单独写入 \texttt{.sealed} 文件，仅通过加密后的 Item 对外存在。
 \end{itemize}
-
-\textbf{输出：}
-\begin{itemize}
-  \item 一条 \ttf{nt_input}（完整字节串，长度为 \texttt{12 + L}）。
-\end{itemize}
-
-\textbf{相关格式：}
-\ttf{nt_input} 属于加密前明文侧数据，\texttt{.sealed} 文件内不单独存放其原文。
-当前版本（\ttf{version_number = 2}）\ttf{nt_input} 布局为：
-\begin{center}
-  \texttt{[reserved (4B)][payload\_len (8B)][payload (L B)]}
-\end{center}
-\begin{itemize}
-  \item \ttf{reserved}（偏移 0--3）：MUST 为 \texttt{0x00000000}；
-  \item \ttf{payload_len}（偏移 4--11）：\ttf{UINT64(LE)}，MUST 等于 \ttf{L}；
-  \item \ttf{payload}（偏移 12 起）：长度为 \ttf{L} 的载荷字节串。
-\end{itemize}
-
-\textbf{实施步骤：}
-\begin{enumerate}
-  \item 若输入为 Unicode 文本，MUST 以 UTF-8 编码为字节串，且 \textbf{MUST NOT} 在首部附带 BOM（\texttt{EF BB BF}）；若以原始二进制流提交，跳过本步；
-  \item 按上文布局写入 \ttf{reserved}、\ttf{payload_len} 与 \ttf{payload}，得到一条 \ttf{nt_input}。
-\end{enumerate}
 
 \textbf{说明：}
-\begin{itemize}
-  \item \textbf{宿主 / 集成方}决定每次提交的载荷字节串长度 \ttf{L}，从而决定本条 \ttf{nt_input} 长度为 \texttt{12 + L}；本标准不规定 \ttf{L} 的切分策略；
-  \item 同一业务输入在不同实现中 MUST 产生逐字节相同的 \ttf{nt_input}；本标准不规定 \ttf{payload} 业务语义；
-  \item UTF-8 属于应用层字符编码，发生在 \ttf{nt_input} 之前；批包进入第~\ref{sec:content-encryption} 节前的编码与
-        UTF-8 \textbf{不是}同一步；
-  \item 封装实现 MUST NOT 在载荷外附加未在本节定义的额外前缀或后缀；
-  \item 解封侧从完整 \ttf{nt_input} 校验字段后提取 \ttf{payload}，不一致时 MUST 判为格式错误；
-  \item 实现符号对照见附录~\ref{app:ref-impl-symbols}。
-\end{itemize}
+\ttf{payload} 的业务语义、字符编码（如 UTF-8）及切分粒度由应用层决定。Meta-Encryptor 的 \ttf{toNtInput}/\ttf{fromNtInput} 仅为一种集成示例（见附录~\ref{app:ref-impl-symbols}），\textbf{不是}本标准的必选布局。
 
 \subsection{滚动摘要累计}\label{sec:rolling-hash}
-在封装过程中按顺序累计全部 \ttf{nt_input} 的滚动摘要，终值写入 Header.\ttf{data_hash}。
+在封装过程中按顺序累计全部输入单元的滚动摘要，终值写入 Header.\ttf{data_hash}。
 
 \textbf{输入：}
 \begin{itemize}
-  \item 按封装顺序产生的各条 \ttf{nt_input} 完整字节串（含 12 字节头，布局见第~\ref{sec:input-normalization} 节）；
+  \item 按封装全局顺序产生的各条输入单元完整字节串（与第~\ref{sec:batch-package} 节记录体 \texttt{unit} 逐字节一致，见第~\ref{sec:input-normalization} 节）；
   \item 初值 $H_0$（当前版本见下文）。
 \end{itemize}
 
@@ -722,25 +697,25 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{itemize}
 
 \textbf{相关格式：}
-Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计与 Item 边界无关，仅依赖 \ttf{nt_input} 全局顺序。
+Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计与 Item 边界无关，仅依赖输入单元全局顺序（非 Item 条数）。
 
 \textbf{实施步骤：}
 当前版本 (\ttf{version_number = 2}) 规则如下：
 \begin{center}
   \texttt{H\_0 = keccak256("Fidelius")} \\
-  \texttt{H\_{i+1} = keccak256(H\_i || nt\_input\_i)}
+  \texttt{H\_{i+1} = keccak256(H\_i || unit\_i)}
 \end{center}
-记共产生 \ttf{n} 条 \ttf{nt_input}，终态为 $H_n$。\textbf{\rollhash 终值}\label{sec:rolling-hash-final}定义为 $H_n$；封装完成时 Header.\ttf{data_hash} MUST 等于 $H_n$。
+其中 \texttt{unit\_i} 为全局顺序下第 $i$ 条输入单元的完整字节串。记共产生 $N$ 条输入单元，终态为 $H_n$。\textbf{\rollhash 终值}\label{sec:rolling-hash-final}定义为 $H_n$；封装完成时 Header.\ttf{data_hash} MUST 等于 $H_n$。
 
 \textbf{说明：}
-每得一条 \ttf{nt_input} 可按本节规则更新摘要状态；终值 $H_n$ 在收尾写入 Header（第~\ref{sec:seal-finalize} 节）。何时调用本节见第~\ref{sec:seal-total-algorithm} 节；解封侧比对见第~\ref{sec:integrity-check} 节。
+本节规定递推规则；封装主循环中 $H$ 的初值与更新时机见第~\ref{sec:seal-total-algorithm} 节。每得一条输入单元可按本节规则更新摘要状态；终值 $H_n$ 在收尾写入 Header（第~\ref{sec:seal-finalize} 节）。解封侧比对见第~\ref{sec:integrity-check} 节。
 
 \subsection{批包封装与 Item 写出}\label{sec:item-generation}
-将\textbf{同一批次}的多条 \ttf{nt_input} 打成批包 \ttf{B}，加密并在内容区追加\textbf{一条} Item 记录。
+将\textbf{同一批次}的多条输入单元打成批包 \ttf{B}，加密并在内容区追加\textbf{一条} Item 记录（Item 为内容区最小不可分单元）。
 
 \textbf{输入：}
 \begin{itemize}
-  \item 若干条完整的 \ttf{nt_input}（条数 $\ge 1$，批内顺序 MUST 与拼接顺序一致）；
+  \item 若干条完整的输入单元（条数 $\ge 1$，批内顺序 MUST 与全局提交顺序一致）；
   \item 接收方长期公钥（应用层提供，见第~\ref{sec:curve-keys} 节）。
 \end{itemize}
 
@@ -751,13 +726,13 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \textbf{相关格式：}
 \begin{itemize}
-  \item 若干 \ttf{nt_input} 首尾拼接为批包 \ttf{B}（布局见第~\ref{sec:batch-package} 节）；
+  \item 若干输入单元首尾拼接为批包 \ttf{B}（布局见第~\ref{sec:batch-package} 节）；
   \item 一个 \ttf{B} 对应内容区\textbf{一条} Item：\texttt{UINT64(LE) item\_size} 后跟 \ttf{cipher_payload}（见第~\ref{sec:item-record}、\ref{sec:cipher-payload-layout} 节）。
 \end{itemize}
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item 将输入的各条 \ttf{nt_input} 按第~\ref{sec:batch-package} 节首尾拼接，得到批包 \ttf{B}；
+  \item 将输入的各条输入单元按第~\ref{sec:batch-package} 节首尾拼接，得到批包 \ttf{B}；
   \item 对 \ttf{B} 与接收方长期公钥调用第~\ref{sec:content-encryption} 节内容加密模块，得到 \ttf{item_size} 与 \ttf{cipher_payload}；
   \item 按第~\ref{sec:item-record} 节向内容区追加 \texttt{UINT64(LE) item\_size} 与 \ttf{cipher_payload}。
 \end{enumerate}
@@ -767,7 +742,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 向内容区追加顺序见第~\ref{sec:seal-consistency} 节；写出后更新 Header 计数与 Block Info 见第~\ref{sec:block-meta} 节。
 
 \subsection{批刷写阈值}\label{sec:batch-flush-threshold}
-规定封装实现\textbf{何时}将当前累积的一批 \ttf{nt_input} 作为同一批次，调用第~\ref{sec:item-generation} 节打成 \ttf{B} 并写出 Item；队列维护与调用顺序见第~\ref{sec:seal-total-algorithm} 节。
+规定封装实现\textbf{何时}将当前累积的一批输入单元作为同一批次，调用第~\ref{sec:item-generation} 节打成 \ttf{B} 并写出 Item；队列维护与调用顺序见第~\ref{sec:seal-total-algorithm} 节。
 
 \textbf{参数：}
 \begin{itemize}
@@ -775,29 +750,25 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \end{itemize}
 
 \textbf{度量：}
-设当前\textbf{待打包批次}（尚未送入第~\ref{sec:item-generation} 节的 \ttf{nt_input} 集合）为 $\mathcal{N}$。
+设当前\textbf{待打包批次}（尚未送入第~\ref{sec:item-generation} 节的输入单元集合）为 $\mathcal{N}$。
 记
 \[
-  S_{\mathrm{batch}} = \sum_{n \in \mathcal{N}} |n|
+  S_{\mathrm{batch}} = \sum_{u \in \mathcal{N}} |u|
 \]
-其中 $|n|$ 为 \ttf{nt_input} 的\textbf{完整编码字节长度}（含 12 字节头，即 \texttt{12 + L}，布局见第~\ref{sec:input-normalization} 节）。
+其中 $|u|$ 为输入单元的\textbf{完整字节长度}（与第~\ref{sec:batch-package} 节 \ttf{record_len} 一致）。
 第~\ref{sec:seal-total-algorithm} 节队列 \ttf{Q} 上的 $S(Q)$ 与本节 $S_{\mathrm{batch}}$ 采用同一度量。
 
 \textbf{刷写条件：}
 \begin{enumerate}
   \item \textbf{阈值触达：}当 $S_{\mathrm{batch}} \ge T_{\mathrm{batch}}$ 时，封装实现 MUST 对 $\mathcal{N}$ 中\textbf{全部}条目执行一次第~\ref{sec:item-generation} 节，并清空该待打包批次；
-  \item \textbf{输入结束：}宿主声明输入流结束时，若 $\mathcal{N}$ 非空，封装实现 MUST 再执行一次第~\ref{sec:item-generation} 节（即使 $S_{\mathrm{batch}} < T_{\mathrm{batch}}$）。
+  \item \textbf{输入结束：}宿主声明输入流结束时，若 $\mathcal{N}$ 非空，封装实现 MUST 再执行一次第~\ref{sec:item-generation} 节（即使 $S_{\mathrm{batch}} < T_{\mathrm{batch}}$）；
+  \item 单条输入单元 MUST 完整地属于一个批次；MUST NOT 为凑满 \ttf{T_batch} 而在某条输入单元内部截断。
 \end{enumerate}
-
-\textbf{完整性约束：}
-\begin{itemize}
-  \item 单条 \ttf{nt_input} MUST 完整地属于一个批次；MUST NOT 为凑满 \ttf{T_batch} 而在某条 \ttf{nt_input} 内部截断载荷或头字段。
-\end{itemize}
 
 \textbf{说明：}
 \ttf{L}、\ttf{T_batch} 均不在 Header 中编码。
 参考实现取 \ttf{T_batch = 65536}（\ttf{MaxItemSize}）；若变更阈值导致批次划分或 Item 数量变化，\ttf{version_number} MUST 递增。
-若宿主按固定块大小 \ttf{T_chunk} 提交载荷且 \ttf{T_chunk = T_batch}，常见为每批 1 条 \ttf{nt_input}；\ttf{L} 较小时一批可含多条 \ttf{nt_input}（附录~\ref{app:ref-impl-symbols}）。
+若宿主按固定块大小 \ttf{T_chunk} 提交载荷且 \ttf{T_chunk = T_batch}，常见为每批 1 条输入单元；\ttf{L} 较小时一批可含多条输入单元（附录~\ref{app:ref-impl-symbols}）。
 
 \subsection{Block 组织与切分}\label{sec:block-split}
 本节说明内容区中的 Block 如何由 Item 构成及何时切分。
@@ -823,7 +794,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \textbf{说明：}
 \ttf{N_block} 由封装实现声明，\textbf{不}写入 \texttt{.sealed} 文件；变更且影响互操作时 \ttf{version_number} MUST 递增。
-宿主 \textbf{MAY} 将多段业务数据编码为多条 \ttf{nt_input} 并写入同一 \texttt{.sealed} 内容区；Block Info 不记录「第几个源文件」，仅索引本文件内 Item 与密文字节。
+宿主 \textbf{MAY} 将多段业务数据表示为多条输入单元并写入同一 \texttt{.sealed} 内容区（经若干 Item）；Block Info 不记录「第几个源文件」，仅索引本文件内 Item 与密文字节。
 
 \subsection{Block 元信息维护}\label{sec:block-meta}
 每写出一条 Item 后，封装实现 MUST 按第~\ref{sec:block-split} 节的划分规则，更新 Header.\ttf{item_number} 与内存中的 Block Info 列表，供第~\ref{sec:seal-finalize} 节写入 Block Infos 区。
@@ -848,7 +819,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
   \item 含义：本 Block 在内容区 Item \textbf{逻辑序号}上的半开区间 \texttt{[start\_item\_index, end\_item\_index)}。按封装写出顺序，自 \texttt{0} 起为第 0 条 Item、第 1 条 Item……直至 \texttt{item\_number - 1}（与 Header.\ttf{item_number} 一致）。
   \item \ttf{start_item_index}：该 Block 内\textbf{第一条} Item 的下标（\textbf{含}）。
   \item \ttf{end_item_index}：该 Block 内\textbf{最后一条} Item 的下标加 1（\textbf{不含}）；Block 内 Item 条数为 \texttt{end\_item\_index - start\_item\_index}，MUST NOT 大于 \ttf{N_block}；当该值已达 \ttf{N_block} 时，下一条写出的 Item MUST 按第~\ref{sec:block-split} 节开启新 Block；
-  \item \textbf{不是}：源明文文件编号、源文件内块号、\ttf{nt_input} 的全局序号（一条 Item 的批包内可含多条 \ttf{nt_input}，见第~\ref{sec:batch-package} 节），亦 \textbf{不是} 其它 \texttt{.sealed} 文件中的 Item 下标。
+  \item \textbf{不是}：源明文文件编号、源文件内块号、批包内输入单元的序号（一条 Item 的 \ttf{B} 内可含多条记录，见第~\ref{sec:batch-package} 节），亦 \textbf{不是} 其它 \texttt{.sealed} 文件中的 Item 下标。
 \end{itemize}
 
 \textbf{内容区字节偏移：\ttf{start_file_pos}、\ttf{end_file_pos}。}
@@ -952,16 +923,16 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \textbf{变量与状态（仅在本节及图中使用）：}
 \begin{itemize}
-  \item 待刷写队列 \ttf{Q}：元素为完整的 \ttf{nt_input}；
-  \item $S(Q)$：\ttf{Q} 中各 \ttf{nt_input} 编码后总字节数（与第~\ref{sec:batch-flush-threshold} 节中 $S_{\mathrm{batch}}$ 同型，用于阈值判断）；
-  \item $H$：滚动摘要状态，初值 $H_0$、终值 $H_n$（规则见第~\ref{sec:rolling-hash} 节）。
+  \item 待刷写队列 \ttf{Q}：元素为完整的输入单元；
+  \item $S(Q)$：\ttf{Q} 中各输入单元字节总长度（与第~\ref{sec:batch-flush-threshold} 节中 $S_{\mathrm{batch}}$ 同型，用于阈值判断）；
+  \item $H$：滚动摘要状态，初值 $H_0$、终值 $H_n$（递推规则见第~\ref{sec:rolling-hash} 节，在主循环中按每条输入单元更新）。
 \end{itemize}
 
 \textbf{主循环图与子节对应：}
 图~\ref{fig:batch-flush-flow} 为全量顺序封装的一种参考主流程；图源 \texttt{doc/diagrams/seal-batch-flush-flow.mmd}。
 图中流程名词与独立子节的对应关系如下（图中\textbf{不}标注章节号）：
 \begin{itemize}
-  \item 「输入规范化」「滚动摘要更新 $H$」：分别见第~\ref{sec:input-normalization}、\ref{sec:rolling-hash} 节；「\ttf{nt_input} 入队 \ttf{Q}」指将完整 \ttf{nt_input} 入 \ttf{Q}；
+  \item 「输入单元入队」「滚动摘要更新 $H$」：输入单元须满足第~\ref{sec:input-normalization} 节；摘要规则见第~\ref{sec:rolling-hash} 节；「入队 \ttf{Q}」指将完整输入单元入 \ttf{Q}；
   \item 「批刷写阈值」：见第~\ref{sec:batch-flush-threshold} 节（图中 $S(Q)$ 与 \ttf{T_batch} 同该节）；
   \item 「Item 写出」：见第~\ref{sec:item-generation} 节；「Block 元信息更新」：见第~\ref{sec:block-meta} 节；
   \item 「收尾落盘」：见第~\ref{sec:seal-finalize} 节。
@@ -978,7 +949,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 以下按图~\ref{fig:batch-flush-flow} 自上而下解读；各步具体操作以对应子节为准。
 \begin{enumerate}
   \item \textbf{开始与初始化}（图：\texttt{开始}）：\ttf{version_number} 按约定取值；\ttf{block_number} $= 0$，\ttf{item_number} $= 0$；$H \leftarrow H_0$；\ttf{Q} 为空。
-  \item \textbf{主循环入口}（图：判断「宿主已声明输入结束且无新载荷」，取\textbf{否}）：每收到一段业务载荷，执行图中「输入规范化 / 滚动摘要更新 $H$ / \ttf{nt_input} 入队 \ttf{Q}」框（第~\ref{sec:input-normalization}、\ref{sec:rolling-hash} 节）。
+  \item \textbf{主循环入口}（图：判断「宿主已声明输入结束且无新载荷」，取\textbf{否}）：每收到一段业务载荷，产生满足第~\ref{sec:input-normalization} 节的输入单元并入 \ttf{Q}，按第~\ref{sec:rolling-hash} 节更新 $H$（见图「输入单元入队 / 滚动摘要更新 $H$」）。
   \item \textbf{批刷写判断}（图：判断 $S(Q) \ge T_{\mathrm{batch}}$）：若为\textbf{是}，执行「Item 写出 / Block 元信息更新 / 清空 \ttf{Q}」（第~\ref{sec:item-generation}、\ref{sec:block-meta} 节），返回步骤 2 的判断；若为\textbf{否}，直接返回步骤 2 的判断。
   \item \textbf{输入结束}（图：步骤 2 判断取\textbf{是}后，判断「\ttf{Q} 非空」）：若为\textbf{是}，再执行一次 Item 写出与 Block 元信息更新并清空 \ttf{Q}；若为\textbf{否}，进入步骤 5。
   \item \textbf{收尾落盘}（图：「收尾落盘」$\rightarrow$ \texttt{结束}）：按第~\ref{sec:seal-finalize} 节写出 Block Infos 与 Header，\ttf{data_hash} $\leftarrow H_n$。
@@ -995,7 +966,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \section{解封流程（参考）}\label{sec:unseal-chapter}
 本章给出从 \texttt{.sealed} 文件按序还原业务载荷的\textbf{参考流程}。
-\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；下文各节为信息性步骤说明，除非某条明确要求校验或布局。
+\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；解封以 Item 为最小读取与认证单元，\ttf{payload} 由集成层从批包内输入单元还原，且须满足第~\ref{sec:input-normalization} 节与封装侧同一集成语义。第~\ref{sec:format-chapter} 章「规范性解析流程」中的 MUST 条款在全量顺序解封时与本章一致，本章侧重步骤组合与图示。下文各节为信息性步骤说明，除非某条明确要求校验或布局。
 
 \textbf{子流程（独立说明）：}
 \begin{itemize}
@@ -1048,7 +1019,7 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 与第~\ref{sec:unseal-total-algorithm} 节主循环共享，本节负责在读每条 Item 后更新：
 \begin{itemize}
   \item $p$：内容区读指针（相对内容区起点，单位：字节；初值 $p \leftarrow 0$ 见第~\ref{sec:unseal-total-algorithm} 节）；
-  \item $n$：已处理 Item 计数（供主循环终止判断及完整性比对；初值 $n \leftarrow 0$ 见同上）。
+  \item $n$：已处理 Item 计数（供主循环终止判断及完整性比对；初值 $n \leftarrow 0$ 见同上；\textbf{勿}与第~\ref{sec:rolling-hash} 节中输入单元条数 $N$ 混淆）。
 \end{itemize}
 
 \textbf{输出：}
@@ -1064,8 +1035,8 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
   \item 若 \ttf{content_size} $-$ $p < 8$，MUST 终止本条 Item 读取，错误码 SHOULD 为附录 C 中的 \ttf{E_ITEM_TRUNCATED}；
   \item 自偏移 $p$ 起读取 8 字节，解码为 $L$；若 $L$ 非法（如为 \texttt{0} 或超出实现上限），MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_ITEM_SIZE_INVALID}；
   \item 若 \ttf{content_size} $-$ $p < 8 + L$，MUST 终止本条 Item 读取，错误码 SHOULD 为附录 C 中的 \ttf{E_ITEM_TRUNCATED}；
-  \item 自偏移 $p + 8$ 起读取 $L$ 字节，得到 \ttf{cipher_payload}；若其布局不满足第~\ref{sec:cipher-payload-layout} 节，MUST 失败（格式错误）；
-  \item 更新 $p \leftarrow p + 8 + L$、$n \leftarrow n + 1$；当 $n = \ttf{item_number}$ 时，若 $p \ne \ttf{content_size}$，MUST 失败（格式错误）。
+  \item 自偏移 $p + 8$ 起读取 $L$ 字节，得到 \ttf{cipher_payload}；若其布局不满足第~\ref{sec:cipher-payload-layout} 节，MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_ITEM_SIZE_INVALID}；
+  \item 更新 $p \leftarrow p + 8 + L$、$n \leftarrow n + 1$；当 $n = \ttf{item_number}$ 时，若 $p \ne \ttf{content_size}$，MUST 终止解封（格式错误，如 \ttf{E_ITEM_TRUNCATED} 或实现自定义码）。
 \end{enumerate}
 
 \textbf{说明：}
@@ -1096,33 +1067,32 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 算法细节见第~\ref{sec:decrypt-crypto} 节；本章不重复模块内部步骤。
 
 \subsection{批包拆分、业务输出与滚动摘要}\label{sec:unseal-batch-output}\label{sec:unseal-rolling-hash}
-将批包 \ttf{B} 拆为若干条 \ttf{nt_input}，在输出每条 \ttf{payload} 之前用对应 \ttf{nt_input} 更新滚动摘要 $H$，并按序输出 \ttf{payload}。
-
-\textbf{维护的状态：}
-$H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与调度见第~\ref{sec:unseal-total-algorithm} 节）。每处理完本条 Item 内全部 \ttf{nt_input} 后，按实施步骤更新 $H$。
+将一条 Item 解密得到的批包 \ttf{B} 拆为若干条输入单元，在输出每条 \ttf{payload} 之前用对应输入单元（与封装侧记录体逐字节一致）更新滚动摘要 $H$，并按序输出 \ttf{payload}。
 
 \textbf{输入（每次调用）：}
 批包 \ttf{B}（由第~\ref{sec:unseal-item-crypto} 节得到）。
+
+\textbf{维护的状态：}
+$H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与调度见第~\ref{sec:unseal-total-algorithm} 节）。每处理完本条 Item 的 \ttf{B} 内全部输入单元后，按实施步骤更新 $H$。
 
 \textbf{输出（每次调用）：}
 按批内顺序输出的各条 \ttf{payload}。
 
 \textbf{相关格式：}
-\ttf{B} 布局见第~\ref{sec:batch-package} 节；\ttf{nt_input} 与 \ttf{payload} 提取规则见第~\ref{sec:input-normalization} 节；$H$ 递推规则与 $H_0$ 定义见第~\ref{sec:rolling-hash}、\ref{sec:rolling-hash-final} 节。
+\ttf{B} 布局见第~\ref{sec:batch-package} 节；输入单元须满足第~\ref{sec:input-normalization} 节；$H$ 递推规则与 $H_0$ 定义见第~\ref{sec:rolling-hash}、\ref{sec:rolling-hash-final} 节。
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item 按第~\ref{sec:batch-package} 节将 \ttf{B} 拆为若干条 \ttf{nt_input}；若 \ttf{package_id}、长度字段与剩余字节不一致，MUST 终止解封（格式错误），并 MUST NOT 输出 \ttf{payload}；
-  \item 对批内每条 \ttf{nt_input} 按序执行下列子步骤（\textbf{不得}在输出 \ttf{payload} 后再用该条 \ttf{nt_input} 更新 $H$）：
+  \item 按第~\ref{sec:batch-package} 节将 \ttf{B} 拆为若干条输入单元（\texttt{unit}）；若 \ttf{package_id}、长度字段与剩余字节不一致，MUST 终止解封（格式错误），并 MUST NOT 输出 \ttf{payload}；
+  \item 对批内每条输入单元按序执行下列子步骤（\textbf{不得}在输出 \ttf{payload} 后再用该条单元更新 $H$）：
   \begin{enumerate}
-    \item 按第~\ref{sec:input-normalization} 节校验布局；失败时 MUST 终止解封（格式错误）；
-    \item 在输出 \ttf{payload} 之前，用本条 \ttf{nt_input} 完整字节串（含 12 字节头）按第~\ref{sec:rolling-hash} 节更新 $H$；
-    \item 提取 \ttf{payload} 并输出。
+    \item 在输出 \ttf{payload} 之前，用本条输入单元完整字节串按第~\ref{sec:rolling-hash} 节更新 $H$；
+    \item 由集成层将输入单元还原为 \ttf{payload} 并输出（语义须与封装侧一致，见第~\ref{sec:input-normalization} 节）；失败时 MUST 终止解封（格式错误）。
   \end{enumerate}
 \end{enumerate}
 
 \textbf{说明：}
-\ttf{nt_input} 仅在本节步骤 2 内存在；$H$ 的累计顺序 MUST 与封装侧 \ttf{nt_input} 全局顺序一致。完整性比对见第~\ref{sec:unseal-total-algorithm} 节。
+输入单元仅在本节步骤 2 内存在；$H$ 的累计顺序 MUST 与封装侧输入单元全局顺序一致。完整性比对见第~\ref{sec:unseal-total-algorithm} 节。
 
 \subsection{解封流程总览}\label{sec:unseal-total-algorithm}\label{sec:unseal-main-flow}
 本节定义解封侧\textbf{如何组合}前述子流程。各子节仅描述单步职责；本节给出调度变量、主循环参考图及\textbf{按图解读}的实施步骤（含完整性比对）。
@@ -1139,9 +1109,9 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 图中流程名词与独立子节的对应关系如下（图中\textbf{不}标注章节号；\ttf{data_hash} 等字段语义以正文为准）：
 \begin{itemize}
   \item 「读 Header 并校验」「计算 \ttf{content_size}」：见第~\ref{sec:unseal-header-model} 节；图中「初始化 $H = H_0$，$n = 0$」另需 $p \leftarrow 0$（$H_0$ 见第~\ref{sec:rolling-hash} 节）；
-  \item 「读 \ttf{item_size} 与 \ttf{cipher_payload}」：见第~\ref{sec:unseal-item-parse} 节；
+  \item 「读 \ttf{item_size} 与 \ttf{cipher_payload}」：见第~\ref{sec:unseal-item-parse} 节（含 $n$ 递增，图中无单独「$n$ 加 1」节点）；
   \item 「认证解密得批包 \ttf{B}」：见第~\ref{sec:unseal-item-crypto} 节；
-  \item 「拆分 \ttf{B}」「逐条输出 \ttf{payload} 并用 \ttf{nt_input} 更新 $H$」：见第~\ref{sec:unseal-batch-output} 节（须在输出 \ttf{payload} 之前更新 $H$）；
+  \item 「拆分 \ttf{B}」「逐条输出 \ttf{payload} 并用输入单元更新 $H$」：见第~\ref{sec:unseal-batch-output} 节（须在输出 \ttf{payload} 之前更新 $H$）；
   \item 「$H$ 等于 \ttf{data_hash}」：见下文实施步骤第 3 项（完整性比对）。
 \end{itemize}
 
@@ -1156,7 +1126,7 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 以下按图~\ref{fig:unseal-main-flow} 自上而下解读；各步具体操作以对应子节为准。
 \begin{enumerate}
   \item \textbf{开始与 Header}（图：\texttt{开始} $\rightarrow$ 「读 Header 并校验」$\rightarrow$ 「计算 \ttf{content_size} / 初始化」）：按第~\ref{sec:unseal-header-model} 节取得并校验 Header；$H \leftarrow H_0$，$p \leftarrow 0$，$n \leftarrow 0$。
-  \item \textbf{主循环}（图：判断 $n$ 小于 \ttf{item_number}，取\textbf{是}）：以当前 $p$、$n$ 调用第~\ref{sec:unseal-item-parse} 节得 \ttf{cipher_payload} 及更新后的 $p$、$n$；调用第~\ref{sec:unseal-item-crypto} 节得 \ttf{B}；以当前 $H$ 调用第~\ref{sec:unseal-batch-output} 节输出 \ttf{payload} 并得到更新后的 $H$（对应图中「读 Item $\rightarrow$ 认证解密 $\rightarrow$ 拆分并输出」链）；$n$ 加 1 后返回本步判断。认证或格式失败时 MUST 终止（图虚线至错误结束）。
+  \item \textbf{主循环}（图：判断 $n$ 小于 \ttf{item_number}，取\textbf{是}）：以当前 $p$、$n$ 调用第~\ref{sec:unseal-item-parse} 节得 \ttf{cipher_payload} 及更新后的 $p$、$n$（$n$ 仅在该节末项递增）；调用第~\ref{sec:unseal-item-crypto} 节得 \ttf{B}；以当前 $H$ 调用第~\ref{sec:unseal-batch-output} 节输出 \ttf{payload} 并得到更新后的 $H$（对应图中「读 Item $\rightarrow$ 认证解密 $\rightarrow$ 拆分并输出」链）；然后返回本步判断。认证或格式失败时 MUST 终止（图虚线至错误结束）。
   \item \textbf{完整性比对}\label{sec:integrity-check}（图：$n$ 判断取\textbf{否} $\rightarrow$ 「$H$ 等于 \ttf{data_hash}」）：将 $H$ 与 \ttf{data_hash} 逐字节比较；相等则成功结束，不等则 MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_INTEGRITY_MISMATCH}，并视已输出的 \ttf{payload} 为不可信；流式输出时 SHOULD 停止下游消费并上报错误。
 \end{enumerate}
 
@@ -1166,7 +1136,7 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
   \item \ttf{magic_number} 或 \ttf{version_number} 校验失败（第~\ref{sec:header-compat} 节）；
   \item \ttf{content_size} 非法，或第~\ref{sec:unseal-item-parse} 节读取 Item 时字节不足或布局非法；
   \item 第~\ref{sec:decrypt-crypto} 节内容解密还原模块认证失败（第~\ref{sec:auth-failure} 节）；
-  \item 第~\ref{sec:unseal-batch-output} 节批包拆分或 \ttf{nt_input} 校验失败；
+  \item 第~\ref{sec:unseal-batch-output} 节批包拆分或输入单元解码失败；
   \item 第~\ref{sec:unseal-total-algorithm} 节完整性比对中 $H$ 与 \ttf{data_hash} 不一致。
 \end{itemize}
 
@@ -1359,9 +1329,9 @@ state:
   block_infos = []
   batch = []
 
-for each normalized_record nt_input from plaintext_stream:
-  batch.append(nt_input)
-  H = keccak256(H || nt_input)
+for each input_unit from plaintext_stream:
+  batch.append(input_unit)
+  H = keccak256(H || input_unit)
   if batch_size_reach_threshold():
     pkg = batch2ntpackage(batch)
     cipher_payload = encrypt_item(pkg, receiver_public_key, prefix=0x02)
@@ -1392,9 +1362,9 @@ while read_item_count < header.item_number:
   cipher_payload = read_exact(item_size)
   B = decrypt_item_to_batch(cipher_payload, private_key)  // 见第 6.5 节，输出 B
   batch = ntpackage2batch(B)
-  for each nt_input in batch:
-    emit fromNtInput(nt_input)
-    H = keccak256(H || nt_input)
+  for each input_unit in batch:
+    emit decode_input_unit(input_unit)  // 集成层解码，见第 7.1 节
+    H = keccak256(H || input_unit)
   read_item_count += 1
 
 if H != header.data_hash:
@@ -1480,10 +1450,10 @@ data-hash        = 32BYTE
   本标准表述（第~\ref{sec:seal-chapter} 章） & 参考实现符号（Node）          & 说明                                       \\
   \midrule
   \endhead
-  封装侧编码                             & \ttf{toNtInput}       & 载荷字节串 $\to$ 一条 \ttf{nt_input}            \\
-  解封侧解码                             & \ttf{fromNtInput}     & 一条 \ttf{nt_input} $\to$ \ttf{payload}    \\
-  批包构造                              & \ttf{batch2ntpackage} & 若干 \ttf{nt_input} $\to$ 批包 \ttf{B}       \\
-  批包拆分                              & \ttf{ntpackage2batch} & 批包 \ttf{B} $\to$ \ttf{nt_input} 列表       \\
+  集成层表示（示例）                         & \ttf{toNtInput}       & \ttf{payload} $\to$ 输入单元；\textbf{非}本标准必选布局 \\
+  集成层还原（示例）                         & \ttf{fromNtInput}     & 输入单元 $\to$ \ttf{payload}；\textbf{非}本标准必选布局 \\
+  批包构造                              & \ttf{batch2ntpackage} & 若干输入单元 $\to$ 批包 \ttf{B}（第~\ref{sec:batch-package} 节） \\
+  批包拆分                              & \ttf{ntpackage2batch} & 批包 \ttf{B} $\to$ 输入单元列表               \\
   流式封装入口（信息性）                       & \ttf{Sealer}          & \ttf{src/Sealer.js}；按 \ttf{T_chunk} 切分载荷 \\
   批刷写阈值 \ttf{T_batch}               & \ttf{MaxItemSize}     & \ttf{src/limits.js}，参考取值 65536           \\
   Block 内 Item 数上限 \ttf{N_block}      & \ttf{ItemNumPerBlockLimit} & \ttf{src/blockfile.js} 构造参数，参考取值 256 \\
