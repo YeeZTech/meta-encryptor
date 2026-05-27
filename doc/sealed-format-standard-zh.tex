@@ -8,6 +8,10 @@
 \usepackage{enumitem}
 \usepackage{titlesec}
 \usepackage{graphicx}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{amssymb}
 
 \title{Meta-Encryptor Sealed 文件格式标准（中文草案）}
 \author{YeeZ Tech}
@@ -42,7 +46,7 @@
   \endhead
   文档标识   & \ttf{YEEZ-SEALED-FORMAT-ZH}             \\
   文档状态   & Draft（草案）                               \\
-  文档版本   & v0.1.0                                  \\
+  文档版本   & v0.2.0（草案）                              \\
   发布日期   & \today                                  \\
   语言     & 中文（规范性文本）                               \\
   适用范围   & Meta-Encryptor 生态下 \ttf{.sealed} 文件读写实现 \\
@@ -57,7 +61,8 @@
   版本           & 日期     & 说明                                  \\
   \midrule
   \endhead
-  \ttf{v0.1.0} & \today & 首个公开草案：定义文件结构、密码学规范、封装/解封流程、错误码与附录。 \\
+  \ttf{v0.1.0} & ---  & 首个公开草案：定义文件结构、密码学规范、封装/解封流程、错误码与附录。 \\
+  \ttf{v0.2.0} & \today & Header 80 字节；以 Item 为最小单元（取消输入单元/批包/批刷写阈值）；载荷由集成层定义；第 9 章目录树明文格式、第 10 章多文件封装与解封（框架）。 \\
   \bottomrule
 \end{longtable}
 
@@ -70,6 +75,7 @@
 
 \subsection{范围}
 本标准适用于使用 Meta-Encryptor 生态读写 \texttt{.sealed} 文件的实现，包括但不限于 Node.js 与浏览器环境实现。本文档不限定上层业务协议。
+第~\ref{sec:seal-chapter}、\ref{sec:unseal-chapter} 章规定\textbf{按序 Item 载荷}的封装与解封；第~\ref{sec:directory-tree-chapter} 章规定目录树明文布局与解析；第~\ref{sec:multi-file-chapter} 章描述多文件封装与整包解封（参考流程）。
 
 \subsection{读者对象}
 本标准面向以下读者：
@@ -94,16 +100,17 @@
 \section{术语与记号}
 \subsection{术语}
 \begin{itemize}
-  \item \textbf{Item}：\texttt{.sealed} 内容区中\textbf{最小不可分}加密单元；本标准在格式与流程上的规范性边界以 Item 为准（见第~\ref{sec:content-region} 节）；
+  \item \textbf{Item}：\texttt{.sealed} 内容区中\textbf{最小不可分}单元；每条 Item 对应一段由集成层定义的 \textbf{Item 载荷}（\ttf{item_payload}），经加密后写入内容区（见第~\ref{sec:content-region}、\ref{sec:item-payload-norms} 节）；
   \item \textbf{Block}：由若干 Item 组成的逻辑分组，并在元信息区有对应索引项；
-  \item \textbf{Header}：文件尾部固定 64 字节头结构；
+  \item \textbf{Header}：文件尾部固定 80 字节头结构（含目录树 Item 定位字段，见第~\ref{sec:header-region} 节）；
+  \item \textbf{Item 载荷流}：封装侧按序提交、解封侧按序还原的 \ttf{item_payload} 序列；每个逻辑文件（含目录树文件）经集成层映射为一条或多条 Item 载荷后，走第~\ref{sec:seal-chapter} 章同一管道；
   \item \textbf{Block Info}：描述单个 Block 的 32 字节索引结构；\textbf{Block Infos 区}为由若干条 Block Info 顺序拼接而成的索引区域；
-  \item \textbf{Data Hash}：Header 字段 \ttf{data_hash} 所承载的摘要；对全部\textbf{输入单元}按封装全局顺序滚动计算，见第~\ref{sec:rolling-hash} 节；
-  \item \textbf{业务载荷}：宿主提交的一段载荷字节串，记为 \ttf{payload}，长度为 \ttf{L}；业务语义与切分由应用层决定；解封侧按封装顺序还原的 \ttf{payload} 由集成层从输入单元解码得到（见第~\ref{sec:input-normalization} 节）；
-  \item \textbf{输入单元}：写入批包前的变长字节串（实现中常记 \ttf{nt_input}），须满足第~\ref{sec:input-normalization} 节；多条输入单元可装入同一 Item 的批包 \ttf{B}，再整体加密为一条 Item；
-  \item \textbf{批包}：将若干条输入单元按第~\ref{sec:batch-package} 节容器格式首尾拼接后的字节串，记为 \ttf{B}；一个 \ttf{B} 经加密后对应内容区\textbf{一条} Item；
-  \item \textbf{批刷写阈值} \ttf{T_batch}：封装实现参数，判定何时将一批输入单元打成 \ttf{B} 并写出 Item；规则见第~\ref{sec:batch-flush-threshold} 节；队列调度见第~\ref{sec:seal-total-algorithm} 节；
-  \item \textbf{Block 内 Item 数上限} \ttf{N_block}：封装实现参数，限定单个 Block 所含 Item 条数的上界；划分规则见第~\ref{sec:block-split} 节；与 Block Info 字段的对应见第~\ref{sec:block-meta-fields} 节。
+  \item \textbf{Data Hash}：Header 字段 \ttf{data_hash} 所承载的摘要；对全部 Item 的 \ttf{item_payload} 按 Item 全局顺序滚动计算，见第~\ref{sec:rolling-hash} 节；
+  \item \textbf{Item 载荷}：本条 Item 在密码学模块与滚动摘要边界上的输入，记为 \ttf{item_payload}；类型为变长字节串（\texttt{VARBYTES}，见第~\ref{sec:item-payload-norms} 节），\textbf{不是} Unicode 字符串、数值或其它结构化类型；一条 Item 对应一条 \ttf{item_payload}；
+  \item \textbf{业务载荷}：宿主侧的 \ttf{payload}（业务对象）；进入 \ttf{item_payload} 前的编码、切分由集成层完成，不属于 \texttt{.sealed} 文件布局；
+  \item \textbf{Block 内 Item 数上限} \ttf{N_block}：封装实现参数，限定单个 Block 所含 Item 条数的上界；划分规则见第~\ref{sec:block-split} 节；与 Block Info 字段的对应见第~\ref{sec:block-meta-fields} 节；
+  \item \textbf{逻辑文件}：多文件场景下的一份业务侧文件，密封前由集成层映射为一条或多条 \ttf{item_payload}；解封后由目录树索引（见第~\ref{sec:directory-tree-chapter} 章）或按 Item 序输出还原；
+  \item \textbf{目录（树）文件}：描述密封包内逻辑文件索引与层级的明文布局；密封时与其它逻辑文件相同，经 Item 载荷写入内容区；Header.\ttf{tree_item_index}、\ttf{tree_item_number} 指向其 Item 范围（见第~\ref{sec:header-region} 节）。
 \end{itemize}
 
 \subsection{数据类型}
@@ -117,6 +124,14 @@
 
 \subsection{字节序}
 除非另有说明，多字节整数均使用\textbf{小端序（Little Endian）}。
+
+\subsection{布局示意图中的 \texttt{B} 与 \texttt{b}}\label{sec:layout-notation-units}
+本章及后文用方括号示意字段顺序时，括号内单位约定如下：
+\begin{itemize}
+  \item \texttt{B}（大写）：\textbf{字节}（byte），表示该段占用的字节长度，如 \texttt{(8B)} 为 8 字节；
+  \item \texttt{b}（小写）：\textbf{比特}（bit），表示该段占用的比特位数，用于单个整数类型内的按位打包字段，如 \texttt{(4b)} 为 4 比特；同一整数内多段按位字段与底层类型的字节序一致，\textbf{低位比特先行}（见第~\ref{sec:tree-child} 节 \ttf{child}）。
+\end{itemize}
+未标注 \texttt{B} 或 \texttt{b} 的长度说明，以对应小节的字段表为准。
 
 \section{设计目标与安全模型}
 \subsection{设计目标}
@@ -145,19 +160,19 @@
 \subsection{高层布局}
 \texttt{.sealed} 文件采用“数据在前、元信息在后”的尾部头设计。文件按字节从前到后布局如下：
 \begin{center}
-  \texttt{[Content Region][Block Infos][Header(64B)]}
+  \texttt{[Content Region][Block Infos][Header(80B)]}
 \end{center}
 \begin{itemize}
-  \item \ttf{Content Region}：密文内容区，由若干 Item 顺序拼接组成；Item 为内容区最小加密单元。内容区按块组织，每块由若干连续的 Item 组成，详见第~\ref{sec:content-region} 节；
-  \item \ttf{Block Infos}：块索引区，由若干 Block Info 顺序拼接而成；每条 Block Info 固定 32 字节，描述一个块在内容区内的索引，条数由 Header 给出，详见第~\ref{sec:block-infos} 节；
-  \item \ttf{Header}：固定 64 字节，位于文件末尾，由单个 Header 记录构成，包含魔数、版本、计数和摘要，详见第~\ref{sec:header-region} 节；
+  \item \ttf{Content Region}：密文内容区，由若干 Item 顺序拼接组成；各 Item（含目录树对应 Item）的加密形态一致。内容区按块组织，详见第~\ref{sec:content-region} 节；
+  \item \ttf{Block Infos}：块索引区，由若干 Block Info 顺序拼接而成；每条 Block Info 固定 32 字节，条数由 Header 给出，详见第~\ref{sec:block-infos} 节；
+  \item \ttf{Header}：固定 80 字节，位于文件末尾，包含魔数、版本、计数、摘要及目录树 Item 定位字段，详见第~\ref{sec:header-region} 节；
 \end{itemize}
 该布局允许写入端在不知道最终计数的情况下先持续写入内容，再在结束时一次性写入索引和 Header。
 
 \subsection{读取模型}\label{sec:read-model}
 由于 Header 位于尾部，标准定义两种等价读取模型：
 \begin{itemize}
-  \item \textbf{尾读模型}：读取器先从文件末尾读取 64B Header（字段布局见第~\ref{sec:header-region} 节），再按 Header.\ttf{block_number} 读取 Block Infos 区，再读取内容区；
+  \item \textbf{尾读模型}：读取器先从文件末尾读取 80B Header（字段布局见第~\ref{sec:header-region} 节），再按 Header.\ttf{block_number} 读取 Block Infos 区，再读取内容区；
   \item \textbf{逻辑前置模型}：中间层先尾读 Header，并在解封管道中将 Header 逻辑前置，再按顺序喂入内容区数据。
 \end{itemize}
 两种模型 MUST 产出一致的解析结果。
@@ -175,7 +190,7 @@
 
 给定文件总长度 \ttf{file_size}，则：
 \begin{itemize}
-  \item \ttf{header_size = 64}
+  \item \ttf{header_size = 80}
   \item \ttf{block_infos_size = 32 * N}
   \item \ttf{content_size} $=$ \ttf{file_size} $-$ \ttf{header_size} $-$ \ttf{block_infos_size}
 \end{itemize}
@@ -191,20 +206,24 @@
 \end{itemize}
 
 \subsection{Header 区}\label{sec:header-region}
-Header 区位于文件末尾，长度固定为 64 字节。本区由单个 Header 记录构成，保存格式识别、版本、块与 Item 计数及数据摘要等元信息。
+Header 区位于文件末尾，长度固定为 80 字节。本区由单个 Header 记录构成，保存格式识别、版本、块与 Item 计数、数据摘要，以及目录树 Item 在内容区中的定位信息。
 
-\subsubsection{Header 记录（64 字节）}
-Header 记录占用 64 字节，字段布局如下：
-\begin{longtable}{>{\raggedright\arraybackslash}p{3.2cm} >{\raggedright\arraybackslash}p{1.3cm} >{\raggedright\arraybackslash}p{1.3cm} >{\raggedright\arraybackslash}p{6.8cm}}
+\textbf{说明：} 目录（树）文件与其它逻辑文件在 Content Region 中均为普通 Item，差异仅体现在明文语义及 Header 对目录树 Item 下标的标注；目录明文布局见第~\ref{sec:directory-tree-chapter} 章，多文件封装与整包解封见第~\ref{sec:multi-file-chapter} 章。
+
+\subsubsection{Header 记录（80 字节）}
+Header 记录占用 80 字节，字段布局如下：
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.4cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{6.6cm}}
   \toprule
   字段名                  & 偏移 & 长度 & 说明                   \\
   \midrule
   \endhead
-  \ttf{magic_number}   & 0  & 8  & 文件魔数（BYTESTRING[8]）  \\
-  \ttf{version_number} & 8  & 8  & 格式版本（UINT64, LE）     \\
-  \ttf{block_number}   & 16 & 8  & Block 数量（UINT64, LE） \\
-  \ttf{item_number}    & 24 & 8  & Item 数量（UINT64, LE）  \\
-  \ttf{data_hash}      & 32 & 32 & 数据摘要（BYTESTRING[32]） \\
+  \ttf{magic_number}      & 0  & 8  & 文件魔数（\ttf{BYTESTRING[8]}）  \\
+  \ttf{version_number}    & 8  & 8  & 格式版本（\ttf{UINT64, LE}）     \\
+  \ttf{block_number}      & 16 & 8  & Block 数量（\ttf{UINT64, LE}） \\
+  \ttf{item_number}       & 24 & 8  & Item 总数量（\ttf{UINT64, LE}）  \\
+  \ttf{data_hash}          & 32 & 32 & 数据摘要（\ttf{BYTESTRING[32]}） \\
+  \ttf{tree_item_index}   & 64 & 8  & 目录树起始 Item 下标（\ttf{UINT64, LE}，含） \\
+  \ttf{tree_item_number}  & 72 & 8  & 目录树占用 Item 条数（\ttf{UINT64, LE}） \\
   \bottomrule
 \end{longtable}
 \textbf{字段语义：}
@@ -213,10 +232,12 @@ Header 记录占用 64 字节，字段布局如下：
   \item \ttf{version_number}：格式版本；
   \item \ttf{block_number}：Block Info 条目数量；维护规则见第~\ref{sec:block-meta} 节；
   \item \ttf{item_number}：内容区 Item 总数量（见第~\ref{sec:content-region} 节）；每写出一条 Item 递增，见第~\ref{sec:item-generation} 节；
-  \item \ttf{data_hash}：对全部输入单元（按封装全局顺序，字节串与批包记录体一致）滚动计算得到的最终摘要（\ttf{BYTESTRING[32]}）。
-        累计规则见第~\ref{sec:rolling-hash} 节；输入单元要求见第~\ref{sec:input-normalization} 节；
+  \item \ttf{data_hash}：对全部 Item 的 \ttf{item_payload}（按 Item 全局顺序）滚动计算得到的最终摘要（\ttf{BYTESTRING[32]}）。
+        累计规则见第~\ref{sec:rolling-hash} 节；Item 载荷要求见第~\ref{sec:item-payload-norms} 节；
         算法与写入见第~\ref{sec:rolling-hash}、\ref{sec:seal-finalize} 节；
         解封校验见第~\ref{sec:integrity-check} 节。
+  \item \ttf{tree_item_index}、\ttf{tree_item_number}：自 \ttf{tree_item_index} 起（含）连续 \ttf{tree_item_number} 条 Item 为目录树密文；
+        目录树明文布局见第~\ref{sec:directory-tree-chapter} 章；\ttf{tree_item_number} 为 0 时表示无目录树（见第~\ref{sec:directory-tree-no-tree}、\ref{sec:multi-file-no-tree} 节）。
 \end{itemize}
 
 \subsubsection{Header 识别与版本兼容规则}\label{sec:header-compat}
@@ -277,7 +298,7 @@ Block Infos 区位于 Content Region 与尾部 Header 之间，总长度 \ttf{bl
 Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之前；总长度 \ttf{content_size}
 及其在文件中的起止位置由第~\ref{sec:region-length} 节给出。
 
-本区由 \ttf{item_number} 条 Item 顺序拼接而成。本文所称单条 \textbf{Item}，即内容区\textbf{最小不可分}加密单元；\textbf{Content Region 区}即上述全部 Item 按序拼接形成的区域。内容区按块组织，每块由若干连续的 Item 组成。各条 Item 长度随密文载荷变化，Item 之间无固定步长。
+本区由 \ttf{item_number} 条 Item 顺序拼接而成。本文所称单条 \textbf{Item}，即内容区\textbf{最小不可分}单元，对应一条 \ttf{item_payload}（见第~\ref{sec:item-payload-norms} 节）；\textbf{Content Region 区}即上述全部 Item 按序拼接形成的区域。内容区按块组织，每块由若干连续的 Item 组成。各条 Item 长度随密文载荷变化，Item 之间无固定步长。
 
 \subsubsection{Item 记录}\label{sec:item-record}
 每条 Item 由前置长度字段与密文载荷顺序组成，按字节从前到后布局如下：
@@ -310,7 +331,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \end{enumerate}
 \textbf{字段语义：}
 \begin{itemize}
-  \item \ttf{encrypted_data}：\ttf{AES-128-GCM} 密文；其明文为批包 \ttf{B}，即本条 Item 对应的整段加密前批包字节串（见第~\ref{sec:batch-package} 节），加解密参数见第~\ref{sec:crypto-chapter} 节；
+  \item \ttf{encrypted_data}：\ttf{AES-128-GCM} 密文；解密并解码后得到本条 Item 的 \ttf{item_payload}（见第~\ref{sec:item-payload-boundary}、\ref{sec:crypto-chapter} 节）；
   \item \ttf{iv}：本条 Item 的 \ttf{AES-128-GCM} Nonce（常称 IV）；供加解密双方标识本次独立 GCM 运算，避免同一密钥下因 Nonce 复用而产出相同密文。长度固定 12 字节，取值由安全随机源逐 Item 生成，见第~\ref{sec:randomness} 节；
   \item \ttf{ephemeral_public_key}：本 Item 临时密钥对的公钥；采用椭圆曲线型号 \texttt{secp256k1} 的未压缩公钥，去掉首字节 \texttt{0x04} 后保留 \texttt{x||y}，长度固定 64 字节；
   \item \ttf{gcm_tag}：\ttf{AES-128-GCM} 认证标签；长度固定 16 字节，由 GCM 运算得到。
@@ -325,38 +346,14 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \end{itemize}
 上述 12、64、16 字节为当前版本规定的尾字段长度；\ttf{iv}、\ttf{ephemeral_public_key}、\ttf{gcm_tag} 与 \ttf{encrypted_data} 的字节值逐 Item 变化，除长度外无固定取值。Item 密文封装使用的前缀字节为 \texttt{0x02}，见第~\ref{sec:ref-derive-params} 节。
 
-\subsection{批包布局}\label{sec:batch-package}
-术语「批包」及记号 \ttf{B} 见第 2 章。本小节规定 \ttf{B} 的容器字节布局（加密前明文侧结构，经第~\ref{sec:content-encryption} 节编码后再送入 GCM）。
+\subsection{Item 载荷与加密边界}\label{sec:item-payload-boundary}
+内容区每条 Item 在\textbf{内容加密模块入口}（第~\ref{sec:content-encryption} 节）处的输入为一条 \ttf{item_payload}；其基本类型与语义约束见第~\ref{sec:item-payload-norms} 节。\textbf{一条 Item 对应一条} \ttf{item_payload}。
 
-\textbf{与 Item 的关系：} 内容区每条 Item 的 \ttf{cipher_payload} 由\textbf{一个}批包 \ttf{B} 加密得到（见第~\ref{sec:item-record}、\ref{sec:content-encryption} 节）。
-
-\textbf{布局（当前版本）：}
-\begin{center}
-  \texttt{[package\_id (4B)][record\_count (8B)] * record}
-\end{center}
-其中每条 \texttt{record} 为：
-\begin{center}
-  \texttt{[record\_len (8B)][unit (record\_len B)]}
-\end{center}
-其中 \texttt{unit} 为一条输入单元的完整字节串（须满足第~\ref{sec:input-normalization} 节）。
-字段语义：
-\begin{itemize}
-  \item \ttf{package_id}：\ttf{UINT32(LE)}，当前版本 MUST 为 \texttt{0x82c4e8d8}；
-  \item \ttf{record_count}：\ttf{UINT64(LE)}，批内输入单元条数；
-  \item \ttf{record_len}：本条 \texttt{unit} 的字节长度（\ttf{UINT64(LE)}）；
-  \item 批内记录顺序 MUST 与封装侧提交输入单元的全局顺序一致。
-\end{itemize}
-
-\textbf{构造与拆分：}
-\begin{itemize}
-  \item \textbf{构造}：将若干条输入单元按上述布局首尾拼接为 \ttf{B}；
-  \item \textbf{拆分}：从 \ttf{B} 解析各字段并依次取出各条 \texttt{unit}；\ttf{package_id}、长度字段与剩余字节不一致时 MUST 判为格式错误。
-\end{itemize}
-实现行为 MUST 与本节布局一致；与参考实现源码符号的对照见附录~\ref{app:ref-impl-symbols}。
+当前版本（\ttf{version_number = 2}）内容加密模块的具体运算见第~\ref{sec:content-encryption} 节；\texttt{.sealed} 文件内\textbf{不}另设批包容器或 \ttf{package_id} 记录层。
 
 \subsection{约束与限制}
 \begin{itemize}
-  \item Header 固定长度为 64 字节；
+  \item Header 固定长度为 80 字节；
   \item Block Info 固定长度为 32 字节；
   \item Item 数量与 Block 数量 MUST 与实际内容一致；
   \item 超出实现上限时 MUST 返回错误。
@@ -365,7 +362,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \subsection{规范性解析流程}
 实现方在读取 \texttt{.sealed} 时 MUST 按以下顺序执行：
 \begin{enumerate}
-  \item 从文件末尾读取 64 字节 Header；
+  \item 从文件末尾读取 80 字节 Header；
   \item 校验 \ttf{magic_number} 和 \ttf{version_number}；
   \item 基于 \ttf{block_number} 计算并定位 Block Infos 区；
   \item 校验 \ttf{content_size} 为正且区域不重叠；
@@ -373,7 +370,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
   \item 每个 Item 执行长度合法性检查和密码学认证检查；
   \item 当解析 Item 数量达到 \ttf{item_number} 时结束并进入完整性校验阶段。
 \end{enumerate}
-全量顺序解封时，上述 MUST 条款与第~\ref{sec:unseal-chapter} 章参考流程及第~\ref{sec:unseal-total-algorithm} 节应对齐；块级随机访问见第 9 章。
+全量顺序解封时，上述 MUST 条款与第~\ref{sec:unseal-chapter} 章参考流程及第~\ref{sec:unseal-total-algorithm} 节应对齐；块级随机访问见第~\ref{sec:random-access-chapter} 章。
 
 \subsection{规范性校验规则}
 \begin{itemize}
@@ -387,7 +384,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \section{密码学规范}\label{sec:crypto-chapter}
 本章规定 \ttf{version_number = 2} 下 Item 密文载荷的密码学处理要求。
 第~\ref{sec:key-derivation}、\ref{sec:aes-gcm}、\ref{sec:content-encryption} 节按\textbf{模块}给出输入与输出；其余小节为概念、常量或约束说明。
-符号 \ttf{B}（批包）含义见第 2 章；\ttf{B} 的字节布局见第~\ref{sec:batch-package} 节。
+符号 \ttf{item_payload} 含义见第 2 章；与 GCM 的编码边界见第~\ref{sec:item-payload-boundary} 节。
 
 \subsection{曲线与密钥}\label{sec:curve-keys}
 本小节规定逐条 Item 协商对称密钥所需的曲线型号与密钥材料。
@@ -525,12 +522,12 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{center}
 
 \subsection{内容加密}\label{sec:content-encryption}
-本小节规定封装侧\textbf{内容加密}模块：输入批包 \ttf{B} 与接收方长期公钥，输出本条 Item 的 \ttf{item_size} 与 \ttf{cipher_payload}（字段布局见第~\ref{sec:cipher-payload-layout} 节）。
+本小节规定封装侧\textbf{内容加密}模块：输入本条 Item 的 \ttf{item_payload} 与接收方长期公钥，输出 \ttf{item_size} 与 \ttf{cipher_payload}（字段布局见第~\ref{sec:cipher-payload-layout} 节）。
 封装流程（第~\ref{sec:seal-chapter} 章）\textbf{仅}通过本模块接口调用，\textbf{不}展开模块内部的密钥协商、编码与 GCM 步骤。
 
 \textbf{输入：}
 \begin{itemize}
-  \item \ttf{B}：本条 Item 对应的批包，布局见第~\ref{sec:batch-package} 节；
+  \item \ttf{item_payload}：本条 Item 载荷（\texttt{VARBYTES}，见第~\ref{sec:item-payload-norms} 节）；
   \item 接收方长期公钥：应用层提供（格式见第~\ref{sec:curve-keys} 节）。
 \end{itemize}
 
@@ -541,55 +538,15 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{itemize}
 
 \textbf{模块实施步骤：}\label{sec:seal-item-crypto}
-封装侧对本条 Item MUST 在本节内依次完成下列步骤（不对外暴露中间量接口）：
+封装侧对本条 Item MUST 在本节内依次完成下列步骤（不对外暴露中间量接口）。\ttf{item_payload} 须已满足第~\ref{sec:item-payload-norms} 节；字段布局见第~\ref{sec:cipher-payload-layout} 节；向内容区追加 \texttt{item\_size} 前缀见第~\ref{sec:item-generation} 节。
 \begin{enumerate}
-  \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节为本条 Item 协商会话密钥，生成 \ttf{iv} 与 \ttf{ephemeral_public_key}（随机性见第~\ref{sec:randomness} 节）；
-  \item 按下文「明文编码」处理 \ttf{B}；
-  \item 按下文「GCM 加密」与第~\ref{sec:aes-gcm} 节完成认证加密；
-  \item 按下文「写入 \texttt{.sealed} 字段」组装 \ttf{cipher_payload} 并计算 \ttf{item_size}。
+  \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节协商 \ttf{session_key}，生成 \ttf{iv} 与 \ttf{ephemeral_public_key}（随机性见第~\ref{sec:randomness} 节）；
+  \item 以 \ttf{K = session_key}、\ttf{IV = iv}、\ttf{P = item_payload}、\ttf{A = AAD}（64 字节，布局见第~\ref{sec:ref-derive-params} 节）为输入，调用第~\ref{sec:aes-gcm} 节 \texttt{GCM\_Encrypt}，得到密文 \ttf{C} 与认证标签 \ttf{T}（16 字节）；
+  \item 组装 \ttf{cipher_payload}：\ttf{encrypted_data = C}；按第~\ref{sec:cipher-payload-layout} 节顺序写入 \ttf{iv}、\ttf{ephemeral_public_key}、\ttf{gcm_tag}；\ttf{AAD} 不写入文件，由版本常量与前缀规则重建；\ttf{item_size} $=$ \ttf{cipher_payload} 总字节数。
 \end{enumerate}
-字段字节布局见第~\ref{sec:cipher-payload-layout} 节；向内容区追加 \texttt{item\_size} 前缀见第~\ref{sec:item-generation} 节。
-
-\textbf{明文编码（当前版本）：}
-为实现互操作，在 \textbf{GCM 运算边界}上对批包字节串 \ttf{B} 做小写十六进制 ASCII 编码（常记 \ttf{HexEncode}）。
-
-该步骤与第~\ref{sec:seal-chapter} 章「业务输入」中的 \textbf{UTF-8 文本编码}无关：
-前者作用于已形成的 \ttf{B}；
-后者在更早阶段将 Unicode 文本转为载荷字节串，再由集成层表示为输入单元并装入 \ttf{B}。
-启用文本输入且采用当前版本 GCM 时，\textbf{二者均须执行}。
-
-\begin{itemize}
-  \item 设 \ttf{HexEncode(B)} 将 \ttf{B} 中每个字节编码为两个小写十六进制 ASCII 字符（\texttt{0--9a--f}），得到字节串 \ttf{P}，长度为 \texttt{2 $\times$ |B|}；
-  \item \ttf{P} MUST 为 \ttf{HexEncode(B)} 的结果，并作为 \ttf{GCM_Encrypt} 的明文输入。
-\end{itemize}
-
-\textbf{GCM 加密（当前版本）}
-
-按第~\ref{sec:aes-gcm} 节 \texttt{GCM\_Encrypt} 接口，参数绑定如下：
-\begin{itemize}
-  \item \ttf{K = session_key}：16 字节会话密钥；
-  \item \ttf{IV = iv}：12 字节，逐 Item 随机生成；
-  \item \ttf{P}：由上文明文编码得到的字节串；
-  \item \ttf{A = AAD}：64 字节，布局见第~\ref{sec:ref-derive-params} 节。
-\end{itemize}
-
-\textbf{算法输出：}
-\begin{itemize}
-  \item \ttf{C}：GCM 密文（变长，不含认证标签）；
-  \item \ttf{T}：16 字节认证标签。
-\end{itemize}
-
-\textbf{写入 \texttt{.sealed} 字段：}
-\begin{itemize}
-  \item \ttf{encrypted_data = C}；
-  \item \ttf{gcm_tag = T}；
-  \item \ttf{iv} 与 \ttf{ephemeral_public_key} 不是 GCM 输出，但作为解封必需参数，按第~\ref{sec:cipher-payload-layout} 节顺序与 \ttf{encrypted_data}、\ttf{gcm_tag} 一并写入 \ttf{cipher_payload}；
-  \item \ttf{AAD} 由版本常量和前缀规则重建，不写入文件；
-  \item \ttf{item_size}：\ttf{cipher_payload} 总字节数。
-\end{itemize}
 
 \subsection{解封侧密码学操作}\label{sec:decrypt-crypto}
-本小节规定解封侧\textbf{内容解密还原}模块：输入 \ttf{cipher_payload} 与接收方长期私钥，输出批包 \ttf{B}（为第~\ref{sec:content-encryption} 节的逆运算）。
+本小节规定解封侧\textbf{内容解密还原}模块：输入 \ttf{cipher_payload} 与接收方长期私钥，输出 \ttf{item_payload}（为第~\ref{sec:content-encryption} 节的逆运算）。
 解封流程（第~\ref{sec:unseal-chapter} 章）\textbf{仅}通过本模块接口调用，\textbf{不}展开模块内部步骤。
 
 \textbf{输入：}
@@ -600,40 +557,16 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 
 \textbf{输出：}
 \begin{itemize}
-  \item 批包 \ttf{B}（认证成功后）。
+  \item \ttf{item_payload}（\texttt{VARBYTES}，认证成功后；类型见第~\ref{sec:item-payload-norms} 节）。
 \end{itemize}
 
 \textbf{模块实施步骤：}
 \begin{enumerate}
-  \item 按下文「解析 \ttf{cipher_payload}」取得密文字段；
-  \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节派生会话密钥；
-  \item 按下文「GCM 解密」与第~\ref{sec:aes-gcm} 节完成认证解密；若认证失败（第~\ref{sec:auth-failure} 节），MUST NOT 输出 \ttf{B}；
-  \item 按下文「明文解码」得批包 \ttf{B}。
+  \item 按第~\ref{sec:cipher-payload-layout} 节从输入 \ttf{cipher_payload} 切分 \ttf{encrypted_data}、\ttf{iv}、\ttf{ephemeral_public_key}、\ttf{gcm_tag}；长度或布局非法时 MUST 判为格式错误；
+  \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节派生 \ttf{session_key}；
+  \item 以 \ttf{K = session_key}、\ttf{IV = iv}、\ttf{C = encrypted_data}、\ttf{T = gcm_tag}、\ttf{A = AAD}（64 字节，布局见第~\ref{sec:ref-derive-params} 节）为输入，调用第~\ref{sec:aes-gcm} 节 \texttt{GCM\_Decrypt}，得到明文 \ttf{P}；若认证失败（第~\ref{sec:auth-failure} 节），MUST NOT 输出 \ttf{item_payload}；
+  \item 认证成功时，以 \ttf{P} 作为本条 \ttf{item_payload} 输出（\texttt{VARBYTES}，见第~\ref{sec:item-payload-norms} 节），与上文\textbf{输出}接口一致。
 \end{enumerate}
-
-\textbf{解析 \ttf{cipher_payload}（当前版本）：}
-\begin{itemize}
-  \item 按第~\ref{sec:cipher-payload-layout} 节切分 \ttf{encrypted_data}、\ttf{iv}、\ttf{ephemeral_public_key}、\ttf{gcm_tag}；
-  \item 长度或布局非法时 MUST 判为格式错误。
-\end{itemize}
-
-\textbf{GCM 解密（当前版本）}
-
-按第~\ref{sec:aes-gcm} 节 \texttt{GCM\_Decrypt} 接口，参数绑定如下：
-\begin{itemize}
-  \item \ttf{K = session_key}：16 字节会话密钥；
-  \item \ttf{IV = iv}：12 字节，取自 \ttf{cipher_payload}；
-  \item \ttf{C = encrypted_data}；\ttf{T = gcm_tag}；
-  \item \ttf{A = AAD}：64 字节，布局见第~\ref{sec:ref-derive-params} 节；
-  \item 认证成功时得 \ttf{P}（与封装侧 \ttf{GCM_Encrypt} 所用 \ttf{P} 同型）。
-\end{itemize}
-
-\textbf{明文解码（当前版本）：}
-对 \ttf{GCM_Decrypt} 输出的 \ttf{P} 做与第~\ref{sec:content-encryption} 节 \ttf{HexEncode} 互逆的小写十六进制还原（常记 \ttf{HexDecode}）：
-\begin{itemize}
-  \item \ttf{HexDecode(P)} 将 \ttf{P} 按每两个 ASCII 十六进制字符还原为一个字节；字符 MUST 属于 \texttt{0--9a--f}，\ttf{|P|} MUST 为偶数，否则 MUST 判为格式错误；
-  \item \ttf{B} MUST 为 \ttf{HexDecode(P)} 的结果。
-\end{itemize}
 
 \subsection{随机性要求}\label{sec:randomness}
 \begin{itemize}
@@ -650,15 +583,20 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{itemize}
 
 \section{封装流程（参考）}\label{sec:seal-chapter}
+
+\subsection{与多文件、目录树的关系}\label{sec:seal-byte-stream-scope}
+
+本章流程的对象是\textbf{按序提交的 Item 载荷}：集成层为每条 Item 产生 \ttf{item_payload}，再调用内容加密并写出 Item。\textbf{每个逻辑文件}（含目录树文件）在密封时仍经同一管道，\textbf{不}因「是否为目录」而变更 Item 形态或密码学步骤（第~\ref{sec:crypto-chapter} 章）。
+目录明文结构见第~\ref{sec:directory-tree-chapter} 章；多文件枚举、目录树生成与 Header 中 \ttf{tree_item_index}、\ttf{tree_item_number} 的填写见第~\ref{sec:multi-file-chapter} 章。
 本章给出将业务输入写入 \texttt{.sealed} 文件的\textbf{参考流程}。
-\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；\texttt{.sealed} 内容区的最小不可分单元为 \textbf{Item}，输入单元须满足第~\ref{sec:input-normalization} 节规范性要求。下文各节为信息性步骤说明，除非某条明确要求校验或布局。
+\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；最小不可分单元为 \textbf{Item}，\ttf{item_payload} 的类型与语义须满足第~\ref{sec:item-payload-norms} 节（第~\ref{sec:item-payload-type} 小节）。下文各节为信息性步骤说明，除非某条明确要求校验或布局。
 
 \textbf{子流程（独立说明）：}
 \begin{itemize}
-  \item 标准化输入基本规范（第~\ref{sec:input-normalization} 节）；
+  \item 封装上下文（第~\ref{sec:seal-context} 节）；
+  \item Item 载荷基本规范（第~\ref{sec:item-payload-norms} 节）；
   \item 滚动摘要累计（第~\ref{sec:rolling-hash} 节）；
-  \item 批包封装与 Item 写出（第~\ref{sec:item-generation} 节）；
-  \item 批刷写阈值（第~\ref{sec:batch-flush-threshold} 节）；
+  \item Item 写出（第~\ref{sec:item-generation} 节）；
   \item Block 组织与切分（第~\ref{sec:block-split} 节）；
   \item Block 元信息维护（第~\ref{sec:block-meta} 节）；
   \item 收尾落盘（第~\ref{sec:seal-finalize} 节）；
@@ -666,28 +604,63 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{itemize}
 全局一致性见第~\ref{sec:seal-consistency} 节。
 
-\subsection{标准化输入基本规范}\label{sec:input-normalization}
-本标准以 \textbf{Item} 为 \texttt{.sealed} 内容区最小不可分单元（第~\ref{sec:content-region} 节）。宿主逐段提交的逻辑数据，在写入批包前由集成层表示为变长字节串，下文统称\textbf{输入单元}（实现中常记 \ttf{nt_input}）。\textbf{本标准不规定}输入单元的具体字节布局；本节仅列出输入单元\textbf{应满足}的规范性要求，以便与批包、滚动摘要及解封输出对齐。如何由 \ttf{payload} 得到输入单元属于集成层实现，不在本节展开。
+\subsection{封装上下文}\label{sec:seal-context}
 
-\textbf{规范性要求：}
+除按序提交的 \ttf{item_payload} 外，封装侧在调用第~\ref{sec:seal-finalize} 节前 MUST 由集成层提供\textbf{封装上下文}：写入 80 字节 Header 时所需、但\textbf{不能}仅凭 Item 管道内部状态推导的字段与约定。第 7 章 Item 管道\textbf{只消费}封装上下文并写入文件，\textbf{不}规定多文件枚举、目录树明文生成及 \ttf{tree_*} 的推导（见第~\ref{sec:multi-file-chapter} 章）。
+
+\textbf{封装上下文（信息性字段表）：}
 \begin{itemize}
-  \item 封装与解封 MUST 对输入单元采用同一套、且在实现文档中声明的语义；
-  \item 每条输入单元 MUST 对应一段可还原的业务载荷 \ttf{payload}（还原方式由集成层定义，不属于 \texttt{.sealed} 文件布局）；
-  \item 每条输入单元 MUST 完整地落入一个批包记录体（第~\ref{sec:batch-package} 节），MUST NOT 为凑批而在单元内部截断；
-  \item 全部输入单元 MUST 具有确定的\textbf{全局总序}；该顺序 MUST 与第~\ref{sec:rolling-hash} 节累计顺序及解封侧输出顺序一致；
-  \item 参与滚动摘要的字节串 MUST 与写入批包记录体 \texttt{unit} 逐字节相同；
-  \item 输入单元明文不单独写入 \texttt{.sealed} 文件，仅通过加密后的 Item 对外存在。
+  \item \ttf{magic_number}、\ttf{version_number}：识别与版本（见第~\ref{sec:header-compat} 节）；
+  \item 接收方长期公钥：供第~\ref{sec:item-generation} 节内容加密使用（见第~\ref{sec:curve-keys} 节，应用层提供）；
+  \item \ttf{tree_item_index}、\ttf{tree_item_number}：目录树在 Content Region 中的 Item 下标范围（见第~\ref{sec:header-region}、\ref{sec:directory-tree-binding} 节）。无目录树时集成层 MUST 令 \ttf{tree_item_number} $=$ \texttt{0}（\ttf{tree_item_index} 见第~\ref{sec:multi-file-no-tree} 节）；
+  \item \textbf{（可选扩展）}实现 MAY 在封装上下文中携带其它应用层元数据；未写入 \texttt{.sealed} Header 的字段不在本标准范围内。
 \end{itemize}
 
 \textbf{说明：}
-\ttf{payload} 的业务语义、字符编码（如 UTF-8）及切分粒度由应用层决定。Meta-Encryptor 的 \ttf{toNtInput}/\ttf{fromNtInput} 仅为一种集成示例（见附录~\ref{app:ref-impl-symbols}），\textbf{不是}本标准的必选布局。
+多文件场景下，第~\ref{sec:multi-file-chapter} 章在\textbf{外层}规划 Item 全局顺序并生成目录树 \ttf{item_payload}，在全部 Item 写出完成时 MUST 已确定与内容区一致的 \ttf{tree_item_index}、\ttf{tree_item_number}，再传入第~\ref{sec:seal-finalize} 节。单 Item 流或无目录树时，集成层 MAY 仅提供 \ttf{tree_item_number} $=$ \texttt{0}，其余流程仍按本章执行。
+
+\subsection{Item 载荷基本规范}\label{sec:item-payload-norms}
+\label{sec:input-normalization}
+本标准以 \textbf{Item} 为 \texttt{.sealed} 内容区最小不可分单元（第~\ref{sec:content-region} 节）。第~\ref{sec:content-encryption}、\ref{sec:decrypt-crypto} 节内容加解密模块、第~\ref{sec:rolling-hash} 节滚动摘要及第~\ref{sec:item-generation} 节 Item 写出，均以本节规定的 \ttf{item_payload} 为\textbf{同一类}输入/输出字节串。
+
+\subsubsection{基本类型（规范性）}\label{sec:item-payload-type}
+
+\ttf{item_payload} 在标准边界上的类型定义如下：
+
+\begin{itemize}
+  \item \textbf{类型：}\texttt{VARBYTES}（变长字节串，见第 2 章数据类型），即长度 $L \ge 0$ 的字节序列。$L$ 在\textbf{封装/解封流程与密码学模块}的接口上由集成层提供（内存或 API 参数），用于滚动摘要与内容加解密；\textbf{不是} \texttt{.sealed} 文件里定义的字段类型；
+  \item \textbf{与 \ttf{cipher_payload} 的关系：}\texttt{.sealed} 内容区每条 Item 在文件上体现为 \ttf{item_size} 与 \ttf{cipher_payload}（第~\ref{sec:item-record}、\ref{sec:cipher-payload-layout} 节），\textbf{不}直接存放 \ttf{item_payload} 明文字节。封装时，本条 \ttf{item_payload} 经第~\ref{sec:content-encryption} 节写入 \ttf{cipher_payload}；解封时，从 \ttf{cipher_payload} 认证解密得到 \ttf{item_payload}。\ttf{item_size} 仅描述 \ttf{cipher_payload} 长度，与 \ttf{item_payload} 长度无文件内对应字段；
+  \item \textbf{语义：}对密码学模块与 \ttf{data_hash} 而言，\ttf{item_payload} 是\textbf{不透明}字节串；标准层不解析其内部为文本、数字、JSON、目录条目等结构；
+  \item \textbf{非类型：}\ttf{item_payload} \textbf{不是} Unicode 字符串、数值等宿主类型本身；宿主对象如何变为字节串见下文「与业务载荷的关系」；
+  \item \textbf{空载荷：}$L = 0$ 的 \ttf{item_payload} 合法；封装与解封 MUST 对空串及滚动摘要行为保持一致。
+\end{itemize}
+
+\subsubsection{与业务载荷的关系}
+
+\begin{itemize}
+  \item \ttf{payload} 表示宿主业务对象（如一段文件片段、一条记录）；其类型与切分由应用层决定；
+  \item 映射 \ttf{payload} $\leftrightarrow$ \ttf{item_payload}（是否一对一、如何编码）由\textbf{集成层}定义，不属于 \texttt{.sealed} 物理布局；
+  \item 解封侧在取得 \ttf{item_payload} 后，由集成层还原 \ttf{payload}；还原规则 MUST 与封装侧对称。
+\end{itemize}
+
+\subsubsection{集成层语义约束（规范性）}
+
+\begin{itemize}
+  \item 封装与解封 MUST 对 \ttf{item_payload} 采用同一套、且在实现文档中声明的语义（含空串与最大长度策略）；
+  \item 每条 Item 对应唯一一条 \ttf{item_payload}；MUST NOT 将多条载荷合并进同一 Item，亦 MUST NOT 将一条 \ttf{item_payload} 拆入多条 Item；
+  \item 全部 \ttf{item_payload} MUST 具有确定的\textbf{全局总序}（与内容区 Item 写出顺序一致）；该顺序 MUST 与第~\ref{sec:rolling-hash} 节累计顺序及解封侧输出顺序一致；
+  \item 参与滚动摘要的字节串 MUST 与送入第~\ref{sec:content-encryption} 节的 \ttf{item_payload} 逐字节相同。
+\end{itemize}
+
+\textbf{说明：}
+本标准\textbf{不规定} \ttf{item_payload} 内部的应用层字段布局（与旧版「输入单元」容器无关）。参考实现 \ttf{toNtInput}/\ttf{fromNtInput} 仅为一种集成示例（见附录~\ref{app:ref-impl-symbols}），\textbf{不是}必选格式。
 
 \subsection{滚动摘要累计}\label{sec:rolling-hash}
-在封装过程中按顺序累计全部输入单元的滚动摘要，终值写入 Header.\ttf{data_hash}。
+在封装过程中按 Item 顺序累计全部 \ttf{item_payload} 的滚动摘要，终值写入 Header.\ttf{data_hash}。
 
 \textbf{输入：}
 \begin{itemize}
-  \item 按封装全局顺序产生的各条输入单元完整字节串（与第~\ref{sec:batch-package} 节记录体 \texttt{unit} 逐字节一致，见第~\ref{sec:input-normalization} 节）；
+  \item 按 Item 全局顺序的各条 \ttf{item_payload} 完整字节串（见第~\ref{sec:item-payload-norms} 节）；
   \item 初值 $H_0$（当前版本见下文）。
 \end{itemize}
 
@@ -697,25 +670,25 @@ CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
 \end{itemize}
 
 \textbf{相关格式：}
-Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计与 Item 边界无关，仅依赖输入单元全局顺序（非 Item 条数）。
+Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计顺序与 Item 写出顺序一致，Item 条数等于参与累计的 \ttf{item_payload} 条数。
 
 \textbf{实施步骤：}
 当前版本 (\ttf{version_number = 2}) 规则如下：
 \begin{center}
   \texttt{H\_0 = keccak256("Fidelius")} \\
-  \texttt{H\_{i+1} = keccak256(H\_i || unit\_i)}
+  \texttt{H\_{i+1} = keccak256(H\_i || payload\_i)}
 \end{center}
-其中 \texttt{unit\_i} 为全局顺序下第 $i$ 条输入单元的完整字节串。记共产生 $N$ 条输入单元，终态为 $H_n$。\textbf{\rollhash 终值}\label{sec:rolling-hash-final}定义为 $H_n$；封装完成时 Header.\ttf{data_hash} MUST 等于 $H_n$。
+其中第 $i$ 条参与运算的字节串为全局顺序下第 $i$ 个 \ttf{item_payload}（与第~\ref{sec:item-payload-type} 节同型）。记共写出 $N$ 条 Item，终态为 $H_n$。\textbf{\rollhash 终值}\label{sec:rolling-hash-final}定义为 $H_n$；封装完成时 Header.\ttf{data_hash} MUST 等于 $H_n$。
 
 \textbf{说明：}
-本节规定递推规则；封装主循环中 $H$ 的初值与更新时机见第~\ref{sec:seal-total-algorithm} 节。每得一条输入单元可按本节规则更新摘要状态；终值 $H_n$ 在收尾写入 Header（第~\ref{sec:seal-finalize} 节）。解封侧比对见第~\ref{sec:integrity-check} 节。
+本节规定递推规则；封装主循环中 $H$ 的初值与更新时机见第~\ref{sec:seal-total-algorithm} 节。每写出一条 Item 前（或同时）应按本节用该 Item 的 \ttf{item_payload} 更新 $H$；终值 $H_n$ 在收尾写入 Header（第~\ref{sec:seal-finalize} 节）。解封侧比对见第~\ref{sec:integrity-check} 节。
 
-\subsection{批包封装与 Item 写出}\label{sec:item-generation}
-将\textbf{同一批次}的多条输入单元打成批包 \ttf{B}，加密并在内容区追加\textbf{一条} Item 记录（Item 为内容区最小不可分单元）。
+\subsection{Item 写出}\label{sec:item-generation}
+将一条 \ttf{item_payload} 加密并在内容区追加\textbf{一条} Item 记录。
 
 \textbf{输入：}
 \begin{itemize}
-  \item 若干条完整的输入单元（条数 $\ge 1$，批内顺序 MUST 与全局提交顺序一致）；
+  \item 本条 Item 的 \ttf{item_payload}（\texttt{VARBYTES}，见第~\ref{sec:item-payload-norms} 节）；
   \item 接收方长期公钥（应用层提供，见第~\ref{sec:curve-keys} 节）。
 \end{itemize}
 
@@ -725,50 +698,17 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \end{itemize}
 
 \textbf{相关格式：}
-\begin{itemize}
-  \item 若干输入单元首尾拼接为批包 \ttf{B}（布局见第~\ref{sec:batch-package} 节）；
-  \item 一个 \ttf{B} 对应内容区\textbf{一条} Item：\texttt{UINT64(LE) item\_size} 后跟 \ttf{cipher_payload}（见第~\ref{sec:item-record}、\ref{sec:cipher-payload-layout} 节）。
-\end{itemize}
+一条 \ttf{item_payload} 对应内容区\textbf{一条} Item：\texttt{UINT64(LE) item\_size} 后跟 \ttf{cipher_payload}（见第~\ref{sec:item-record}、\ref{sec:cipher-payload-layout} 节）。
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item 将输入的各条输入单元按第~\ref{sec:batch-package} 节首尾拼接，得到批包 \ttf{B}；
-  \item 对 \ttf{B} 与接收方长期公钥调用第~\ref{sec:content-encryption} 节内容加密模块，得到 \ttf{item_size} 与 \ttf{cipher_payload}；
+  \item 用本条 \ttf{item_payload} 按第~\ref{sec:rolling-hash} 节更新滚动摘要 $H$（更新时机亦可在主循环中单独调度，见第~\ref{sec:seal-total-algorithm} 节）；
+  \item 对 \ttf{item_payload} 与接收方长期公钥调用第~\ref{sec:content-encryption} 节，得到 \ttf{item_size} 与 \ttf{cipher_payload}；
   \item 按第~\ref{sec:item-record} 节向内容区追加 \texttt{UINT64(LE) item\_size} 与 \ttf{cipher_payload}。
 \end{enumerate}
 
 \textbf{说明：}
-本节\textbf{不}规定何时凑满一批、也不维护待刷写队列；触发条件见第~\ref{sec:batch-flush-threshold} 节，组合调度见第~\ref{sec:seal-total-algorithm} 节。
-向内容区追加顺序见第~\ref{sec:seal-consistency} 节；写出后更新 Header 计数与 Block Info 见第~\ref{sec:block-meta} 节。
-
-\subsection{批刷写阈值}\label{sec:batch-flush-threshold}
-规定封装实现\textbf{何时}将当前累积的一批输入单元作为同一批次，调用第~\ref{sec:item-generation} 节打成 \ttf{B} 并写出 Item；队列维护与调用顺序见第~\ref{sec:seal-total-algorithm} 节。
-
-\textbf{参数：}
-\begin{itemize}
-  \item \ttf{T_batch}：批刷写阈值，由封装实现声明，\textbf{不}写入 \texttt{.sealed} 文件。
-\end{itemize}
-
-\textbf{度量：}
-设当前\textbf{待打包批次}（尚未送入第~\ref{sec:item-generation} 节的输入单元集合）为 $\mathcal{N}$。
-记
-\[
-  S_{\mathrm{batch}} = \sum_{u \in \mathcal{N}} |u|
-\]
-其中 $|u|$ 为输入单元的\textbf{完整字节长度}（与第~\ref{sec:batch-package} 节 \ttf{record_len} 一致）。
-第~\ref{sec:seal-total-algorithm} 节队列 \ttf{Q} 上的 $S(Q)$ 与本节 $S_{\mathrm{batch}}$ 采用同一度量。
-
-\textbf{刷写条件：}
-\begin{enumerate}
-  \item \textbf{阈值触达：}当 $S_{\mathrm{batch}} \ge T_{\mathrm{batch}}$ 时，封装实现 MUST 对 $\mathcal{N}$ 中\textbf{全部}条目执行一次第~\ref{sec:item-generation} 节，并清空该待打包批次；
-  \item \textbf{输入结束：}宿主声明输入流结束时，若 $\mathcal{N}$ 非空，封装实现 MUST 再执行一次第~\ref{sec:item-generation} 节（即使 $S_{\mathrm{batch}} < T_{\mathrm{batch}}$）；
-  \item 单条输入单元 MUST 完整地属于一个批次；MUST NOT 为凑满 \ttf{T_batch} 而在某条输入单元内部截断。
-\end{enumerate}
-
-\textbf{说明：}
-\ttf{L}、\ttf{T_batch} 均不在 Header 中编码。
-参考实现取 \ttf{T_batch = 65536}（\ttf{MaxItemSize}）；若变更阈值导致批次划分或 Item 数量变化，\ttf{version_number} MUST 递增。
-若宿主按固定块大小 \ttf{T_chunk} 提交载荷且 \ttf{T_chunk = T_batch}，常见为每批 1 条输入单元；\ttf{L} 较小时一批可含多条输入单元（附录~\ref{app:ref-impl-symbols}）。
+组合调度见第~\ref{sec:seal-total-algorithm} 节。向内容区追加顺序见第~\ref{sec:seal-consistency} 节；写出后更新 Header 计数与 Block Info 见第~\ref{sec:block-meta} 节。
 
 \subsection{Block 组织与切分}\label{sec:block-split}
 本节说明内容区中的 Block 如何由 Item 构成及何时切分。
@@ -794,7 +734,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \textbf{说明：}
 \ttf{N_block} 由封装实现声明，\textbf{不}写入 \texttt{.sealed} 文件；变更且影响互操作时 \ttf{version_number} MUST 递增。
-宿主 \textbf{MAY} 将多段业务数据表示为多条输入单元并写入同一 \texttt{.sealed} 内容区（经若干 Item）；Block Info 不记录「第几个源文件」，仅索引本文件内 Item 与密文字节。
+宿主 \textbf{MAY} 将多段业务数据表示为多条 Item（每条独立 \ttf{item_payload}）并写入同一 \texttt{.sealed} 内容区；Block Info 不记录「第几个源文件」，仅索引本文件内 Item 与密文字节。
 
 \subsection{Block 元信息维护}\label{sec:block-meta}
 每写出一条 Item 后，封装实现 MUST 按第~\ref{sec:block-split} 节的划分规则，更新 Header.\ttf{item_number} 与内存中的 Block Info 列表，供第~\ref{sec:seal-finalize} 节写入 Block Infos 区。
@@ -819,7 +759,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
   \item 含义：本 Block 在内容区 Item \textbf{逻辑序号}上的半开区间 \texttt{[start\_item\_index, end\_item\_index)}。按封装写出顺序，自 \texttt{0} 起为第 0 条 Item、第 1 条 Item……直至 \texttt{item\_number - 1}（与 Header.\ttf{item_number} 一致）。
   \item \ttf{start_item_index}：该 Block 内\textbf{第一条} Item 的下标（\textbf{含}）。
   \item \ttf{end_item_index}：该 Block 内\textbf{最后一条} Item 的下标加 1（\textbf{不含}）；Block 内 Item 条数为 \texttt{end\_item\_index - start\_item\_index}，MUST NOT 大于 \ttf{N_block}；当该值已达 \ttf{N_block} 时，下一条写出的 Item MUST 按第~\ref{sec:block-split} 节开启新 Block；
-  \item \textbf{不是}：源明文文件编号、源文件内块号、批包内输入单元的序号（一条 Item 的 \ttf{B} 内可含多条记录，见第~\ref{sec:batch-package} 节），亦 \textbf{不是} 其它 \texttt{.sealed} 文件中的 Item 下标。
+  \item \textbf{不是}：源明文文件编号、源文件内块号，亦 \textbf{不是} 其它 \texttt{.sealed} 文件中的 Item 下标。
 \end{itemize}
 
 \textbf{内容区字节偏移：\ttf{start_file_pos}、\ttf{end_file_pos}。}
@@ -891,11 +831,8 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \textbf{输入：}
 \begin{itemize}
-  \item 已写完的内容区及 \ttf{content_size}；
-  \item \ttf{N} 条 Block Info 取值（\ttf{N = block_number}，由第~\ref{sec:block-meta} 节维护）；
-  \item 滚动摘要终值 $H_n$（第~\ref{sec:rolling-hash-final} 节）；
-  \item \ttf{item_number}、\ttf{block_number}（由第~\ref{sec:block-meta} 节维护）；
-  \item \ttf{magic_number}、\ttf{version_number}（取值见第~\ref{sec:header-compat} 节）。
+  \item \textbf{来自 Item 管道：}已写完的内容区及 \ttf{content_size}；\ttf{N} 条 Block Info 取值（\ttf{N = block_number}，由第~\ref{sec:block-meta} 节维护）；滚动摘要终值 $H_n$（第~\ref{sec:rolling-hash-final} 节）；\ttf{item_number}、\ttf{block_number}（由第~\ref{sec:block-meta} 节维护）；
+  \item \textbf{来自封装上下文}（第~\ref{sec:seal-context} 节）：\ttf{magic_number}、\ttf{version_number}；\ttf{tree_item_index}、\ttf{tree_item_number}。本节\textbf{不}推导 \ttf{tree_*}，仅按集成层提供的取值写入 Header。
 \end{itemize}
 
 \textbf{输出：}
@@ -910,49 +847,45 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \textbf{实施步骤：}
 \begin{enumerate}
   \item \textbf{写出 Block Infos 区：}记 \ttf{N = block_number}，自偏移 \ttf{content_size} 起顺序写入 \ttf{N} 条 Block Info（各 32 字节，取值见第~\ref{sec:block-meta} 节）；\ttf{block_infos_size} $= 32 \times N$；
-  \item \textbf{写出 Header 区：}紧接其后按第~\ref{sec:header-region} 节写入 64 字节 Header；各字段按本节\textbf{输入}赋值，其中 Header.\ttf{data_hash} 取 $H_n$（MUST 为第~\ref{sec:rolling-hash} 节累计结果，\textbf{不得}以 Item 密文另行摘要替代）。
+  \item \textbf{写出 Header 区：}紧接其后按第~\ref{sec:header-region} 节写入 80 字节 Header；\ttf{magic_number}、\ttf{version_number}、\ttf{tree_item_index}、\ttf{tree_item_number} 取自封装上下文；\ttf{item_number}、\ttf{block_number} 取自 Item 管道；Header.\ttf{data_hash} MUST 取 $H_n$（\textbf{不得}以 Item 密文另行摘要替代）。
 \end{enumerate}
-完成后 \ttf{file_size} $=$ \ttf{content_size} $+$ \ttf{block_infos_size} $+$ \texttt{64}。
+完成后 \ttf{file_size} $=$ \ttf{content_size} $+$ \ttf{block_infos_size} $+$ \texttt{80}。
 
 \textbf{说明：}
-进入本节前须已满足：内容区已全部写完；Block Info 与 \rollhash 终值 $H_n$ 已就绪（见第~\ref{sec:seal-total-algorithm} 节）。
-应用层伴随元数据（公钥、签名等）不在 \texttt{.sealed} 文件内，本标准不做字段约束。
+进入本节前须已满足：内容区已全部写完；Block Info 与 \rollhash 终值 $H_n$ 已就绪；封装上下文中的 \ttf{tree_*} 已与内容区 Item 布局一致（见第~\ref{sec:seal-total-algorithm}、\ref{sec:multi-file-chapter} 章）。
+不在 Header 内存储的应用层伴随元数据（如签名）不在本标准字段约束范围内。
 
 \subsection{封装流程总览}\label{sec:seal-total-algorithm}\label{sec:batch-flush-flow}
 本节定义封装侧\textbf{如何组合}前述子流程。各子节仅描述单步职责；本节给出调度变量、主循环参考图及\textbf{按图解读}的实施步骤。
 
 \textbf{变量与状态（仅在本节及图中使用）：}
 \begin{itemize}
-  \item 待刷写队列 \ttf{Q}：元素为完整的输入单元；
-  \item $S(Q)$：\ttf{Q} 中各输入单元字节总长度（与第~\ref{sec:batch-flush-threshold} 节中 $S_{\mathrm{batch}}$ 同型，用于阈值判断）；
-  \item $H$：滚动摘要状态，初值 $H_0$、终值 $H_n$（递推规则见第~\ref{sec:rolling-hash} 节，在主循环中按每条输入单元更新）。
+  \item $H$：滚动摘要状态，初值 $H_0$、终值 $H_n$（递推规则见第~\ref{sec:rolling-hash} 节）；
+  \item 待写出 Item 载荷：由集成层按序提供的 \ttf{item_payload}（见第~\ref{sec:item-payload-norms} 节）；
+  \item 封装上下文：含 \ttf{magic_number}、\ttf{version_number}、\ttf{tree_item_index}、\ttf{tree_item_number} 等（见第~\ref{sec:seal-context} 节）；多文件时 \ttf{tree_*} 可在主循环前规划、在收尾前最终确认。
 \end{itemize}
 
 \textbf{主循环图与子节对应：}
-图~\ref{fig:batch-flush-flow} 为全量顺序封装的一种参考主流程；图源 \texttt{doc/diagrams/seal-batch-flush-flow.mmd}。
-图中流程名词与独立子节的对应关系如下（图中\textbf{不}标注章节号）：
+图~\ref{fig:seal-main-flow} 为全量顺序封装的一种参考主流程；图源 \texttt{doc/diagrams/seal-main-flow.mmd}。
 \begin{itemize}
-  \item 「输入单元入队」「滚动摘要更新 $H$」：输入单元须满足第~\ref{sec:input-normalization} 节；摘要规则见第~\ref{sec:rolling-hash} 节；「入队 \ttf{Q}」指将完整输入单元入 \ttf{Q}；
-  \item 「批刷写阈值」：见第~\ref{sec:batch-flush-threshold} 节（图中 $S(Q)$ 与 \ttf{T_batch} 同该节）；
-  \item 「Item 写出」：见第~\ref{sec:item-generation} 节；「Block 元信息更新」：见第~\ref{sec:block-meta} 节；
-  \item 「收尾落盘」：见第~\ref{sec:seal-finalize} 节。
+  \item 「滚动摘要更新 $H$ / Item 写出」：见第~\ref{sec:rolling-hash}、\ref{sec:item-generation} 节（每条 \ttf{item_payload} 对应一次 Item 写出）；
+  \item 「Block 元信息更新」：见第~\ref{sec:block-meta} 节；
+  \item 「收尾落盘」：见第~\ref{sec:seal-finalize} 节（传入 Item 管道状态与封装上下文）。
 \end{itemize}
 
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.85\textwidth]{diagrams/seal-batch-flush-flow.png}
-  \caption{封装主循环（参考流程）}
-  \label{fig:batch-flush-flow}
+  \includegraphics[width=0.85\textwidth]{diagrams/seal-main-flow.png}
+  \caption{封装主循环（参考流程；Header.\ttf{tree_*} 由封装上下文提供，见图注及第~\ref{sec:seal-context} 节）}
+  \label{fig:seal-main-flow}
 \end{figure}
 
 \textbf{实施步骤：}
-以下按图~\ref{fig:batch-flush-flow} 自上而下解读；各步具体操作以对应子节为准。
+以下按图~\ref{fig:seal-main-flow} 解读；各步以对应子节为准。
 \begin{enumerate}
-  \item \textbf{开始与初始化}（图：\texttt{开始}）：\ttf{version_number} 按约定取值；\ttf{block_number} $= 0$，\ttf{item_number} $= 0$；$H \leftarrow H_0$；\ttf{Q} 为空。
-  \item \textbf{主循环入口}（图：判断「宿主已声明输入结束且无新载荷」，取\textbf{否}）：每收到一段业务载荷，产生满足第~\ref{sec:input-normalization} 节的输入单元并入 \ttf{Q}，按第~\ref{sec:rolling-hash} 节更新 $H$（见图「输入单元入队 / 滚动摘要更新 $H$」）。
-  \item \textbf{批刷写判断}（图：判断 $S(Q) \ge T_{\mathrm{batch}}$）：若为\textbf{是}，执行「Item 写出 / Block 元信息更新 / 清空 \ttf{Q}」（第~\ref{sec:item-generation}、\ref{sec:block-meta} 节），返回步骤 2 的判断；若为\textbf{否}，直接返回步骤 2 的判断。
-  \item \textbf{输入结束}（图：步骤 2 判断取\textbf{是}后，判断「\ttf{Q} 非空」）：若为\textbf{是}，再执行一次 Item 写出与 Block 元信息更新并清空 \ttf{Q}；若为\textbf{否}，进入步骤 5。
-  \item \textbf{收尾落盘}（图：「收尾落盘」$\rightarrow$ \texttt{结束}）：按第~\ref{sec:seal-finalize} 节写出 Block Infos 与 Header，\ttf{data_hash} $\leftarrow H_n$。
+  \item \textbf{开始与初始化}（图：\texttt{开始}）：准备封装上下文（\ttf{magic_number}、\ttf{version_number} 等）；\ttf{block_number} $= 0$，\ttf{item_number} $= 0$；$H \leftarrow H_0$。无目录树时封装上下文 SHOULD 含 \ttf{tree_item_number} $=$ \texttt{0}。
+  \item \textbf{主循环}（图：判断「尚有 Item 载荷」，取\textbf{是}）：集成层提供下一条 \ttf{item_payload}，调用第~\ref{sec:item-generation} 节（含 $H$ 更新与内容区写出），再调用第~\ref{sec:block-meta} 节；返回本步判断。
+  \item \textbf{输入结束}（图：判断取\textbf{否}）：确认封装上下文中的 \ttf{tree_item_index}、\ttf{tree_item_number} 与已写 Item 布局一致后，按第~\ref{sec:seal-finalize} 节收尾（\ttf{data_hash} 写入 $H_n$，\ttf{tree_*} 自封装上下文写入 Header）。
 \end{enumerate}
 
 \subsection{封装一致性要求}\label{sec:seal-consistency}
@@ -961,19 +894,25 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
   \item \ttf{item_number} MUST 等于内容区实际 Item 条数；
   \item \ttf{block_number} MUST 等于 Block Infos 区条目数；
   \item 任意 Block Info 的 \ttf{end_file_pos} MUST 不超过 \ttf{content_size}，且相邻 Block 的偏移 SHOULD 首尾相接；
-  \item 实现 SHOULD 在封装结束后校验计数与 Header.\ttf{data_hash} 按第~\ref{sec:rolling-hash} 节重算结果一致。
+  \item 实现 SHOULD 在封装结束后校验计数与 Header.\ttf{data_hash} 按第~\ref{sec:rolling-hash} 节重算结果一致；
+  \item 当 Header.\ttf{tree_item_number} $>$ \texttt{0} 时，\ttf{tree_item_index} 与 \ttf{tree_item_number} MUST 与内容区中目录树 Item 的实际范围一致，且目录树 \ttf{item_payload} 解析后 MUST 满足第~\ref{sec:directory-tree-chapter} 章（规划与校验见第~\ref{sec:multi-file-chapter} 章）。
 \end{itemize}
 
 \section{解封流程（参考）}\label{sec:unseal-chapter}
+
+\subsection{与多文件、目录树的关系}\label{sec:unseal-byte-stream-scope}
+
+本章规定从 \texttt{.sealed} 按 Item 顺序还原各条 \ttf{item_payload} 并由集成层得到 \ttf{payload}，与密封包内包含几个逻辑文件无关。
+将 Item 序列按目录树还原为宿主侧目录结构，属于第~\ref{sec:multi-file-chapter} 章\textbf{整包解封}（目录明文见第~\ref{sec:directory-tree-chapter} 章）；本章仅规定 Item 级认证解密与 \ttf{data_hash} 校验，不重复整包还原步骤。
 本章给出从 \texttt{.sealed} 文件按序还原业务载荷的\textbf{参考流程}。
-\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；解封以 Item 为最小读取与认证单元，\ttf{payload} 由集成层从批包内输入单元还原，且须满足第~\ref{sec:input-normalization} 节与封装侧同一集成语义。第~\ref{sec:format-chapter} 章「规范性解析流程」中的 MUST 条款在全量顺序解封时与本章一致，本章侧重步骤组合与图示。下文各节为信息性步骤说明，除非某条明确要求校验或布局。
+\textbf{文件格式与可验证约束}以第~\ref{sec:format-chapter}、\ref{sec:crypto-chapter} 章为准；解封以 Item 为最小读取与认证单元，\ttf{item_payload} 须满足第~\ref{sec:item-payload-norms} 节且与封装侧同一集成语义。第~\ref{sec:format-chapter} 章「规范性解析流程」中的 MUST 条款在全量顺序解封时与本章一致，本章侧重步骤组合与图示。下文各节为信息性步骤说明，除非某条明确要求校验或布局。
 
 \textbf{子流程（独立说明）：}
 \begin{itemize}
   \item Header 获取与校验（第~\ref{sec:unseal-header-model} 节）；
   \item 内容区顺序读取（第~\ref{sec:unseal-item-parse} 节）；
   \item 单条 Item 认证解密（第~\ref{sec:unseal-item-crypto} 节）；
-  \item 批包拆分、业务输出与滚动摘要（第~\ref{sec:unseal-batch-output} 节）；
+  \item Item 载荷输出与滚动摘要（第~\ref{sec:unseal-item-output} 节）；
   \item 解封流程总览（第~\ref{sec:unseal-total-algorithm} 节，含主循环图、完整性比对与组合调度）；
   \item 进度与可恢复状态（第~\ref{sec:unseal-recoverable} 节，建议性）。
 \end{itemize}
@@ -991,6 +930,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \textbf{输出：}
 \begin{itemize}
   \item \ttf{block_number}、\ttf{item_number}、\ttf{data_hash}；
+  \item \ttf{tree_item_index}、\ttf{tree_item_number}（自 Header 解析；Item 级主循环\textbf{不}依赖二者，整包解封见第~\ref{sec:multi-file-chapter} 章）；
   \item \ttf{content_size}、\ttf{block_infos_size}（由 \ttf{file_size} 与 \ttf{block_number} 按第~\ref{sec:region-length} 节算出）。
 \end{itemize}
 
@@ -999,13 +939,13 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item 读取文件末尾 64 字节，按第~\ref{sec:header-region} 节解析，得到各 Header 字段；
+  \item 读取文件末尾 80 字节，按第~\ref{sec:header-region} 节解析，得到各 Header 字段；
   \item 将解析得到的 \ttf{magic_number}、\ttf{version_number} 与\textbf{输入}中的约定取值比对；不符时 MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_MAGIC_MISMATCH} 或 \ttf{E_VERSION_UNSUPPORTED}；
   \item 令 \ttf{N} $=$ \ttf{block_number}，按第~\ref{sec:region-length} 节计算 \ttf{block_infos_size} 与 \ttf{content_size}；若 \ttf{content_size} 不大于 \texttt{0}，MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_FORMAT_TOO_SMALL}（或等价格式错误码）。
 \end{enumerate}
 
 \textbf{说明：}
-全文件顺序解封\textbf{不必}事先读取 Block Infos 区；块级随机访问须先读 Block Infos 区（见第 9 章）。
+全文件顺序解封\textbf{不必}事先读取 Block Infos 区；块级随机访问须先读 Block Infos 区（见第~\ref{sec:random-access-chapter} 章）。
 
 \subsection{内容区顺序读取}\label{sec:unseal-item-parse}
 本节说明全文件顺序解封时，如何从内容区切分出单条 Item 的 \ttf{item_size} 与 \ttf{cipher_payload}。
@@ -1019,7 +959,7 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 与第~\ref{sec:unseal-total-algorithm} 节主循环共享，本节负责在读每条 Item 后更新：
 \begin{itemize}
   \item $p$：内容区读指针（相对内容区起点，单位：字节；初值 $p \leftarrow 0$ 见第~\ref{sec:unseal-total-algorithm} 节）；
-  \item $n$：已处理 Item 计数（供主循环终止判断及完整性比对；初值 $n \leftarrow 0$ 见同上；\textbf{勿}与第~\ref{sec:rolling-hash} 节中输入单元条数 $N$ 混淆）。
+  \item $n$：已处理 Item 计数（供主循环终止判断及完整性比对；初值 $n \leftarrow 0$ 见同上）。
 \end{itemize}
 
 \textbf{输出：}
@@ -1040,10 +980,10 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 \end{enumerate}
 
 \textbf{说明：}
-解密、批包拆分与 \ttf{payload} 输出不在本节展开；见第~\ref{sec:unseal-item-crypto}、\ref{sec:unseal-batch-output} 节及第~\ref{sec:unseal-total-algorithm} 节。
+解密与 \ttf{payload} 输出不在本节展开；见第~\ref{sec:unseal-item-crypto}、\ref{sec:unseal-item-output} 节及第~\ref{sec:unseal-total-algorithm} 节。
 
 \subsection{单条 Item 认证解密}\label{sec:unseal-item-crypto}
-将一条 Item 的密文载荷还原为批包 \ttf{B}。
+将一条 Item 的密文载荷还原为 \ttf{item_payload}。
 
 \textbf{输入：}
 \begin{itemize}
@@ -1053,46 +993,42 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 
 \textbf{输出：}
 \begin{itemize}
-  \item 批包 \ttf{B}（认证成功后）。
+  \item \ttf{item_payload}（认证成功后）。
 \end{itemize}
 
 \textbf{实施步骤：}
 \begin{enumerate}
   \item 对 \ttf{cipher_payload} 与接收方长期私钥调用第~\ref{sec:decrypt-crypto} 节内容解密还原模块；
-  \item 若认证失败（第~\ref{sec:auth-failure} 节），MUST 终止解封，MUST NOT 输出 \ttf{B}，错误码 SHOULD 为附录 C 中的 \ttf{E_AEAD_AUTH_FAILED}；
-  \item 认证成功时，得到 \ttf{B}。
+  \item 若认证失败（第~\ref{sec:auth-failure} 节），MUST 终止解封，MUST NOT 输出 \ttf{item_payload}，错误码 SHOULD 为附录 C 中的 \ttf{E_AEAD_AUTH_FAILED}；
+  \item 认证成功时，得到 \ttf{item_payload}。
 \end{enumerate}
 
 \textbf{说明：}
 算法细节见第~\ref{sec:decrypt-crypto} 节；本章不重复模块内部步骤。
 
-\subsection{批包拆分、业务输出与滚动摘要}\label{sec:unseal-batch-output}\label{sec:unseal-rolling-hash}
-将一条 Item 解密得到的批包 \ttf{B} 拆为若干条输入单元，在输出每条 \ttf{payload} 之前用对应输入单元（与封装侧记录体逐字节一致）更新滚动摘要 $H$，并按序输出 \ttf{payload}。
+\subsection{Item 载荷输出与滚动摘要}\label{sec:unseal-item-output}\label{sec:unseal-rolling-hash}\label{sec:unseal-batch-output}
+将一条 Item 解密得到的 \ttf{item_payload} 用于更新滚动摘要 $H$，并由集成层输出对应的 \ttf{payload}。
 
 \textbf{输入（每次调用）：}
-批包 \ttf{B}（由第~\ref{sec:unseal-item-crypto} 节得到）。
+\ttf{item_payload}（由第~\ref{sec:unseal-item-crypto} 节得到）。
 
 \textbf{维护的状态：}
-$H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与调度见第~\ref{sec:unseal-total-algorithm} 节）。每处理完本条 Item 的 \ttf{B} 内全部输入单元后，按实施步骤更新 $H$。
+$H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与调度见第~\ref{sec:unseal-total-algorithm} 节）。
 
 \textbf{输出（每次调用）：}
-按批内顺序输出的各条 \ttf{payload}。
+本条 Item 对应的 \ttf{payload}（由集成层从 \ttf{item_payload} 还原）。
 
 \textbf{相关格式：}
-\ttf{B} 布局见第~\ref{sec:batch-package} 节；输入单元须满足第~\ref{sec:input-normalization} 节；$H$ 递推规则与 $H_0$ 定义见第~\ref{sec:rolling-hash}、\ref{sec:rolling-hash-final} 节。
+\ttf{item_payload} 须满足第~\ref{sec:item-payload-norms} 节；$H$ 递推见第~\ref{sec:rolling-hash}、\ref{sec:rolling-hash-final} 节。
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item 按第~\ref{sec:batch-package} 节将 \ttf{B} 拆为若干条输入单元（\texttt{unit}）；若 \ttf{package_id}、长度字段与剩余字节不一致，MUST 终止解封（格式错误），并 MUST NOT 输出 \ttf{payload}；
-  \item 对批内每条输入单元按序执行下列子步骤（\textbf{不得}在输出 \ttf{payload} 后再用该条单元更新 $H$）：
-  \begin{enumerate}
-    \item 在输出 \ttf{payload} 之前，用本条输入单元完整字节串按第~\ref{sec:rolling-hash} 节更新 $H$；
-    \item 由集成层将输入单元还原为 \ttf{payload} 并输出（语义须与封装侧一致，见第~\ref{sec:input-normalization} 节）；失败时 MUST 终止解封（格式错误）。
-  \end{enumerate}
+  \item 在输出 \ttf{payload} 之前，用本条 \ttf{item_payload} 完整字节串按第~\ref{sec:rolling-hash} 节更新 $H$；
+  \item 由集成层将 \ttf{item_payload} 还原为 \ttf{payload} 并输出；语义须与封装侧一致；失败时 MUST 终止解封（格式错误）。
 \end{enumerate}
 
 \textbf{说明：}
-输入单元仅在本节步骤 2 内存在；$H$ 的累计顺序 MUST 与封装侧输入单元全局顺序一致。完整性比对见第~\ref{sec:unseal-total-algorithm} 节。
+$H$ 的累计顺序 MUST 与封装侧 Item 顺序一致。完整性比对见第~\ref{sec:unseal-total-algorithm} 节。
 
 \subsection{解封流程总览}\label{sec:unseal-total-algorithm}\label{sec:unseal-main-flow}
 本节定义解封侧\textbf{如何组合}前述子流程。各子节仅描述单步职责；本节给出调度变量、主循环参考图及\textbf{按图解读}的实施步骤（含完整性比对）。
@@ -1100,7 +1036,7 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 \textbf{变量与状态（仅在本节及图中使用）：}
 \begin{itemize}
   \item 内容区读指针 $p$、已处理 Item 计数 $n$（由第~\ref{sec:unseal-item-parse} 节维护）；
-  \item 滚动摘要状态 $H$（由第~\ref{sec:unseal-batch-output} 节维护；$H_0$ 见第~\ref{sec:rolling-hash} 节）；
+  \item 滚动摘要状态 $H$（由第~\ref{sec:unseal-item-output} 节维护；$H_0$ 见第~\ref{sec:rolling-hash} 节）；
   \item \ttf{item_number}、\ttf{content_size}、\ttf{data_hash}（由第~\ref{sec:unseal-header-model} 节得到）。
 \end{itemize}
 
@@ -1110,8 +1046,8 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 \begin{itemize}
   \item 「读 Header 并校验」「计算 \ttf{content_size}」：见第~\ref{sec:unseal-header-model} 节；图中「初始化 $H = H_0$，$n = 0$」另需 $p \leftarrow 0$（$H_0$ 见第~\ref{sec:rolling-hash} 节）；
   \item 「读 \ttf{item_size} 与 \ttf{cipher_payload}」：见第~\ref{sec:unseal-item-parse} 节（含 $n$ 递增，图中无单独「$n$ 加 1」节点）；
-  \item 「认证解密得批包 \ttf{B}」：见第~\ref{sec:unseal-item-crypto} 节；
-  \item 「拆分 \ttf{B}」「逐条输出 \ttf{payload} 并用输入单元更新 $H$」：见第~\ref{sec:unseal-batch-output} 节（须在输出 \ttf{payload} 之前更新 $H$）；
+  \item 「认证解密得 Item 载荷」：见第~\ref{sec:unseal-item-crypto} 节；
+  \item 「输出 \ttf{payload} 并用 Item 载荷更新 $H$」：见第~\ref{sec:unseal-item-output} 节（须在输出 \ttf{payload} 之前更新 $H$）；
   \item 「$H$ 等于 \ttf{data_hash}」：见下文实施步骤第 3 项（完整性比对）。
 \end{itemize}
 
@@ -1126,7 +1062,7 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 以下按图~\ref{fig:unseal-main-flow} 自上而下解读；各步具体操作以对应子节为准。
 \begin{enumerate}
   \item \textbf{开始与 Header}（图：\texttt{开始} $\rightarrow$ 「读 Header 并校验」$\rightarrow$ 「计算 \ttf{content_size} / 初始化」）：按第~\ref{sec:unseal-header-model} 节取得并校验 Header；$H \leftarrow H_0$，$p \leftarrow 0$，$n \leftarrow 0$。
-  \item \textbf{主循环}（图：判断 $n$ 小于 \ttf{item_number}，取\textbf{是}）：以当前 $p$、$n$ 调用第~\ref{sec:unseal-item-parse} 节得 \ttf{cipher_payload} 及更新后的 $p$、$n$（$n$ 仅在该节末项递增）；调用第~\ref{sec:unseal-item-crypto} 节得 \ttf{B}；以当前 $H$ 调用第~\ref{sec:unseal-batch-output} 节输出 \ttf{payload} 并得到更新后的 $H$（对应图中「读 Item $\rightarrow$ 认证解密 $\rightarrow$ 拆分并输出」链）；然后返回本步判断。认证或格式失败时 MUST 终止（图虚线至错误结束）。
+  \item \textbf{主循环}（图：判断 $n$ 小于 \ttf{item_number}，取\textbf{是}）：以当前 $p$、$n$ 调用第~\ref{sec:unseal-item-parse} 节得 \ttf{cipher_payload} 及更新后的 $p$、$n$；调用第~\ref{sec:unseal-item-crypto} 节得 \ttf{item_payload}；以当前 $H$ 调用第~\ref{sec:unseal-item-output} 节输出 \ttf{payload} 并更新 $H$；然后返回本步判断。认证或格式失败时 MUST 终止（图虚线至错误结束）。
   \item \textbf{完整性比对}\label{sec:integrity-check}（图：$n$ 判断取\textbf{否} $\rightarrow$ 「$H$ 等于 \ttf{data_hash}」）：将 $H$ 与 \ttf{data_hash} 逐字节比较；相等则成功结束，不等则 MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_INTEGRITY_MISMATCH}，并视已输出的 \ttf{payload} 为不可信；流式输出时 SHOULD 停止下游消费并上报错误。
 \end{enumerate}
 
@@ -1136,14 +1072,14 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
   \item \ttf{magic_number} 或 \ttf{version_number} 校验失败（第~\ref{sec:header-compat} 节）；
   \item \ttf{content_size} 非法，或第~\ref{sec:unseal-item-parse} 节读取 Item 时字节不足或布局非法；
   \item 第~\ref{sec:decrypt-crypto} 节内容解密还原模块认证失败（第~\ref{sec:auth-failure} 节）；
-  \item 第~\ref{sec:unseal-batch-output} 节批包拆分或输入单元解码失败；
+  \item 第~\ref{sec:unseal-item-output} 节 Item 载荷解码或 \ttf{payload} 还原失败；
   \item 第~\ref{sec:unseal-total-algorithm} 节完整性比对中 $H$ 与 \ttf{data_hash} 不一致。
 \end{itemize}
 
 \subsection{解封一致性要求}\label{sec:unseal-consistency}
 \begin{itemize}
   \item 输出的各段 \ttf{payload} 全局顺序 MUST 与封装侧提交的载荷顺序一致；
-  \item 每条 \ttf{payload} MUST 来自经第~\ref{sec:decrypt-crypto} 节认证成功的批包；
+  \item 每条 \ttf{payload} MUST 来自经第~\ref{sec:decrypt-crypto} 节认证成功的 \ttf{item_payload}；
   \item 处理完全部 Item 后，$H$ MUST 与 \ttf{data_hash} 一致；
   \item 全文件顺序解封时，实际读取的 Item 条数 MUST 等于 \ttf{item_number}；
   \item 失败时 MUST 符合第~\ref{sec:unseal-errors} 节，不得静默跳过损坏 Item 继续输出。
@@ -1162,7 +1098,10 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 \textbf{说明：}
 写入端与读取端 MUST 在同一恢复语义下同步推进密文读取偏移与明文提交偏移，避免重复输出或跳写；调度见图~\ref{fig:unseal-main-flow}。
 
-\section{随机访问与结构化查询}
+\input{sealed-directory-tree}
+\input{sealed-multi-file-input}
+
+\section{随机访问与结构化查询}\label{sec:random-access-chapter}
 \subsection{能力分级定义}
 本标准将随机访问能力划分为三级：
 \begin{itemize}
@@ -1185,7 +1124,7 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
   \item 根据查询条件命中记录级索引，得到目标 \ttf{item_index}；
   \item 通过 \ttf{block_info} 计算最小读取区间；
   \item 解析并解密目标 Item；
-  \item 在批包内提取目标记录并返回；
+  \item 在对应 Item 的 \ttf{item_payload} 或外部索引中定位目标并返回；
   \item 记录审计信息（查询条件、命中项、校验状态）。
 \end{enumerate}
 
@@ -1221,6 +1160,7 @@ $H$：滚动摘要状态（$H_0$ 见第~\ref{sec:rolling-hash} 节；初值与�
 \section{兼容性与演进}
 \subsection{向后兼容}
 新版本字段扩展 SHOULD 不破坏既有字段语义与位置约束。
+文档版本 \ttf{v0.1.0} 草案曾规定 64 字节 Header（无 \ttf{tree_item_index}、\ttf{tree_item_number}）；自 \ttf{v0.2.0} 起 Header 固定为 80 字节（第~\ref{sec:header-region} 节）。读取实现 MUST 按 \ttf{version_number} 与实现声明的支持范围选择布局；互操作细则待补。
 
 \subsection{向前兼容}
 读取器遇到未知扩展字段时 MAY 忽略，但 MUST 保持已知字段解析稳定。
@@ -1267,7 +1207,7 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
   \endhead
   \ttf{Content Region} & 变长                      & 否    & 由若干 Item 顺序构成        \\
   \ttf{Block Infos}    & \ttf{32 * block_number} & 否    & 每条 Block Info 固定 32B \\
-  \ttf{Header}         & 64B                     & 是    & 位于文件末尾               \\
+  \ttf{Header}         & 80B                     & 是    & 位于文件末尾               \\
   \bottomrule
 \end{longtable}
 
@@ -1282,7 +1222,9 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
     \ttf{version_number} & 8  & 8  & \ttf{UINT64(LE)}     & MUST 为支持版本                                                            \\
     \ttf{block_number}   & 16 & 8  & \ttf{UINT64(LE)}     & MUST 与 Block Info 数一致                                                 \\
     \ttf{item_number}    & 24 & 8  & \ttf{UINT64(LE)}     & MUST 与 Item 数一致                                                       \\
-    \ttf{data_hash}      & 32 & 32 & \ttf{BYTESTRING[32]} & MUST 为第~\ref{sec:rolling-hash} 节终值；解封比对见第~\ref{sec:integrity-check} 节 \\
+    \ttf{data_hash}         & 32 & 32 & \ttf{BYTESTRING[32]} & MUST 为第~\ref{sec:rolling-hash} 节终值；解封比对见第~\ref{sec:integrity-check} 节 \\
+    \ttf{tree_item_index}   & 64 & 8  & \ttf{UINT64(LE)}     & 目录树起始 Item 下标；见第~\ref{sec:directory-tree-binding} 节 \\
+    \ttf{tree_item_number}  & 72 & 8  & \ttf{UINT64(LE)}     & 目录树 Item 条数；\texttt{0} 表示无目录树（见第~\ref{sec:multi-file-no-tree} 节） \\
     \bottomrule
   \end{longtable}
 }
@@ -1322,30 +1264,23 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
 \subsection{B.1 封装伪代码（规范性参考）}
 下列伪代码采用参考实现中的函数名书写，符号与本标准表述的对照见附录~\ref{app:ref-impl-symbols}；规范性语义以第~\ref{sec:seal-chapter} 章文字与第~\ref{sec:format-chapter} 章布局为准。
 \begin{verbatim}
-input: plaintext_stream, receiver_public_key
+input: item_payload_stream, receiver_public_key
 state:
   H = keccak256("Fidelius")
-  header = {magic, version, block_number=0, item_number=0, data_hash=0}
+  header = {magic, version, block_number=0, item_number=0, data_hash=0,
+            tree_item_index=0, tree_item_number=0}
   block_infos = []
-  batch = []
 
-for each input_unit from plaintext_stream:
-  batch.append(input_unit)
-  H = keccak256(H || input_unit)
-  if batch_size_reach_threshold():
-    pkg = batch2ntpackage(batch)
-    cipher_payload = encrypt_item(pkg, receiver_public_key, prefix=0x02)
-    write_uint64_le(len(cipher_payload))
-    write_bytes(cipher_payload)
-    update_block_infos_and_header_counter()
-    batch.clear()
-
-if batch not empty:
-  ... (same as above)
+for each item_payload from item_payload_stream:
+  H = keccak256(H || item_payload)
+  cipher_payload = encrypt_item(item_payload, receiver_public_key, prefix=0x02)
+  write_uint64_le(len(cipher_payload))
+  write_bytes(cipher_payload)
+  update_block_infos_and_header_counter()
 
 header.data_hash = H
 write_block_infos(block_infos)
-write_header_64B(header)
+write_header_80B(header)
 \end{verbatim}
 
 \subsection{B.2 解封伪代码（规范性参考）}
@@ -1360,11 +1295,9 @@ state:
 while read_item_count < header.item_number:
   item_size = read_uint64_le()
   cipher_payload = read_exact(item_size)
-  B = decrypt_item_to_batch(cipher_payload, private_key)  // 见第 6.5 节，输出 B
-  batch = ntpackage2batch(B)
-  for each input_unit in batch:
-    emit decode_input_unit(input_unit)  // 集成层解码，见第 7.1 节
-    H = keccak256(H || input_unit)
+  item_payload = decrypt_item(cipher_payload, private_key)
+  H = keccak256(H || item_payload)
+  emit decode_item_payload(item_payload)  // 集成层解码，见第 7.1 节
   read_item_count += 1
 
 if H != header.data_hash:
@@ -1388,11 +1321,14 @@ end-item-index   = uint64-le
 start-pos        = uint64-le
 end-pos          = uint64-le
 header           = magic version block-num item-num data-hash
+                   tree-item-index tree-item-number
 magic            = 8BYTE
 version          = uint64-le
 block-num        = uint64-le
 item-num         = uint64-le
 data-hash        = 32BYTE
+tree-item-index  = uint64-le
+tree-item-number = uint64-le
 \end{verbatim}
 
 \section{附录 C：错误码}
@@ -1413,9 +1349,17 @@ data-hash        = 32BYTE
     \ttf{E_INTEGRITY_MISMATCH}   & 完整性错误   & 最终 data\_hash 校验失败     \\
     \ttf{E_RANDOM_SOURCE_FAILED} & 运行时错误   & 随机源不可用，无法安全封装          \\
     \ttf{E_RESUME_STATE_INVALID} & 恢复错误    & 断点上下文与当前流状态不一致         \\
+    \ttf{E_TREE_MAGIC_MISMATCH}   & 格式错误    & 目录树明文魔数不匹配               \\
+    \ttf{E_TREE_VERSION_UNSUPPORTED} & 兼容性错误 & 目录树明文 \ttf{version} 不受支持      \\
+    \ttf{E_TREE_LAYOUT_INVALID}   & 格式错误    & 目录树各节偏移或记录边界非法           \\
+    \ttf{E_TREE_FILE_COUNT_MISMATCH} & 格式错误 & 遍历叶结点数与文件节条数 $M$ 不一致    \\
+    \ttf{E_TREE_ITEM_INDEX_INVALID} & 格式错误 & \ttf{file_entry} 中 Item 下标越界或不合法 \\
     \bottomrule
   \end{longtable}
 }
+
+\subsection{目录树解析相关错误码}\label{sec:directory-tree-errors}
+第~\ref{sec:directory-tree-parse} 节校验失败时，实现 SHOULD 使用上表中以 \texttt{E\_TREE\_} 为前缀的错误码，以便与 Item 级及 Header 级错误区分。
 
 \subsection{C.2 错误处理要求}
 \begin{itemize}
@@ -1450,15 +1394,16 @@ data-hash        = 32BYTE
   本标准表述（第~\ref{sec:seal-chapter} 章） & 参考实现符号（Node）          & 说明                                       \\
   \midrule
   \endhead
-  集成层表示（示例）                         & \ttf{toNtInput}       & \ttf{payload} $\to$ 输入单元；\textbf{非}本标准必选布局 \\
-  集成层还原（示例）                         & \ttf{fromNtInput}     & 输入单元 $\to$ \ttf{payload}；\textbf{非}本标准必选布局 \\
-  批包构造                              & \ttf{batch2ntpackage} & 若干输入单元 $\to$ 批包 \ttf{B}（第~\ref{sec:batch-package} 节） \\
-  批包拆分                              & \ttf{ntpackage2batch} & 批包 \ttf{B} $\to$ 输入单元列表               \\
-  流式封装入口（信息性）                       & \ttf{Sealer}          & \ttf{src/Sealer.js}；按 \ttf{T_chunk} 切分载荷 \\
-  批刷写阈值 \ttf{T_batch}               & \ttf{MaxItemSize}     & \ttf{src/limits.js}，参考取值 65536           \\
+  Item 载荷（集成层）                         & \ttf{item_payload}    & 本条 Item 加密前字节串；布局由集成层定义 \\
+  集成层表示（历史示例）                       & \ttf{toNtInput}       & \ttf{payload} $\to$ 载荷字节；\textbf{非}本标准必选 \\
+  集成层还原（历史示例）                       & \ttf{fromNtInput}     & 载荷字节 $\to$ \ttf{payload}；\textbf{非}本标准必选 \\
+  内容加密（信息性）                          & encrypt item 模块     & \ttf{item_payload} $\to$ \ttf{cipher_payload} \\
+  流式封装入口（信息性）                       & \ttf{Sealer}          & \ttf{src/Sealer.js}；参考实现或仍含批包逻辑，与标准 Item 模型可能对齐中 \\
   Block 内 Item 数上限 \ttf{N_block}      & \ttf{ItemNumPerBlockLimit} & \ttf{src/blockfile.js} 构造参数，参考取值 256 \\
   \bottomrule
 \end{longtable}
 }
+
+\input{sealed-directory-tree-appendix}
 
 \end{document}

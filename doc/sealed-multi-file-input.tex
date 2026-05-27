@@ -1,0 +1,221 @@
+% 第 10 章：多文件封装与解封（参考）
+% 在单 Item 管道（第 7、8 章）之上编排多逻辑文件与目录树；目录明文格式见第 9 章。
+
+\section{多文件封装与解封（参考）}\label{sec:multi-file-chapter}
+
+\subsection{定位与依赖}\label{sec:multi-file-scope}
+
+本章描述多文件场景下的\textbf{外层编排}，以第 7 章 Item 管道为执行层，不修改其内部步骤。
+
+\begin{itemize}
+  \item 第~\ref{sec:seal-chapter}、\ref{sec:unseal-chapter} 章只处理\textbf{按序 Item 载荷}，不感知宿主目录结构。
+  \item 本章在第 7 章之上完成三件事：
+        \begin{enumerate}
+          \item 扫描宿主目录，生成\textbf{目录树文件}（明文格式见第 9 章）；
+          \item 为目录树文件和各数据文件分配全局 Item 下标；
+          \item 按分配结果组装写出队列，调用第 7 章写入 \texttt{.sealed}，收尾时写入 Header。
+        \end{enumerate}
+  \item 目录树\textbf{二进制布局}见第~\ref{sec:directory-tree-chapter} 章；符号链接 Item 编码见第~\ref{sec:multi-file-symlink} 节；解封后的整包还原见第~\ref{sec:multi-file-unseal-restore} 节。
+  \item 除明确援引格式或校验条款外，本章步骤为\textbf{参考性}说明；Item 切分粒度、路径拼接、摘要算法等由集成层声明，\textbf{不}写入 \texttt{.sealed} 物理布局。
+\end{itemize}
+
+\textbf{子流程（独立说明）：}
+\begin{itemize}
+  \item 无目录树与单流包（第~\ref{sec:multi-file-no-tree} 节）；
+  \item 目录树文件生成（第~\ref{sec:multi-file-tree-generate} 节）；
+  \item 全局 Item 分配与 Header 目录树定位（第~\ref{sec:multi-file-item-alloc} 节）；
+  \item 多文件封装总流程（第~\ref{sec:multi-file-seal-flow} 节）；
+  \item 整包解封与多文件还原（第~\ref{sec:multi-file-unseal-restore} 节）；
+  \item 逻辑文件写回标记（第~\ref{sec:multi-file-restore-flag} 节）；
+  \item 符号链接 Item 载荷与写回（第~\ref{sec:multi-file-symlink} 节）；
+  \item 一致性与错误处理（第~\ref{sec:multi-file-consistency} 节）。
+\end{itemize}
+
+\subsection{无目录树与单流包}\label{sec:multi-file-no-tree}
+
+当密封包不含目录索引（Header.\ttf{tree_item_number} $=$ \texttt{0}）时：
+
+\begin{itemize}
+  \item 封装侧 MAY 仅按第~\ref{sec:seal-chapter} 章提交 Item 序列，\textbf{不}执行本章第~\ref{sec:multi-file-tree-generate}、\ref{sec:multi-file-item-alloc} 节中目录树相关步骤；
+  \item 封装上下文 MUST 含 \ttf{tree_item_number} $=$ \texttt{0}；\ttf{tree_item_index} 在读取侧 SHOULD 忽略；
+  \item 解封侧 MAY 仅按第~\ref{sec:unseal-chapter} 章还原 Item 序列，\textbf{不}执行第~\ref{sec:multi-file-unseal-restore} 节；
+  \item 与第~\ref{sec:directory-tree-no-tree} 节一致：内容区 MAY 不含符合第 9 章的目录明文。
+\end{itemize}
+
+\subsection{目录树文件生成（参考）}\label{sec:multi-file-tree-generate}
+
+本节将宿主侧目录树转化为第 9 章规定的\textbf{目录明文字节串}，再映射为一条或多条 \ttf{item_payload}。
+
+\textbf{输入：}
+\begin{itemize}
+  \item 宿主侧待密封目录（路径树根）；
+  \item 各结点的单层名称、文件类型（\texttt{lstat} 的 \ttf{st\_mode}）、修改/创建时间；
+  \item 各数据文件可选明文摘要（32 字节，算法由集成层定义）。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item 符合第~\ref{sec:directory-tree-chapter} 章的\textbf{目录明文字节串}；
+  \item 目录树拟占用的 \ttf{item_payload} 条数 $m_{\mathrm{tree}}$（通常为 1；超大目录明文 MAY 切为多条，规则见第~\ref{sec:multi-file-tree-payload-concat} 节）。
+\end{itemize}
+
+\textbf{参考实施步骤：}
+\begin{enumerate}
+  \item \textbf{遍历结点}：自目录根起深度优先遍历宿主路径树；按第 9 章布局为每个目录结点建立目录记录，为每个数据文件/符号链接建立 \ttf{file_entry} 并由父目录 \ttf{child} 引用；集成层加入的辅助文件同样须登记 \ttf{file_entry} 与 \ttf{child}（\ttf{restore_flag} $=$ \texttt{0}，见第~\ref{sec:multi-file-restore-flag} 节）；结点类型取自 \texttt{(st\_mode \& S\_IFMT) >> 12}（附录~\ref{app:child-type-table}）；
+  \item \textbf{写符号节}：将各结点的单层名称以 UTF-8、NUL 结尾、紧密拼接写入符号节缓冲区，记录各名称在符号节内的偏移；
+  \item \textbf{写目录节}：自目录节起始紧密排列全部目录记录，首条为根目录（名称为空）；每条目录记录的子结点引用指向对应目录记录或文件记录的起始偏移；
+  \item \textbf{写文件节}：紧密排列全部文件记录，每条填入名称偏移、时间属性、\ttf{restore_flag}（宿主目录树内文件为 \texttt{1}；仅作内容区索引的辅助/说明文件为 \texttt{0}，见第~\ref{sec:multi-file-restore-flag} 节）、可选摘要（本步\textbf{暂不填入} Item 下标，留待第~\ref{sec:multi-file-item-alloc} 节分配后回填）；
+  \item \textbf{写树头}：填入魔数、版本及目录节/文件节/符号节在目录明文内的起始偏移（见第~\ref{sec:tree-header} 节）；
+  \item \textbf{自检（推荐）}：在回填 Item 下标后，以第~\ref{sec:directory-tree-parse} 节规范性解析验证目录明文合法；
+  \item \textbf{映射 Item 载荷}：将目录明文（或切分后的片段）逐条映射为 \ttf{item_payload}，条数即 $m_{\mathrm{tree}}$。
+\end{enumerate}
+
+\textbf{说明：}
+路径拼接规则（由符号节名称与目录结构拼接宿主相对路径）须与解封侧对称；符号链接的 Item 载荷与写回见第~\ref{sec:multi-file-symlink} 节。
+
+\subsection{逻辑文件写回标记（参考）}\label{sec:multi-file-restore-flag}
+
+第~\ref{sec:tree-file-section} 节 \ttf{file_entry.restore_flag} 只控制整包解封时\textbf{是否写回宿主目录}；辅助文件与普通文件一样占 \ttf{file_entry} 并由某 \ttf{dir_item} 的 \ttf{child} 引用，目录明文校验规则与第 9 章一致。
+
+\textbf{封装侧：}
+\begin{itemize}
+  \item 自宿主目录树密封得到的普通文件、符号链接：\ttf{restore_flag} MUST 为 \texttt{1}，并写入 \ttf{file_entry}、由父目录 \ttf{child} 引用；
+  \item 集成层自行加入的辅助索引、说明等逻辑文件：同样 MUST 写入 \ttf{file_entry} 并由 \ttf{child} 引用（通常挂在根目录或约定父目录下），\ttf{restore_flag} MUST 为 \texttt{0}。
+\end{itemize}
+
+\textbf{解封侧：}
+\begin{itemize}
+  \item 遍历仍经 \ttf{child} 到达全部叶结点；若对应 \ttf{file_entry.restore_flag} $=$ \texttt{0}，MUST \textbf{不}在输出根下创建该路径（对应 Item 已按第~\ref{sec:unseal-chapter} 章解密，集成层 MAY 另行读取）；
+  \item \ttf{restore_flag} $=$ \texttt{1} 时，按文件/链接类型写回（第~\ref{sec:multi-file-unseal-restore}、\ref{sec:multi-file-symlink} 节）。
+\end{itemize}
+
+\subsection{符号链接的 Item 载荷与写回（暂行）}\label{sec:multi-file-symlink}
+
+因第 9 章\textbf{无}单独链接节，每个符号链接在目录明文中仍占一条完整 \ttf{file_entry}（\ttf{name}、\ttf{mtime}、\ttf{ctime}、\ttf{hash}、\ttf{item_index}、\ttf{item_number}），并在 Content Region 中占用与普通逻辑文件相同的 Item 槽位。本节规定链接目标如何编码进 \ttf{item_payload} 及解封后如何写回；封装/解封侧 SHOULD 采用下列暂行规则以保持互操作。
+
+\textbf{封装（密封侧）：}
+\begin{enumerate}
+  \item 对宿主符号链接调用 \texttt{readlink}（或等价接口）取得链接目标路径字符串；
+  \item 将该字符串编码为 \textbf{UTF-8、NUL 结尾、紧密拼接} 的字节序列（\textbf{无} BOM），作为该链接逻辑文件的全部 \ttf{item_payload} 明文；通常 \ttf{item_number} $= 1$；目标极长时 MAY 按与普通文件相同的规则切分为多条 Item，拼接规则与第~\ref{sec:multi-file-tree-payload-concat} 节一致；
+  \item 在目录明文中写入 \ttf{file_entry}：\ttf{name} 为链接在父目录下的单层名称；\ttf{mtime}、\ttf{ctime} 取自宿主 \texttt{lstat}；\ttf{item_index}、\ttf{item_number} 由第~\ref{sec:multi-file-item-alloc} 节分配；\ttf{hash} SHOULD 为上述 \ttf{item_payload} 明文字节（若多条则按 Item 下标顺序拼接后）的 32 字节摘要，算法与数据文件一致并由集成层声明；
+  \item 对应 \ttf{child.type} $=$ \texttt{10}（\texttt{S\_IFLNK}），\ttf{offset} 指向该 \ttf{file_entry}。
+\end{enumerate}
+
+\textbf{解封（还原侧）：}
+\begin{enumerate}
+  \item 遍历至 \ttf{type} $=$ \texttt{10} 的叶结点时，按 \ttf{file_entry} 的 \ttf{item_index}、\ttf{item_number} 自已还原序列取出并拼接 \ttf{item_payload}；
+  \item 集成层 MAY 将拼接结果与 \ttf{file_entry.hash} 比对；
+  \item 自拼接结果解析出 UTF-8 链接目标（扫描至首个 \texttt{0x00}，此前字节 MUST 为合法 UTF-8）；
+  \item 在输出根下按 \texttt{path\_stack} 与 \ttf{name} 确定路径，调用 \texttt{symlink}（或等价接口）创建符号链接；\ttf{mtime}、\ttf{ctime} SHOULD 尽量恢复（依宿主 API 能力）。
+\end{enumerate}
+
+\textbf{说明：}
+链接目标在载荷内\textbf{不}再套路径分隔规则以外的帧头；相对/绝对路径以 \texttt{readlink} 所得为准，封装与解封 MUST 对称。本小节为\textbf{暂行}方案，后续版本 MAY 增加显式类型标签或长度前缀，但届时须递增 \ttf{version} 并单独声明兼容性。
+
+\subsection{全局 Item 分配与 Header 目录树定位（参考）}\label{sec:multi-file-item-alloc}
+\label{sec:directory-tree-binding}
+
+本节在已知目录树文件占用 $m_{\mathrm{tree}}$ 条 \ttf{item_payload} 的前提下，为全部逻辑文件（数据文件 + 目录树文件）分配 Content Region 中的全局 Item 下标。分配完成后，Header 中目录树定位字段即可确定，并作为封装上下文传入第 7 章。
+
+\textbf{输入：}
+\begin{itemize}
+  \item 待密封的数据逻辑文件集合，各自按集成层切分策略确定的 \ttf{item_payload} 条数；
+  \item 目录树文件的 \ttf{item_payload} 条数 $m_{\mathrm{tree}}$（由第~\ref{sec:multi-file-tree-generate} 节得出）。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item 每个数据逻辑文件的\textbf{全局起始 Item 下标}与\textbf{占用条数}（回填至目录明文的文件记录中，见第~\ref{sec:tree-file-section} 节）；
+  \item Header.\ttf{tree_item_index}（目录树首条 Item 全局下标）与 \ttf{tree_item_number}（$= m_{\mathrm{tree}}$）；
+  \item 全局 Item 总数 $N_{\mathrm{total}}$。
+\end{itemize}
+
+\textbf{参考实施步骤：}
+\begin{enumerate}
+  \item 按实现确定的稳定顺序排列数据逻辑文件（例如相对路径字典序），令 $i \leftarrow 0$；
+  \item 对每个数据逻辑文件：记其 \ttf{item_payload} 条数为 $c$，分配全局下标区间 $[i,\ i+c)$，令 $i \leftarrow i + c$；
+  \item \textbf{推荐}将目录树 Item 排在全部数据 Item \textbf{之后}：置 \ttf{tree_item_index} $\leftarrow i$，\ttf{tree_item_number} $\leftarrow m_{\mathrm{tree}}$，$i \leftarrow i + m_{\mathrm{tree}}$；
+  \item 将步骤 2 所得各文件的起始下标与条数\textbf{回填}至第~\ref{sec:multi-file-tree-generate} 节生成的目录明文中对应文件记录的 \ttf{item_index}、\ttf{item_number} 字段（见第~\ref{sec:tree-file-section} 节）；回填后重新映射目录树 \ttf{item_payload}（若明文内容有变）。
+\end{enumerate}
+
+\textbf{说明：}
+目录树 Item 亦可排在数据 Item 之前；\ttf{tree_item_index}、\ttf{tree_item_number} 仅须与实际提交第 7 章的顺序一致。\ttf{tree_*} 两字段与 \ttf{magic_number} 同级写入封装上下文（第~\ref{sec:seal-context} 节），第 7 章主循环\textbf{不}修改，收尾时原样写入 Header。
+
+\subsubsection{目录树 Item 载荷拼接}\label{sec:multi-file-tree-payload-concat}
+
+当 \ttf{tree_item_number} $= 1$ 时，该条 Item 解密得到的 \ttf{item_payload} 即为完整目录明文。
+
+当 \ttf{tree_item_number} $> 1$ 时，集成层 MUST 在封装与解封侧采用同一规则将多条 \ttf{item_payload} 首尾拼接为目录明文。参考规则：按全局 Item 下标自 \ttf{tree_item_index} 起递增，直接字节拼接（\textbf{无}额外长度前缀）；拼接结果 MUST 满足第 9 章布局。
+
+\subsection{多文件封装总流程（参考）}\label{sec:multi-file-seal-flow}
+
+本节为第~\ref{sec:seal-chapter} 章的\textbf{外层编排}：依次完成生成、分配、调用，输出完整 \texttt{.sealed} 文件。
+
+\textbf{输入：}
+\begin{itemize}
+  \item 宿主侧待密封目录树及集成层编码/切分策略；
+  \item 接收方长期公钥、\ttf{magic_number}、\ttf{version_number} 等（进入封装上下文）。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item 完整的 \texttt{.sealed} 文件（由第~\ref{sec:seal-finalize} 节写出）。
+\end{itemize}
+
+\textbf{实施步骤：}
+\begin{enumerate}
+  \item \textbf{生成目录树文件}（第~\ref{sec:multi-file-tree-generate} 节）：遍历宿主目录树，生成目录明文，得到目录树 \ttf{item_payload}（条数 $m_{\mathrm{tree}}$）；
+  \item \textbf{全局 Item 分配}（第~\ref{sec:multi-file-item-alloc} 节）：为数据文件和目录树文件分配全局下标，得到 \ttf{tree_item_index}、\ttf{tree_item_number}；回填目录明文中各文件记录的 Item 下标字段；
+  \item \textbf{准备数据 Item 载荷}：按分配结果对各数据逻辑文件编码/切分，得到对应 \ttf{item_payload}；
+  \item \textbf{填写封装上下文}（第~\ref{sec:seal-context} 节）：写入 \ttf{magic_number}、\ttf{version_number}、\ttf{tree_item_index}、\ttf{tree_item_number} 及接收方公钥；
+  \item \textbf{组装写出队列}：按全局下标顺序排列全部 \ttf{item_payload}（数据文件在前、目录树在后，若采用推荐分配）；
+  \item \textbf{调用第 7 章主循环}（第~\ref{sec:seal-total-algorithm} 节）：逐条提交 \ttf{item_payload}，更新滚动摘要与 Block 元信息；
+  \item \textbf{收尾落盘}（第~\ref{sec:seal-finalize} 节）：写出 Block Infos 区与 Header（\ttf{tree_item_index}、\ttf{tree_item_number} 取自封装上下文）。
+\end{enumerate}
+
+\textbf{说明：}
+第 7 章主循环\textbf{不}区分数据 Item 与目录树 Item；外层须保证提交顺序与分配结果一致。封装结束后 SHOULD 验证 Header 中 \ttf{tree_item_index}、\ttf{tree_item_number} 与规划一致，且目录明文自检通过（第~\ref{sec:multi-file-consistency} 节）。
+
+\subsection{整包解封与多文件还原（解封侧）}\label{sec:multi-file-unseal-restore}
+\label{sec:directory-tree-unseal}
+
+整包解封在\textbf{已完成}第~\ref{sec:unseal-chapter} 章 Item 级解封且 \ttf{data_hash} 校验通过之后进行。
+
+\textbf{输入：}
+\begin{itemize}
+  \item 已全部还原的 \ttf{item_payload} 序列（条数 $=$ Header.\ttf{item_number}）；
+  \item Header.\ttf{tree_item_index}、\ttf{tree_item_number}。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item 在集成层指定的\textbf{输出根目录}下，按密封前相对路径写回的宿主文件/目录（及链接等）。
+\end{itemize}
+
+\textbf{实施步骤：}
+\begin{enumerate}
+  \item 若 \ttf{tree_item_number} $=$ \texttt{0}，按第~\ref{sec:multi-file-no-tree} 节结束或仅向集成层交付 Item 序列；
+  \item 取下标 \texttt{[tree\_item\_index,\ tree\_item\_index + tree\_item\_number)} 的各条 \ttf{item_payload}，按第~\ref{sec:multi-file-tree-payload-concat} 节拼接为目录明文；
+  \item 以 Header.\ttf{item_number} 为 \texttt{content\_item\_number}，执行第~\ref{sec:directory-tree-parse} 节校验步骤；失败 MUST 终止整包还原；
+  \item 以算法~\ref{alg:tree-visit} 的\textbf{还原动作变体}遍历目录树：每个目录结点在输出根下建立目录并设置时间属性；叶结点若 \ttf{restore_flag} $=$ \texttt{0} 则跳过写回（第~\ref{sec:multi-file-restore-flag} 节）；否则 \ttf{type} $=$ \texttt{8} 写回普通文件，\ttf{type} $=$ \texttt{10} 按第~\ref{sec:multi-file-symlink} 节写回符号链接（路径由 \texttt{path\_stack} 与 \ttf{name} 拼接，规则须与封装侧对称）。
+\end{enumerate}
+
+\textbf{说明：}
+相对路径由目录明文中的名称串与目录层级遍历拼接，算法由集成层定义，须与封装侧一致。
+
+\subsection{一致性与错误处理}\label{sec:multi-file-consistency}
+
+\begin{itemize}
+  \item 分配阶段写入目录明文的各文件 Item 下标范围，MUST 与实际提交第 7 章的顺序一致；否则目录明文与内容区将不一致；
+  \item Header 中 \ttf{tree_item_index}、\ttf{tree_item_number} MUST 在调用第~\ref{sec:seal-finalize} 节前已确定，且 MUST 满足第~\ref{sec:seal-consistency} 节的约束；
+  \item 目录明文解析失败时 MUST 终止整包还原（第~\ref{sec:directory-tree-parse} 节）；
+  \item 解封侧摘要比对失败、路径写回失败等，由集成层声明为 MUST 终止或 MAY 跳过，并 SHOULD 使用可区分错误码（附录 C 扩展\textbf{待补}）；
+  \item Item 级错误（认证失败、完整性不匹配）优先于本章整包还原，见第~\ref{sec:unseal-errors}、\ref{sec:unseal-consistency} 节。
+\end{itemize}
+
+\subsection{本章待补清单}\label{sec:multi-file-tbd}
+
+\begin{enumerate}
+  \item 多文件封装与整包解封参考流程图（\texttt{doc/diagrams/}）；
+  \item 多文件相关错误码（附录 C）扩展。
+\end{enumerate}

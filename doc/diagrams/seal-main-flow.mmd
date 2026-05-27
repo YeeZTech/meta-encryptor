@@ -1,0 +1,11 @@
+%% 封装主循环（第 7 章 封装流程总览）
+%% npx @mermaid-js/mermaid-cli -i seal-main-flow.mmd -o seal-main-flow.png -b white -w 1200
+flowchart TD
+    start([开始]) --> init["初始化 H = H0<br/>item_number = 0"]
+    init --> A{"尚有 Item 载荷?"}
+
+    A -->|是| B["用 item_payload 更新 H<br/>Item 写出 / Block 元信息更新"]
+    B --> A
+
+    A -->|否| F["收尾落盘"]
+    F --> endnode([结束])

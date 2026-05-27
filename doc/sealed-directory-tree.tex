@@ -1,0 +1,255 @@
+% 第 9 章：目录树明文格式（框架）
+% 规定目录（树）逻辑文件的明文布局、解析与校验；生成与整包还原见第 10 章。
+
+\section{目录树明文格式}\label{sec:directory-tree-chapter}
+
+自本版起，通过\textbf{目录树文件}在单条 \texttt{.sealed} 内索引多个逻辑文件与子目录：封装时将宿主侧目录树（各文件的\textbf{相对路径}与层级）写入目录明文，解封后在集成层指定的输出根路径下按相同相对路径还原，以保留与密封前一致的目录结构（第~\ref{sec:multi-file-chapter} 章给出封装与整包解封流程）。
+
+\subsection{定位}\label{sec:directory-tree-scope}
+
+\begin{itemize}
+  \item \textbf{目录（树）文件}：密封包内的一份逻辑文件，其明文为下文规定的目录索引字节布局；在 Content Region 中与其它逻辑文件一样，经 Item 加密存储（第~\ref{sec:content-region} 节）。\textbf{目录项}（\ttf{dir_item}）与\textbf{文件项}（\ttf{file_entry}）等记录类型见第~\ref{sec:tree-string-section} 节起各小节。
+  \item 本章规定目录明文的\textbf{二进制布局、解析与校验}；封装侧如何\textbf{生成}该明文、Header 目录树 Item 定位字段如何取值及解封侧如何\textbf{消费}解析结果，见第~\ref{sec:multi-file-chapter} 章。
+  \item 本章\textbf{不}重复第~\ref{sec:unseal-chapter} 章的 Item 认证解密步骤；解封侧须先按第~\ref{sec:multi-file-tree-payload-concat} 节得到目录明文字节串，再调用本章解析。
+\end{itemize}
+
+\subsection{无目录树情形}\label{sec:directory-tree-no-tree}
+
+当 Header.\ttf{tree_item_number} $=$ \texttt{0} 时，本标准\textbf{不}要求存在符合本章布局的目录明文；多文件整包还原流程不适用，解封侧 MAY 仅按第~\ref{sec:unseal-chapter} 章输出 Item 序列。互操作细则见第~\ref{sec:multi-file-no-tree} 节。
+
+\subsection{规范约定}\label{sec:directory-tree-conventions}
+
+\begin{itemize}
+  \item 除特别说明外，整数类型均为无符号，多字节整数均为小端序（LE）；
+  \item 本章所称\textbf{目录明文}，指解密目录树 Item 后得到的连续字节串；下文偏移均以目录明文\textbf{首字节为 0} 计量；
+  \item 字段名使用下划线命名，与实现互操作对齐；
+  \item 目录树明文格式版本由树头.\ttf{version} 表示，与 \texttt{.sealed} 文件 Header.\ttf{version_number} \textbf{相互独立}；当前版本约定值见第~\ref{sec:tree-header} 节（暂定）。
+\end{itemize}
+
+\subsection{整体布局}\label{sec:tree-file-layout}
+
+目录明文是解密目录树 Item 后得到的一段连续字节串，用于描述密封包内目录层级、各逻辑文件及其与 Content Region 中 Item 的对应关系。自目录明文首字节起，按从前到后顺序布局如下：
+\begin{center}
+  \texttt{[树头][目录节][文件节][符号节]}
+\end{center}
+\begin{itemize}
+  \item \textbf{树头}：固定 40 字节，含魔数、版本及后三节起始偏移，详见第~\ref{sec:tree-header} 节；
+  \item \textbf{目录节}：紧密存放全部目录项（\ttf{dir_item}），见第~\ref{sec:tree-dir-section} 节；
+  \item \textbf{文件节}：紧密存放全部文件项（\ttf{file_entry}），见第~\ref{sec:tree-file-section} 节；
+  \item \textbf{符号节}：紧密存放 NUL 结尾的 UTF-8 名称串，见第~\ref{sec:tree-string-section} 节。
+\end{itemize}
+各节边界由树头定位字段给出；下文按「树头 $\rightarrow$ 符号节 $\rightarrow$ 文件节 $\rightarrow$ 目录节」叙述。
+各节边界由树头中的定位字段给出。
+
+\subsection{树头}\label{sec:tree-header}
+
+树头位于目录明文偏移 \texttt{0} 处，长度固定为 40 字节。字段布局如下：
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.4cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{6.6cm}}
+  \toprule
+  字段名 & 偏移 & 长度 & 说明 \\
+  \midrule
+  \endhead
+  \ttf{magic_number} & 0 & 8 & 目录明文魔数（\ttf{UINT64(LE)}，见下文参考约定） \\
+  \ttf{version} & 8 & 8 & 目录明文格式版本（\ttf{UINT64(LE)}，见下文参考约定） \\
+  \ttf{dir_offset} & 16 & 8 & 目录节在目录明文内的起始偏移（\ttf{UINT64(LE)}） \\
+  \ttf{file_offset} & 24 & 8 & 文件节在目录明文内的起始偏移（\ttf{UINT64(LE)}） \\
+  \ttf{str_offset} & 32 & 8 & 符号节在目录明文内的起始偏移（\ttf{UINT64(LE)}） \\
+  \bottomrule
+\end{longtable}
+
+\textbf{补充说明：}
+\begin{itemize}
+  \item \ttf{magic_number}、\ttf{version}：读取器 MUST 在进入后续解析前完成校验（失败语义见第~\ref{sec:directory-tree-parse} 节）；
+  \item \ttf{dir_offset}、\ttf{file_offset}、\ttf{str_offset}：实现 MUST 校验 $0 \le \mathit{dir\_offset} \le \mathit{file\_offset} \le \mathit{str\_offset} \le \mathit{plaintext\_len}$（细则见第~\ref{sec:directory-tree-parse} 节校验步骤 1）。
+\end{itemize}
+
+\noindent\textbf{参考约定参数（当前版本，暂定）：}\label{sec:tree-header-params}
+为保证目录明文互操作，当前约定 \ttf{version = 2}（\ttf{UINT64(LE)}，暂定；\ttf{file_entry} 为 72 字节且含 \ttf{restore_flag}）。
+\ttf{magic_number}（\ttf{UINT64(LE)}，8 字节，暂定）为：字符串形式 ASCII \texttt{YEEZTRID}（恰好 8 字节，\textbf{无}结尾 \texttt{0x00}）；十六进制（自目录明文偏移 \texttt{0} 起连续 8 字节）：\texttt{5945455a54495245}。
+树头.\ttf{version} 仅描述目录明文布局演进，与 \texttt{.sealed} Header.\ttf{version_number} \textbf{无}对应关系，二者 MAY 独立递增；读取器 MUST 在解析目录节前校验 \ttf{magic_number} 与 \ttf{version}；若后续调整树头布局或上述常量，树头.\ttf{version} MUST 递增并提供兼容说明，\textbf{不必}与 sealed 文件版本同步。
+
+\subsection{符号节}\label{sec:tree-string-section}
+
+符号节为目录明文中自 \ttf{str_offset} 起至目录明文末尾的字节区间，供后文 \ttf{dir_item}、\ttf{file_entry} 的 \ttf{name} 字段引用。每段为\textbf{单层}目录名或文件名（\textbf{不}含 \texttt{/}、\texttt{\textbackslash}），用于第~\ref{sec:multi-file-chapter} 章整包还原时在宿主侧拼接相对路径。
+
+\textbf{编码策略：} 各名称串按 UTF-8 编码（\textbf{无} BOM），在符号节内\textbf{首尾相接、紧密排列}；每段以单个 \texttt{0x00}（NUL）结尾，段与段之间\textbf{无}额外长度前缀或填充字节。布局示意：
+\begin{center}
+  \small
+  \texttt{[UTF-8 名称字节…][0x00][UTF-8 名称字节…][0x00]…}
+\end{center}
+
+\begin{itemize}
+  \item \ttf{name}（\ttf{UINT32(LE)}）为\textbf{符号节内字节偏移}：名称起点 $=$ \ttf{str_offset} $+$ \ttf{name}；解析器 MUST 自该起点按字节读至首个 \texttt{0x00} 为止（\textbf{无}独立长度字段）；
+  \item 空名称（根目录项）：\ttf{name} 所指向处首字节 MUST 为 \texttt{0x00}（即仅含终止符的一段）；
+  \item 名称正文 MUST 为合法 UTF-8，且 MUST NOT 在终止符之前出现 \texttt{0x00}；
+  \item 多条记录 MAY 共用同一 \ttf{name} 偏移（相同名称只存一份）；
+  \item 封装侧 MAY 按任意顺序写入各段；解析器 MUST 仅通过 \ttf{name} 偏移定位字符串，不得假设全局字典序；
+  \item 符号节内所有被引用的 \ttf{name} 偏移 MUST 落在符号节区间内，且 MUST 能在该区间内扫描到终止符；否则 MUST 判为格式错误；
+  \item 自目录树还原宿主侧相对路径及写回目录结构的规则见第~\ref{sec:multi-file-chapter} 章，本章不定义路径拼接算法。
+\end{itemize}
+
+\subsection{文件节与文件项}\label{sec:tree-file-section}
+\label{sec:tree-file-entry}
+
+文件节为目录明文中 $[$\ttf{file_offset},\ \ttf{str_offset}$)$ 字节区间，自 \ttf{file_offset} 起由 $M$ 条\textbf{文件项}（\ttf{file_entry}）紧密排列；每条固定 72 字节，描述一个逻辑文件在 Content Region 中的位置及元数据。字段布局如下：
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.4cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{6.6cm}}
+  \toprule
+  字段名 & 偏移 & 长度 & 说明 \\
+  \midrule
+  \endhead
+  \ttf{name} & 0 & 4 & 本逻辑文件文件名在符号节内的偏移（\ttf{UINT32(LE)}） \\
+  \ttf{mtime} & 4 & 8 & 本逻辑文件末次修改时间：\ttf{UINT64(LE)}，自 Unix 纪元起的整秒数（UTC） \\
+  \ttf{ctime} & 12 & 8 & 本逻辑文件创建时间：\ttf{UINT64(LE)}，自 Unix 纪元起的整秒数（UTC） \\
+  \ttf{hash} & 20 & 32 & 逻辑文件明文摘要（\ttf{BYTESTRING[32]}）；算法由集成层定义，本标准\textbf{不}规定 \\
+  \ttf{item_index} & 52 & 8 & 该逻辑文件首条 Item 在 Content Region 中的全局下标（\ttf{UINT64(LE)}，含） \\
+  \ttf{item_number} & 60 & 8 & 该逻辑文件占用的连续 Item 条数（\ttf{UINT64(LE)}） \\
+  \ttf{restore_flag} & 68 & 1 & 整包解封时是否写回宿主目录树（\ttf{UINT8(LE)}，见下文） \\
+  \ttf{reserved} & 69 & 3 & 保留，当前版本 MUST 为 \texttt{0x00} \\
+  \bottomrule
+\end{longtable}
+
+\textbf{\ttf{restore_flag} 取值：}
+\begin{center}
+  \small
+  \begin{tabular}{cl}
+    \toprule
+    值 & 含义 \\
+    \midrule
+    \texttt{0} & 不写回宿主目录（辅助/索引/说明等；仍占用 Item，参与第 7 章解密与滚动摘要） \\
+    \texttt{1} & 写回宿主目录（密封包中应出现在最终目录树中的逻辑文件） \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+其它取值保留；解析器对当前目录明文 \ttf{version} MUST 判为格式错误。
+
+\textbf{补充说明：}符号链接占一条 \ttf{file_entry}（字段同上），链接目标在 Item 载荷中，见第~\ref{sec:multi-file-symlink} 节。
+
+\subsection{目录节与目录项}\label{sec:tree-dir-section}
+\label{sec:tree-dir-item}
+
+\textbf{术语：}
+\begin{itemize}
+  \item \textbf{目录}：目录树中的结点，可包含子目录子结点及逻辑文件子结点；层级关系由 \ttf{dir_item} 的 \ttf{children} 表达；
+  \item \textbf{目录项}（\ttf{dir_item}）：目录节内描述一个目录的二进制记录（字段见下文），与目录一一对应；
+  \item \textbf{根目录}：目录树入口，对应目录节中首条 \ttf{dir_item}（\ttf{name} 须为空，见下文补充说明）；
+  \item \textbf{目录节}：目录明文中 $[$\ttf{dir_offset},\ \ttf{file_offset}$)$ 字节区间，紧密存放全部 \ttf{dir_item}。
+\end{itemize}
+
+\textbf{目录节与目录项的关系：}
+目录节字节区间 $[$\ttf{dir_offset},\ \ttf{file_offset}$)$ 内，全部 \ttf{dir_item} 自 \ttf{dir_offset} 起按条紧密排列（首尾相接、无空隙），规则与第~\ref{sec:content-region} 节 Item 序列相同：
+\begin{itemize}
+  \item 每条 \ttf{dir_item} 对应一个目录；单条长度为 $24 + 8 \times N$ 字节，$N =$ \ttf{child_number}（见下表）；
+  \item \textbf{第一条} MUST 为\textbf{根目录项}，起始偏移 MUST 等于 \ttf{dir_offset}；
+  \item 其余 \ttf{dir_item} 紧接在前一条之后顺序写出；除「根目录项必须为首条」外，本标准\textbf{不}规定各目录项的先后顺序（封装侧 MAY 按生成算法任意排列）；
+  \item 目录节内字节 MUST 被各 \ttf{dir_item} 恰好占满：最后一条 \ttf{dir_item} 的结束偏移 MUST 等于 \ttf{file_offset}，MUST NOT 存在尾部未使用字节。
+\end{itemize}
+
+解析器 MAY 自 \ttf{dir_offset} 顺序扫描并切分全部 \ttf{dir_item}，同时 MUST 自根目录项起按 \ttf{child} 递归遍历目录树；两种方式得到的目录项边界 MUST 一致。封装侧生成算法见第~\ref{sec:multi-file-chapter} 章。
+
+\subsubsection{目录项（\texttt{dir\_item}）}
+
+每条 \ttf{dir_item} 自其起始偏移起，按字节从前到后布局如下（$N =$ \ttf{child_number}，本条长度 $24 + 8N$ 字节）：
+\begin{center}
+  \texttt{[name (4B)][mtime (8B)][ctime (8B)][child\_number (4B)][child (8B)]$\times N$}
+\end{center}
+字段布局如下：
+\begin{longtable}{>{\raggedright\arraybackslash}p{3.4cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{6.6cm}}
+  \toprule
+  字段名 & 偏移 & 长度 & 说明 \\
+  \midrule
+  \endhead
+  \ttf{name} & 0 & 4 & 本目录名称在符号节内的偏移（\ttf{UINT32(LE)}） \\
+  \ttf{mtime} & 4 & 8 & 本目录末次修改时间（\ttf{UINT64(LE)}，Unix 纪元起整秒，UTC） \\
+  \ttf{ctime} & 12 & 8 & 本目录创建时间（\ttf{UINT64(LE)}，Unix 秒，UTC） \\
+  \ttf{child_number} & 20 & 4 & 子节点个数（\ttf{UINT32(LE)}） \\
+  \ttf{children} & 24 & $8 \times N$ & 连续 $N =$ \ttf{child_number} 个\textbf{子节点}（\ttf{child}，各 8 字节），见第~\ref{sec:tree-child} 节 \\
+  \bottomrule
+\end{longtable}
+
+\textbf{补充说明：}\textbf{根目录项}（首条 \ttf{dir_item}）的 \ttf{name} MUST 为\textbf{空}（符号节中仅 \texttt{0x00}）；\textbf{不得}用 \texttt{/}、\texttt{.}、\texttt{..} 代替。
+
+\subsubsection{子节点（\texttt{child}）}\label{sec:tree-child}
+
+每个 \ttf{child} 占 8 字节，编码为单个 \ttf{UINT64(LE)}，自低字节起按位打包如下（图中 \texttt{b} 表示\textbf{比特}，\textbf{非}字节 \texttt{B}）：
+\begin{center}
+  \texttt{[type (4b)][offset (60b)]}
+\end{center}
+按位含义：
+\begin{itemize}
+  \item 低 4 位 \ttf{type}：子结点对应的\textbf{宿主文件类型}；编码规则与取值表见附录~\ref{app:child-type-table}；
+  \item 高 60 位 \ttf{offset}：目录明文内的绝对字节偏移（自目录明文首字节为 \texttt{0} 起算），为被引用记录的\textbf{首字节}位置。
+\end{itemize}
+
+\textbf{补充说明：}
+\begin{itemize}
+  \item \ttf{type} $=$ \texttt{4}（\texttt{S\_IFDIR}）时，\ttf{offset} MUST $\in [$\ttf{dir_offset},\ \ttf{file_offset}$)$ 且为某条 \ttf{dir_item} 边界；
+  \item \ttf{type} $=$ \texttt{8}（\texttt{S\_IFREG}）或 \texttt{10}（\texttt{S\_IFLNK}）时，\ttf{offset} MUST $\in [$\ttf{file_offset},\ \ttf{str_offset}$)$ 且 $(\mathtt{offset}-\mathtt{file\_offset}) \bmod 72 = 0$；
+  \item 其它 \ttf{type} 及越界 \ttf{offset} MUST 判为格式错误（禁止类型见附录~\ref{app:child-type-table}）。
+\end{itemize}
+
+\subsection{目录树明文解析与校验}\label{sec:directory-tree-parse}
+
+本节规定对目录明文字节串的\textbf{规范性解析}（封装侧生成后自检、解封侧整包还原前校验均可调用）。调用方 MUST 传入 \texttt{content\_item\_number}（Content Region 中 Item 总条数；解封时通常取 Header.\ttf{item_number}），用于校验文件记录下标不越界。
+
+\begin{algorithm}[htbp]
+\caption{目录树遍历框架（供校验与还原共同引用）}
+\label{alg:tree-visit}
+\begin{algorithmic}[1]
+\Require 目录明文字节串；树头与各节偏移已完成基本校验
+\State $\mathit{visited} \gets \emptyset$；$\mathit{path\_stack} \gets []$
+\State $\mathit{file\_leaf\_count} \gets 0$；$\mathit{seen\_file\_offsets} \gets \emptyset$ \Comment{校验：判重复引用}
+\Procedure{Visit}{$p$}
+  \If{$p \notin [\mathit{dir\_offset},\ \mathit{file\_offset})$ \textbf{ or } $p \in \mathit{visited}$}
+    \State \textbf{报错并终止}
+  \EndIf
+  \State $\mathit{visited} \gets \mathit{visited} \cup \{p\}$
+  \State 读取当前 \ttf{dir_item}；$\mathit{len} \gets 24 + 8 \times \mathit{child\_number}$
+  \If{$p + \mathit{len} > \mathit{file\_offset}$}
+    \State \textbf{报错并终止}
+  \EndIf
+  \State \textbf{目录结点动作}（校验：验证 \ttf{name} 偏移合法；还原：按 $\mathit{path\_stack}$ 建目录并设置时间）
+  \For{$k \gets 0$ \textbf{to} $\mathit{child\_number}-1$}
+    \State 读取第 $k$ 个 \ttf{child}，得 $\mathit{type}$、$\mathit{offset}$
+    \If{$\mathit{type} \in \{1,2,6,12\}$ \textbf{ or } $\mathit{type}$ 为其它保留值}
+      \State \textbf{报错并终止} \Comment{禁止 \texttt{S\_IFIFO}/\texttt{S\_IFCHR}/\texttt{S\_IFBLK}/\texttt{S\_IFSOCK} 等}
+    \ElsIf{$\mathit{type} = 4$}
+      \If{$\mathit{offset} \notin [\mathit{dir\_offset},\ \mathit{file\_offset})$}
+        \State \textbf{报错并终止}
+      \EndIf
+      \State 子目录名压入 $\mathit{path\_stack}$；\Call{Visit}{$\mathit{offset}$}；弹出 $\mathit{path\_stack}$
+    \ElsIf{$\mathit{type} \in \{8, 10\}$}
+      \If{$(\mathit{offset}-\mathit{file\_offset}) \bmod 72 \neq 0$ \textbf{ or } $\mathit{offset} \notin [\mathit{file\_offset},\ \mathit{str\_offset})$}
+        \State \textbf{报错并终止}
+      \EndIf
+      \If{$\mathit{offset} \in \mathit{seen\_file\_offsets}$}
+        \State \textbf{报错并终止} \Comment{同一 \ttf{file_entry} 不得被多个 \ttf{child} 引用}
+      \EndIf
+      \State $\mathit{seen\_file\_offsets} \gets \mathit{seen\_file\_offsets} \cup \{\mathit{offset}\}$；$\mathit{file\_leaf\_count} \gets \mathit{file\_leaf\_count} + 1$
+      \State \textbf{叶结点动作} \Comment{校验：读 \ttf{file_entry}，校验 \ttf{restore_flag} 与 Item 下标；还原：见第 10 章}
+    \Else
+      \State \textbf{报错并终止}
+    \EndIf
+  \EndFor
+\EndProcedure
+\State \Call{Visit}{$\mathit{dir\_offset}$}
+\end{algorithmic}
+\end{algorithm}
+
+\noindent\textbf{说明：}还原侧可忽略 $\mathit{file\_leaf\_count}$、$\mathit{seen\_file\_offsets}$。校验侧 $\mathit{seen\_file\_offsets}$ 仅用于发现「多个 \ttf{child} 指向同一 \ttf{file_entry}」；遍历结束后在禁止重复引用的前提下，$\mathit{file\_leaf\_count} = M$ 即等价于文件节 $M$ 条记录均被引用且无孤儿（因合法 \ttf{offset} 在文件节内 72 字节对齐且至多 $M$ 个槽位）。
+
+\subsubsection*{校验步骤}
+
+记目录明文总长度为 $\mathit{plaintext\_len}$，文件节条数
+\[
+  M = \frac{\mathit{str\_offset} - \mathit{file\_offset}}{72}
+\]
+须为整数；否则 MUST 报错并终止。
+
+\begin{enumerate}
+  \item 读取并校验树头（第~\ref{sec:tree-header} 节）：\ttf{magic_number}、\ttf{version}；且 $0 \le \mathit{dir\_offset} \le \mathit{file\_offset} \le \mathit{str\_offset} \le \mathit{plaintext\_len}$；
+  \item 调用算法~\ref{alg:tree-visit}（自 \ttf{dir_offset} 起）完成目录树遍历；$\mathit{file\_leaf\_count}$ 须等于 $M$（算法内已对重复 \ttf{offset} 报错，故无需再单独比较集合大小）；
+  \item 线性扫描符号节：凡在遍历中被引用的 \ttf{name} 偏移，均须落在 $[\mathit{str\_offset},\ \mathit{plaintext\_len})$ 内且能读到 NUL 终止符；
+  \item 上述步骤全部通过则校验成功；否则 MUST 终止后续整包还原（错误码见附录~\ref{sec:directory-tree-errors}）。
+\end{enumerate}
