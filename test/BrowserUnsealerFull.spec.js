@@ -6,7 +6,7 @@ import streams from 'memory-streams';
 import Provider from '../src/node/DataProvider.js';
 import { BlockInfoSize, HeaderSize } from '../src/common/limits.js';
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
-import { UnsealerBrowser } from '../src/browser/UnsealerBrowser.js';
+import { Unsealer } from '../src/browser/Unsealer.js';
 import { calculateMD5, generateFileWithSize } from './helper';
 import fs from 'fs';
 import path from 'path';
@@ -56,16 +56,25 @@ async function sealAndUnsealFileBrowser(src) {
   const content = diskBuf.slice(0, contentSize);
   const streamBuf = Buffer.concat([header, content]);
   
-  // Decrypt using browser UnsealerBrowser
-  const un = new UnsealerBrowser({ privateKeyHex: keyPair.private_key });
+  // Decrypt using browser Unsealer (TransformStream API)
+  const un = new Unsealer({ privateKeyHex: keyPair.private_key });
+  const writer = un.writable.getWriter();
+  const reader = un.readable.getReader();
   const chunks = [];
-  
-  // Feed data in chunks to simulate streaming
-  const feedChunkSize = 1024; // 1KB chunks for testing
-  for (let offset = 0; offset < streamBuf.length; offset += feedChunkSize) {
-    const chunk = streamBuf.slice(offset, Math.min(offset + feedChunkSize, streamBuf.length));
-    const decryptedChunks = await un.pushChunk(bufferToUint8Array(chunk));
-    chunks.push(...decryptedChunks);
+
+  // Feed data in background, then close
+  (async () => {
+    for (let offset = 0; offset < streamBuf.length; offset += feedChunkSize) {
+      const chunk = streamBuf.slice(offset, Math.min(offset + feedChunkSize, streamBuf.length));
+      await writer.write(bufferToUint8Array(chunk));
+    }
+    await writer.close();
+  })();
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
   }
   
   // Merge all decrypted chunks
@@ -142,21 +151,30 @@ describe('Browser Unsealer Full Test', () => {
     const content = diskBuf.slice(0, contentSize);
     const streamBuf = Buffer.concat([header, content]);
     
-    // Decrypt with UnsealerBrowser
-    const un = new UnsealerBrowser({ privateKeyHex: keyPair.private_key });
+    // Decrypt with Unsealer (TransformStream API)
+    const un = new Unsealer({ privateKeyHex: keyPair.private_key });
+    const writer = un.writable.getWriter();
+    const reader = un.readable.getReader();
     const outputs = [];
-    
-    // Feed in various chunk sizes to test robustness
-    let offset = 0;
-    const sizes = [13, 7, 1024, 5, 256, 512];
-    let idx = 0;
-    while (offset < streamBuf.length) {
-      const n = Math.min(streamBuf.length - offset, sizes[idx % sizes.length]);
-      const part = streamBuf.slice(offset, offset + n);
-      const outs = await un.pushChunk(bufferToUint8Array(part));
-      outputs.push(...outs);
-      offset += n;
-      idx++;
+
+    (async () => {
+      let offset = 0;
+      const sizes = [13, 7, 1024, 5, 256, 512];
+      let idx = 0;
+      while (offset < streamBuf.length) {
+        const n = Math.min(streamBuf.length - offset, sizes[idx % sizes.length]);
+        const part = streamBuf.slice(offset, offset + n);
+        await writer.write(bufferToUint8Array(part));
+        offset += n;
+        idx++;
+      }
+      await writer.close();
+    })();
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      outputs.push(value);
     }
     
     // Merge outputs

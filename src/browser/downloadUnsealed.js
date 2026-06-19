@@ -1,195 +1,48 @@
 
-import { unsealStream } from './UnsealerBrowser.js'
-import { prepareSealedResponse } from './SealedHttpTailHeaderTransform.js'
 
-// 检查文件并获取元数据
+import { HeaderSize, BlockInfoSize } from '../common/limits.js';
+import { validateHeader } from '../common/unsealer_core.js';
+import { blobDownloadAndDecrypt } from './blob_download.js';
+import { streamDownloadAndDecrypt } from './stream_download.js';
+
+// 大小限制
+const MOBILE_LIMIT = 200 * 1024 * 1024;   // 200 MB
+const DESKTOP_LIMIT = 1024 * 1024 * 1024; // 1 GB
+
+/** 简单判断是否为移动端 */
+function isMobile() {
+  if (typeof navigator === 'undefined') return false;
+  return /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent);
+}
+
+// 检查文件并获取元数据，校验 magic number 和版本号
 async function inspectSealed(url) {
-  const HEADER_SIZE = 64
-  const BLOCK_INFO_SIZE = 32
-  
-  try {
-    const headResp = await fetch(url, { method: 'HEAD' })
-    console.log('[inspect] HEAD resp:', headResp.status, headResp.headers);
-    const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10)
-    
-    if (totalSize < HEADER_SIZE) {
-      return { totalSize, blockNumber: null, contentSize: null }
-    }
-    
-    // 读取文件末尾的 header
-    const tailStart = Math.max(0, totalSize - HEADER_SIZE)
-    const tailResp = await fetch(url, {
-      headers: { Range: `bytes=${tailStart}-${totalSize - 1}` }
-    })
-    
-    if (!tailResp.ok) {
-      return { totalSize, blockNumber: null, contentSize: null }
-    }
-    
-    const headerBuf = new Uint8Array(await tailResp.arrayBuffer())
-    if (headerBuf.length !== HEADER_SIZE) {
-      return { totalSize, blockNumber: null, contentSize: null }
-    }
-    
-    // 解析 header 获取 blockNumber
-    const blockNumber = new DataView(headerBuf.buffer).getBigUint64(16, true)
-    const contentSize = totalSize - HEADER_SIZE - Number(blockNumber) * BLOCK_INFO_SIZE
-    
-    if (contentSize <= 0) {
-      return { totalSize, blockNumber: Number(blockNumber), contentSize: null }
-    }
-    
-    return { totalSize, blockNumber: Number(blockNumber), contentSize }
-  } catch (e) {
-    return { totalSize: 0, blockNumber: null, contentSize: null }
-  }
+  const headResp = await fetch(url, { method: 'HEAD' });
+  if (!headResp.ok) throw new Error(`HEAD 请求失败: HTTP ${headResp.status}`);
+
+  const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10);
+  if (totalSize < HeaderSize) throw new Error('文件太小，不是有效的封装文件');
+
+  // 读取末尾 header
+  const tailStart = totalSize - HeaderSize;
+  const tailResp = await fetch(url, {
+    headers: { Range: `bytes=${tailStart}-${totalSize - 1}` }
+  });
+  if (!tailResp.ok) throw new Error(`无法读取文件末尾: HTTP ${tailResp.status}`);
+
+  const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
+  if (headerBuf.length !== HeaderSize) throw new Error('文件 header 不完整');
+
+  // validateHeader 会校验 magic number 和 version，不通过直接抛异常
+  const { itemNumber: blockNumber } = validateHeader(headerBuf);
+
+  const contentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
+  if (contentSize <= 0) throw new Error('无效的封装文件：内容大小为0');
+
+  return { totalSize, blockNumber, contentSize };
 }
 
-// 在页面中解密并通过 Blob 下载（回退方案）
-async function blobDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress } = {}) {
-  log = log || (() => {})
-  try {
-    const resp = await prepareSealedResponse(url, { log, chunked: false })
-    if (!resp.ok) throw new Error('HTTP 状态: ' + resp.status)
 
-    const chunks = []
-    const BATCH_SIZE = 512 * 1024
-    let batch = new Uint8Array(BATCH_SIZE)
-    let batchLen = 0
-
-    await unsealStream(resp, {
-      privateKeyHex: privateKeyHex.trim(),
-      onChunk: async (plain) => {
-        const len = plain?.length || 0
-        if (len === 0) return
-        let off = 0
-        while (off < len) {
-          const can = Math.min(BATCH_SIZE - batchLen, len - off)
-          batch.set(plain.subarray(off, off + can), batchLen)
-          batchLen += can
-          off += can
-          if (batchLen === BATCH_SIZE) {
-            chunks.push(batch.slice(0, batchLen))
-            batch = new Uint8Array(BATCH_SIZE)
-            batchLen = 0
-          }
-        }
-      },
-      progressHandler: (total, processed, readBytes, writeBytes) => {
-        if (onProgress) onProgress(total, processed, readBytes, writeBytes)
-      }
-    })
-
-    if (batchLen > 0) chunks.push(batch.subarray(0, batchLen))
-
-    const blob = new Blob(chunks, { type: 'application/octet-stream' })
-    const urlObj = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = urlObj
-    a.download = filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
-    URL.revokeObjectURL(urlObj)
-    log('下载完成 (页面端解密 Blob)')
-    return { ok: true }
-  } catch (e) {
-    log('Blob 下载失败: ' + e.message)
-    throw e
-  }
-}
-
-// 使用 Service Worker 在 SW 中完成 fetch + 解密 并触发原生下载
-// SW 端需实现对 type 'DOWNLOAD_REQUEST' 的处理，使用 postMessage 通信回 progress / success / error
-async function swDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress } = {}) {
-  log = log || (() => {})
-  if (!('serviceWorker' in navigator)) throw new Error('Service Worker 不可用')
-
-  // 查找或注册 SW
-  let reg = null
-  let scope = '/'
-  const existingRegistrations = await navigator.serviceWorker.getRegistrations()
-  for (const existingReg of existingRegistrations) {
-    if (existingReg.scope === '/' || existingReg.scope.startsWith('/')) {
-      reg = existingReg
-      scope = existingReg.scope
-      log(`[Download] 复用已注册的 Service Worker: ${scope}`)
-      break
-    }
-  }
-  if (!reg) {
-    const swPaths = ['/sw-download.js', '/example/browser/sw-download.js']
-        for (const pathStr of swPaths) {
-      try {
-        scope = pathStr.replace(/\/[^/]*$/, '/') || '/'
-        reg = await navigator.serviceWorker.register(pathStr, { scope, type: 'module' })
-        log(`[Download] 注册 Service Worker: ${pathStr}, scope: ${scope}`)
-        break
-      } catch (e) {
-        continue
-      }
-    }
-    if (!reg) throw new Error('无法注册 Service Worker，所有路径都失败')
-  }
-
-  await navigator.serviceWorker.ready
-
-  function ensureController() {
-    if (navigator.serviceWorker.controller) return Promise.resolve(navigator.serviceWorker.controller)
-    if (reg.active) return Promise.resolve(reg.active)
-    return new Promise((resolve) => {
-      const to = setTimeout(resolve, 1500)
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        clearTimeout(to)
-        resolve()
-      }, { once: true })
-    }).then(() => navigator.serviceWorker.controller || reg.active || null)
-  }
-
-  const controller = await ensureController()
-  if (!controller) throw new Error('Service Worker 未接管此页面')
-
-  const id = Math.random().toString(36).slice(2)
-
-  // 为 SW 传递最小必要信息（由 SW 端负责 fetch+解密）
-  ;(reg.active || controller).postMessage({
-    type: 'DOWNLOAD_REQUEST',
-    id,
-    name: filename,
-    payload: { url, privateKeyHex }
-  })
-
-  // 触发 iframe 导航以启动下载（SW 拦截并返回解密后的流）
-  try {
-    const downloadUrl = `/download/unsealed?id=${encodeURIComponent(id)}`
-    const iframe = document.createElement('iframe')
-    iframe.style.cssText = 'position:absolute;width:0;height:0;border:none;opacity:0;pointer-events:none;'
-    document.body.appendChild(iframe)
-
-    let iframeRemoved = false
-    const removeIframe = () => { if (!iframeRemoved && iframe.parentNode) { document.body.removeChild(iframe); iframeRemoved = true } }
-    iframe.onload = () => setTimeout(removeIframe, 100)
-    setTimeout(() => { if (!iframeRemoved) removeIframe() }, 5000)
-    iframe.src = downloadUrl
-  } catch (e) {
-    try {
-      const w = window.open(`/download/unsealed?id=${encodeURIComponent(id)}`, '_blank')
-      if (!w) {
-        const a = document.createElement('a')
-        a.href = `/download/unsealed?id=${encodeURIComponent(id)}`
-        a.target = '_blank'
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-      }
-    } catch (e2) {
-      // ignore
-    }
-  }
-
-  // resolve immediately after triggering download; progress is handled by browser's native UI
-  return Promise.resolve({ ok: true, triggered: true })
-}
 
 /**
  * 下载并解密加密文件
@@ -213,56 +66,47 @@ export async function downloadUnsealed({
   onError
 }) {
   const log = onLog || (() => {})
-  
+  const key = privateKey.trim()
+
   try {
-    if (!url || !privateKey || !filename) {
-      throw new Error('请提供 URL、私钥和文件名')
-    }
+    if (!url || !key || !filename) throw new Error('请提供 URL、私钥和文件名')
 
-    log('开始获取加密文件流...')
-
-    // 检查文件并获取元数据
+    log('检查文件...')
     const meta = await inspectSealed(url)
-    const expectedPlainBytes = meta.contentSize || undefined
+    log(`明文大小(估算)=${meta.contentSize} 字节`)
 
-    if (expectedPlainBytes) {
-      log(`明文总大小(估算)=${expectedPlainBytes} 字节`)
-    } else {
-      log('未能获取明文总大小：以未知大小模式开始下载')
+    // 大小上限
+    const mobile = isMobile()
+    const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
+    const mode = mobile ? 'mobile' : 'desktop'
+    log(`检测到 ${mode} 端，大小限制 ${(limit / 1024 / 1024).toFixed(0)} MB`)
+
+    if (meta.contentSize > limit) {
+      throw new Error(`文件过大 (${(meta.contentSize / 1024 / 1024).toFixed(0)} MB)，超出 ${mode} 端限制 ${(limit / 1024 / 1024).toFixed(0)} MB`)
     }
 
-    // 准备响应流
-    const resp = await prepareSealedResponse(url, {
-      log,
-      chunked: false
-    })
+    // 桌面端优先 stream；移动端或 stream 不可用时走 blob
+    const tryStream = !mobile && typeof window !== 'undefined' && window.streamSaver && typeof window.streamSaver.createWriteStream === 'function'
 
-    if (!resp.ok) {
-      throw new Error('HTTP 状态: ' + resp.status)
+    if (tryStream) {
+      try {
+        log('使用流式下载 (StreamSaver)...')
+        await streamDownloadAndDecrypt(url, key, filename, { log, onProgress })
+        if (onSuccess) onSuccess({ filename })
+        return
+      } catch (e) {
+        log(`流式下载失败: ${e.message}，回退到 Blob 下载`)
+      }
     }
 
-    log('1已连接，开始尝试使用 Service Worker 在 SW 端完成解密并下载...')
-
-    // 优先尝试让 Service Worker 在 SW 端完成 fetch + 解密并触发原生下载
-    try {
-      await swDownloadAndDecrypt(url, privateKey.trim(), filename, { log, onProgress })
-      if (onSuccess) onSuccess({ filename })
-      return
-    } catch (e) {
-      log('SW 方案失败或不可用: ' + (e && e.message ? e.message : e))
-    }
-
-    // 回退到在页面中解密并生成 Blob 下载
-    log('回退到页面端解密并生成 Blob 下载...')
-    await blobDownloadAndDecrypt(url, privateKey.trim(), filename, { log, onProgress })
+    // blob 兜底
+    log('使用 Blob 下载...')
+    await blobDownloadAndDecrypt(url, key, filename, { log, onProgress })
     if (onSuccess) onSuccess({ filename })
   } catch (error) {
     log('下载失败: ' + error.message)
-    if (onError) {
-      onError(error)
-    } else {
-      throw error
-    }
+    if (onError) onError(error)
+    else throw error
   }
 }
 

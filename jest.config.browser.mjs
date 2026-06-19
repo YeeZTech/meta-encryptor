@@ -2,7 +2,9 @@
 export default {
   testEnvironment: 'jsdom',
   testMatch: [
-    "<rootDir>/test/Browser*.spec.mjs"
+    "<rootDir>/test/Browser*.spec.mjs",
+    "<rootDir>/test/Http*.spec.mjs",
+    "<rootDir>/test/downloadFunctions.spec.mjs"
   ],
   
   roots: ['<rootDir>/test', '<rootDir>/src'],

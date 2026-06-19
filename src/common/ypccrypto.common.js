@@ -74,7 +74,7 @@ function aesCmac(key, message){
 
 function gen_ecdh_key_from(skey, pkey) {
   const out = new Uint8Array(32);
-  const ecdhPointX = secp256k1.ecdh(pkey, skey, { hashfn }, out);
+  const ecdhPointX = secp256k1.ecdh(toUint8Array(pkey), toUint8Array(skey), { hashfn }, out);
   return ecdhPointX;
 }
 
@@ -110,10 +110,11 @@ function toHex(bytes) {
 }
 
 function generatePublicKeyFromPrivateKey(skey){
-  if (!secp256k1.privateKeyVerify(skey)) {
+  const skeyBytes = toUint8Array(skey);
+  if (!secp256k1.privateKeyVerify(skeyBytes)) {
     throw new Error('invalid private key');
   }
-  const pkey = secp256k1.publicKeyCreate(skey, false).subarray(1);
+  const pkey = secp256k1.publicKeyCreate(skeyBytes, false).subarray(1);
   return Buffer.from(pkey);
 }
 

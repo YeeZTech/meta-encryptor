@@ -18,7 +18,7 @@ const YPCCrypto = function () {
     let privKey;
     do {
       privKey = randomBytes(32);
-    } while (!secp256k1.privateKeyVerify(privKey));
+    } while (!secp256k1.privateKeyVerify(new Uint8Array(privKey)));
     return privKey;
   };
 

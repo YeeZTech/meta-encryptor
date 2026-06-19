@@ -5,7 +5,11 @@ export const YPCCrypto = BrowserCrypto;
 
 export { BrowserCrypto };
 
-export { UnsealerBrowser, unsealStream } from "./browser/UnsealerBrowser.js";
+export { Unsealer } from "./browser/Unsealer.js";
+
+export { HttpSealedFileStream } from "./browser/HttpSealedFileStream.js";
 
 export { downloadUnsealed } from "./browser/downloadUnsealed.js";
+
+export { streamDownloadAndDecrypt } from "./browser/stream_download.js";
 

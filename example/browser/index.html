@@ -82,7 +82,7 @@ if (!window.Buffer) {
 }
 
 // Load Unsealer and HTTP tail-header transform
-const { unsealStream } = await import('../../src/browser/UnsealerBrowser.js');
+const { Unsealer } = await import('../../src/browser/Unsealer.js');
 const { prepareSealedResponse } = await import('../../src/browser/SealedHttpTailHeaderTransform.js');
 import SparkMD5 from 'spark-md5';
 
@@ -386,32 +386,9 @@ streamSaveBtn.addEventListener('click', async ()=>{
     const BATCH_SIZE = 512 * 1024; // 512KB
     let batch = new Uint8Array(BATCH_SIZE);
     let batchLen = 0;
-    await unsealStream(resp, {
+
+    const unsealer = new Unsealer({
       privateKeyHex: priv,
-      onChunk: async (plain)=>{
-        const len = plain?.length||0;
-        if(len===0) return;
-        // 记录预览（最多前256字节）
-        if(!previewCaptured){
-          const need = Math.min(256, len);
-          previewBuf = plain.slice(0, need);
-          previewCaptured = true;
-        }
-  // 增量哈希（MD5）
-  const ab = plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength);
-  h.append(ab);
-        // 批量写入
-        let off = 0;
-        while(off < len){
-          const can = Math.min(BATCH_SIZE - batchLen, len - off);
-          batch.set(plain.subarray(off, off+can), batchLen);
-          batchLen += can; off += can;
-          if(batchLen === BATCH_SIZE){
-            await writer.write(batch);
-            batchLen = 0;
-          }
-        }
-      },
       progressHandler: (total, processed, readBytes, writeBytes)=>{
         totalItemsSpan.textContent = total;
         processedItemsSpan.textContent = processed;
@@ -419,6 +396,35 @@ streamSaveBtn.addEventListener('click', async ()=>{
         writeBytesSpan.textContent = writeBytes;
       }
     });
+
+    await resp.body
+      .pipeThrough(unsealer)
+      .pipeTo(new WritableStream({
+        write: async (plain) => {
+          const len = plain?.length||0;
+          if(len===0) return;
+          // 记录预览（最多前256字节）
+          if(!previewCaptured){
+            const need = Math.min(256, len);
+            previewBuf = plain.slice(0, need);
+            previewCaptured = true;
+          }
+          // 增量哈希（MD5）
+          const ab = plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength);
+          h.append(ab);
+          // 批量写入
+          let off = 0;
+          while(off < len){
+            const can = Math.min(BATCH_SIZE - batchLen, len - off);
+            batch.set(plain.subarray(off, off+can), batchLen);
+            batchLen += can; off += can;
+            if(batchLen === BATCH_SIZE){
+              await writer.write(batch);
+              batchLen = 0;
+            }
+          }
+        }
+      }));
     // flush 剩余批次
     if(batchLen > 0){ await writer.write(batch.subarray(0, batchLen)); }
     // 输出预览
