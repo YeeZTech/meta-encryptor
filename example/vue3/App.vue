@@ -127,9 +127,9 @@
 
 <script setup>
 import { ref } from 'vue'
-import UnsealDownloader from '@/browser/UnsealDownloader.vue'
+import UnsealDownloader from './UnsealDownloader.vue'
 
-const url = ref('http://localhost:8088/example/browser/sealed_full.bin')
+const url = ref('/example/browser/sealed_full.bin')
 const privateKey = ref('')
 const filename = ref('unsealed.bin')
 

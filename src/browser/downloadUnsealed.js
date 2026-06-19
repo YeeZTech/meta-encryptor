@@ -33,8 +33,8 @@ async function inspectSealed(url) {
   const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
   if (headerBuf.length !== HeaderSize) throw new Error('文件 header 不完整');
 
-  // validateHeader 会校验 magic number 和 version，不通过直接抛异常
-  const { itemNumber: blockNumber } = validateHeader(headerBuf);
+  // validateHeader 校验 magic number 和 version，同时返回 blockNumber
+  const { blockNumber } = validateHeader(headerBuf);
 
   const contentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
   if (contentSize <= 0) throw new Error('无效的封装文件：内容大小为0');
@@ -71,8 +71,9 @@ export async function downloadUnsealed({
   try {
     if (!url || !key || !filename) throw new Error('请提供 URL、私钥和文件名')
 
-    log('检查文件...')
+    log('检查文件..., url ', url)
     const meta = await inspectSealed(url)
+    log('inspect file succ')
     log(`明文大小(估算)=${meta.contentSize} 字节`)
 
     // 大小上限

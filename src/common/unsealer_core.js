@@ -43,12 +43,17 @@ export function validateHeader(headerBytes) {
     throw new Error('Unsupported version: ' + version);
   }
 
+  // block_number at offset 16 (uint64 LE)
+  const loBlock = dv.getUint32(16, true);
+  const hiBlock = dv.getUint32(20, true);
+  const blockNumber = hiBlock * 0x100000000 + loBlock;
+
   // item_number at offset 24 (uint64 LE)
   const loItem = dv.getUint32(24, true);
   const hiItem = dv.getUint32(28, true);
   const itemNumber = hiItem * 0x100000000 + loItem;
 
-  return { itemNumber };
+  return { itemNumber, blockNumber };
 }
 
 // ---------------------------------------------------------------------------
