@@ -1,10 +1,10 @@
 import {Readable} from "stream";
 import fs from "fs";
 import{HeaderSize, BlockInfoSize,
-  MagicNum, CurrentBlockFileVersion} from "./limits.js";
+  MagicNum, CurrentBlockFileVersion} from "../common/limits.js";
 import {
   buffer2header_t
-} from "./common/header_util.js"
+} from "../common/header_util.js"
 
 
 import { supportsConstruct } from "./utils.js";

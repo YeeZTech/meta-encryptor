@@ -1,9 +1,9 @@
-import { header_t, block_info_t, buffer2header_t } from './common/header_util.js';
+import { header_t, block_info_t, buffer2header_t } from '../common/header_util.js';
 import YPCCryptoFun from './ypccrypto.js';
 const YPCCrypto = YPCCryptoFun();
 import fs from 'fs';
 import keccak256 from 'keccak256';
-import { BlockNumLimit, MaxItemSize, HeaderSize, MagicNum } from './limits.js';
+import { BlockNumLimit, MaxItemSize, HeaderSize, MagicNum } from '../common/limits.js';
 const anyEnclave = Buffer.from(
   'bd0c3cce561fac62b90ddd7bfcfe014702aa4327bc2b0b69ef79a7d2a0350f11',
   'hex'

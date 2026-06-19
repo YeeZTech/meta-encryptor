@@ -8,16 +8,16 @@ import {
   toNtInput,
   fromNtInput,
   batch2ntpackage
-} from "./common/header_util.js"
+} from "../common/header_util.js"
 import keccak256 from "keccak256";
 import YPCCryptoFun from "./ypccrypto.js";
-import YPCNtObjectFun from "./ypcntobject.js";
+import YPCNtObjectFun from "../common/ypcntobject.js";
 import BlockFileFun from "./blockfile.js";
 const YPCCrypto = YPCCryptoFun();
 
 import {BlockNumLimit, MaxItemSize,
   HeaderSize, MagicNum,
-  CurrentBlockFileVersion, BlockInfoSize} from "./limits.js";
+  CurrentBlockFileVersion, BlockInfoSize} from "../common/limits.js";
 
 const BlockFile = BlockFileFun(
   MagicNum,

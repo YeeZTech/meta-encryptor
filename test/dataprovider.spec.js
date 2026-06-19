@@ -1,6 +1,6 @@
 const meta = require("../src/index.node.js");
 var streams = require('memory-streams');
-import DP from "../src/DataProvider.js"
+import DP from "../src/node/DataProvider.js"
 const {headerAndBlockBufferFromBuffer} = DP
 
 const BlockNumLimit = 1024 * 1024;

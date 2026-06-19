@@ -2,7 +2,7 @@ import crypto from "crypto";
 import secp256k1 from "secp256k1";
 import {
   generateAESKeyFrom, generatePublicKeyFromPrivateKey, aad, 
-  signMessage } from './common/ypccrypto.common.js';
+  signMessage } from '../common/ypccrypto.common.js';
 
 
 const { randomBytes } = crypto;

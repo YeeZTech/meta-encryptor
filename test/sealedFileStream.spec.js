@@ -1,8 +1,8 @@
-import { SealedFileStream } from "../src/SealedFileStream"
+import { SealedFileStream } from "../src/node/SealedFileStream"
 import fs from "fs";
 import path from "path";
 import{ calculateMD5, generateFileWithSize, key_pair } from "./helper"
-import { Sealer } from "../src/Sealer"
+import { Sealer } from "../src/node/Sealer"
 
 test('test SealedFileStream on("readable")', async()=>{
   const src = "SealedFileStream.xlarge.file";

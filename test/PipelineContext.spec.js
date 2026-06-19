@@ -1,5 +1,5 @@
 const meta = require("../src/index.node.js");
-const {PipelineContextInFile} = require("../src/PipelineConext.js")
+const {PipelineContextInFile} = require("../src/node/PipelineConext.js")
 import fs from "fs";
 
 

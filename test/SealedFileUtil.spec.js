@@ -1,6 +1,6 @@
 
-import {Sealer, ToString} from "../src/Sealer"
-import {isSealedFile, sealedFileVersion, dataHashOfSealedFile, signedDataHash, forwardData} from "../src/SealedFileUtil.js"
+import {Sealer, ToString} from "../src/node/Sealer"
+import {isSealedFile, sealedFileVersion, dataHashOfSealedFile, signedDataHash, forwardData} from "../src/node/SealedFileUtil.js"
 
 
 const path = require('path');

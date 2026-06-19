@@ -3,8 +3,8 @@ import { webcrypto as nodeWebcrypto } from 'crypto';
 globalThis.crypto = nodeWebcrypto;
 
 import streams from 'memory-streams';
-import Provider from '../src/DataProvider.js';
-import { BlockInfoSize, HeaderSize } from '../src/limits.js';
+import Provider from '../src/node/DataProvider.js';
+import { BlockInfoSize, HeaderSize } from '../src/common/limits.js';
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
 import { UnsealerBrowser } from '../src/browser/UnsealerBrowser.js';
 import { calculateMD5, generateFileWithSize } from './helper';

@@ -4,14 +4,14 @@ import {
   buffer2header_t,
   ntpackage2batch,
   fromNtInput
-} from "./common/header_util.js"
+} from "../common/header_util.js"
 import { Transform } from "stream";
 import log from "loglevel";
 const logger = log.getLogger("meta-encryptor/Unsealer");
 
-import YPCNt_Object from "./ypcntobject.js"
+import YPCNt_Object from "../common/ypcntobject.js"
 
-import{HeaderSize, MagicNum, CurrentBlockFileVersion} from "./limits.js";
+import{HeaderSize, MagicNum, CurrentBlockFileVersion} from "../common/limits.js";
 
 const YPCNtObject = YPCNt_Object()
 import YPCCryptoFun from "./ypccrypto.js";

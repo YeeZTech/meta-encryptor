@@ -1,7 +1,7 @@
 import {WriteStream} from 'fs';
 import {Readable, Writable} from 'stream';
 import { SealedFileStream } from './SealedFileStream.js';
-import { HeaderSize } from './limits.js';
+import { HeaderSize } from '../common/limits.js';
 import fs from 'fs';
 import log from 'loglevel';
 

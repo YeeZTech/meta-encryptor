@@ -1,6 +1,6 @@
 
 import { ntpackage2batch, fromNtInput } from '../common/header_util.js';
-import { HeaderSize, MagicNum, CurrentBlockFileVersion } from '../limits.js';
+import { HeaderSize, MagicNum, CurrentBlockFileVersion } from '../common/limits.js';
 import { BrowserCrypto } from './ypccrypto.browser.js';
 
 const MAGIC_NUM_BYTES = (() => {

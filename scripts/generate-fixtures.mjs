@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 
 // Use Node implementation of YPCCrypto
-import YPCCryptoFun from '../src/ypccrypto.js';
+import YPCCryptoFun from '../src/node/ypccrypto.js';
 
 function toHex(u){
   return Buffer.from(u instanceof Uint8Array ? u : new Uint8Array(u)).toString('hex');

@@ -1,6 +1,6 @@
-import {Sealer, ToString} from "../src/Sealer"
-import {Unsealer} from "../src/Unsealer"
-import {SealedFileStream} from "../src/SealedFileStream"
+import {Sealer, ToString} from "../src/node/Sealer"
+import {Unsealer} from "../src/node/Unsealer"
+import {SealedFileStream} from "../src/node/SealedFileStream"
 
 const path = require('path');
 import fs from "fs";

@@ -1,140 +1,88 @@
-// Same-origin Service Worker to stream decrypted data as a downloadable attachment
-// Frontend will post a MessagePort with an ID; SW responds to a fetch on /download/unsealed?id=ID
-// and pipes chunks received via MessagePort into the Response stream with proper headers.
+import { unsealStream } from './UnsealerBrowser.js';
 
-/* eslint-disable no-undef */
-const downloads = new Map(); // id -> { port, name, size }
+// Map of pending download requests: id -> { url, privateKeyHex, name }
+const pending = new Map();
 
-self.addEventListener("install", () => {
+self.addEventListener('install', () => {
   self.skipWaiting();
 });
-self.addEventListener("activate", (e) => {
+self.addEventListener('activate', (e) => {
   e.waitUntil(self.clients.claim());
 });
 
-self.addEventListener("message", (event) => {
+self.addEventListener('message', (event) => {
   const data = event.data || {};
-  if (data.type === "DOWNLOAD_PORT" && event.ports && event.ports[0]) {
-    const { id, name, size } = data;
-    downloads.set(id, {
-      port: event.ports[0],
-      name: name || "download.bin",
-      size: size || null,
-    });
-    try {
-      event.ports[0].postMessage({ type: "ready", id });
-    } catch (e) {
-      // Ignore postMessage errors (port may already be closed)
+  // Expect { type: 'DOWNLOAD_REQUEST', id, name, payload: { url, privateKeyHex } }
+  if (data.type === 'DOWNLOAD_REQUEST' && data.id && data.payload) {
+    const { id, name } = data;
+    const { url, privateKeyHex } = data.payload || {};
+    if (url) {
+      pending.set(id, { url, privateKeyHex, name: name || 'download.bin' });
     }
   }
 });
 
-function streamFromPort(meta) {
-  // 处理文件名编码：避免 ISO-8859-1 编码错误
-  // 对于包含非 ASCII 字符的文件名，需要特殊处理
+function makeDisposition(filename) {
   const headers = new Headers();
-  headers.set("Content-Type", "application/octet-stream");
-
-  // 安全地设置 Content-Disposition header
-  // 检查文件名是否只包含可打印的 ASCII 字符（0x20-0x7E）和控制字符除外
-  // 避免使用控制字符 \x00-\x1F，因为文件名不应该包含这些
-  const isAscii = /^[\u0020-\u007E]*$/.test(meta.name);
-
+  headers.set('Content-Type', 'application/octet-stream');
+  const isAscii = /^[\u0020-\u007E]*$/.test(filename);
   if (isAscii) {
-    // 纯 ASCII 文件名，可以直接使用
     try {
-      headers.set("Content-Disposition", `attachment; filename="${meta.name}"`);
+      headers.set('Content-Disposition', `attachment; filename="${filename}"`);
     } catch (e) {
-      // 如果仍然失败，使用 URL 编码
-      const encoded = encodeURIComponent(meta.name);
-      headers.set(
-        "Content-Disposition",
-        `attachment; filename*=UTF-8''${encoded}`
-      );
+      headers.set('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
     }
   } else {
-    // 包含非 ASCII 字符，使用 RFC 5987 编码格式
-    // 提供两个版本：ASCII 安全版本和 UTF-8 编码版本
-    // 将非可打印 ASCII 字符替换为下划线
-    const safeFilename = meta.name.replace(/[^\u0020-\u007E]/g, "_");
-    const encodedFilename = encodeURIComponent(meta.name);
+    const safeFilename = filename.replace(/[^\u0020-\u007E]/g, '_');
+    const encodedFilename = encodeURIComponent(filename);
     try {
-      headers.set(
-        "Content-Disposition",
-        `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`
-      );
+      headers.set('Content-Disposition', `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`);
     } catch (e) {
-      // 如果设置失败，只使用 UTF-8 编码版本
-      headers.set(
-        "Content-Disposition",
-        `attachment; filename*=UTF-8''${encodedFilename}`
-      );
+      headers.set('Content-Disposition', `attachment; filename*=UTF-8''${encodedFilename}`);
     }
   }
+  return headers;
+}
 
-  if (meta.size && Number.isFinite(meta.size)) {
-    headers.set("Content-Length", String(meta.size));
-  }
-  return new Response(
-    new ReadableStream({
-      start(controller) {
-        const port = meta.port;
-        port.onmessage = (ev) => {
-          const msg = ev.data || {};
-          if (msg.type === "chunk") {
-            let src = msg.data;
-            if (src && !(src instanceof Uint8Array) && src.buffer) {
-              src = new Uint8Array(
-                src.buffer,
-                src.byteOffset || 0,
-                src.byteLength || src.length || 0
-              );
-            }
-            // Create a fresh copy to ensure the buffer is not detached by transfer
-            const chunk =
-              src && src.byteLength ? new Uint8Array(src) : new Uint8Array();
-            controller.enqueue(chunk);
-          } else if (msg.type === "end") {
-            controller.close();
-            port.close();
-          } else if (msg.type === "error") {
-            controller.error(new Error(msg.message || "download error"));
-            port.close();
-          }
-        };
+self.addEventListener('fetch', (event) => {
+  const url = new URL(event.request.url);
+  if (url.pathname === '/download/unsealed' || url.pathname.endsWith('/download/unsealed')) {
+    const id = url.searchParams.get('id');
+    const meta = id && pending.get(id);
+    if (!meta) {
+      event.respondWith(new Response('download id not found', { status: 404 }));
+      return;
+    }
+    // one-shot: remove mapping
+    pending.delete(id);
+
+    const headers = makeDisposition(meta.name || 'download.bin');
+
+    const stream = new ReadableStream({
+      async start(controller) {
         try {
-          port.start && port.start();
-        } catch (e) {
-          // Ignore port start errors
+          const resp = await fetch(meta.url);
+          if (!resp.ok) {
+            controller.error(new Error('upstream HTTP status ' + resp.status));
+            return;
+          }
+          // Use unsealStream to push plaintext chunks into controller
+          await unsealStream(resp, {
+            privateKeyHex: meta.privateKeyHex,
+            onChunk: async (plain) => {
+              controller.enqueue(plain instanceof Uint8Array ? plain : new Uint8Array(plain));
+            }
+          });
+          controller.close();
+        } catch (err) {
+          controller.error(err);
         }
       },
       cancel() {
-        try {
-          meta.port.postMessage({ type: "cancel" });
-        } catch (e) {
-          // Ignore cancel message errors (port may already be closed)
-        }
-      },
-    }),
-    { headers }
-  );
-}
+        // noop
+      }
+    });
 
-self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-  // 拦截下载路径（固定路径，不需要前缀）
-  if (
-    url.pathname === "/download/unsealed" ||
-    url.pathname.endsWith("/download/unsealed")
-  ) {
-    const id = url.searchParams.get("id");
-    const meta = id && downloads.get(id);
-    if (!meta) {
-      event.respondWith(new Response("download id not found", { status: 404 }));
-      return;
-    }
-    // one-shot, clean up after start
-    downloads.delete(id);
-    event.respondWith(streamFromPort(meta));
+    event.respondWith(new Response(stream, { headers }));
   }
 });

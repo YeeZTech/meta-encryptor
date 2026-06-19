@@ -2,11 +2,13 @@ import streams from 'memory-streams';
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
+import ByteBuffer from 'bytebuffer';
 
 const require = createRequire(import.meta.url);
 // use built commonjs bundle to avoid ESM/CJS interop issues
-const built = require('../../build/commonjs/index.cjs');
-const { DataProvider, YPCCrypto } = built;
+//const built = require('../../src/index.node.js');
+//const { DataProvider, YPCCrypto } = built;
+import {DataProvider, YPCCrypto} from "../../src/index.node.js" ;
 
 const HeaderSize = 64;
 const BlockInfoSize = 32;
@@ -31,7 +33,7 @@ async function main(){
   // extract header (last 64 bytes) and compute contentSize using block_number
   if(diskBuf.length <= HeaderSize){ throw new Error('invalid sealed buffer'); }
   const header = diskBuf.subarray(diskBuf.length - HeaderSize);
-  const bb = ByteBuffer.wrap(header, LITTLE_ENDIAN);
+  const bb = ByteBuffer.wrap(header, ByteBuffer.LITTLE_ENDIAN);
   const block_number = bb.readUint64(16).toNumber();
   const contentSize = diskBuf.length - HeaderSize - BlockInfoSize * block_number;
   const content = diskBuf.slice(0, contentSize);

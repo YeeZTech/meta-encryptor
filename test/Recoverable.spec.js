@@ -1,13 +1,13 @@
 const meta = require('../src/index.node.js');
-import {Sealer, ToString} from '../src/Sealer';
-import {Unsealer} from '../src/Unsealer';
+import {Sealer, ToString} from '../src/node/Sealer';
+import {Unsealer} from '../src/node/Unsealer';
 import log from 'loglevel';
 const logger = log.getLogger("meta-encryptor/Recoverable");
 log.setLevel('error');
 logger.setLevel('error');
 
-const {PipelineContextInFile} = require('../src/PipelineConext.js');
-const {RecoverableReadStream, RecoverableWriteStream} = require('../src/Recoverable.js');
+const {PipelineContextInFile} = require('../src/node/PipelineConext.js');
+const {RecoverableReadStream, RecoverableWriteStream} = require('../src/node/Recoverable.js');
 import fs from 'fs';
 import {calculateMD5, key_pair, generateFileWithSize} from './helper';
 

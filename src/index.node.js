@@ -1,15 +1,15 @@
 /* eslint-disable */
-import Provider from "./DataProvider.js";
-import YPCNt_Object from "./ypcntobject.js";
-import nodeYPCCrypto from "./ypccrypto.js";
+import Provider from "./node/DataProvider.js";
+import YPCNt_Object from "./common/ypcntobject.js";
+import nodeYPCCrypto from "./node/ypccrypto.js";
 
-export { Sealer, ToString } from "./Sealer.js";
+export { Sealer, ToString } from "./node/Sealer.js";
 
-export { Unsealer } from "./Unsealer.js";
+export { Unsealer } from "./node/Unsealer.js";
 
-export { SealedFileStream } from "./SealedFileStream.js";
-export {PipelineContext, PipelineContextInFile} from "./PipelineConext.js";
-export {RecoverableReadStream, RecoverableWriteStream} from "./Recoverable.js";
+export { SealedFileStream } from "./node/SealedFileStream.js";
+export {PipelineContext, PipelineContextInFile} from "./node/PipelineConext.js";
+export {RecoverableReadStream, RecoverableWriteStream} from "./node/Recoverable.js";
 
 export {
   isSealedFile,
@@ -18,7 +18,7 @@ export {
   signedDataHash,
   forwardSkey,
   calculateSealedHash
-} from "./SealedFileUtil.js";
+} from "./node/SealedFileUtil.js";
 
 export const { DataProvider, checkSealedData, unsealData } = Provider;
 

@@ -1,9 +1,8 @@
-import http from 'http';
+import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import url from 'url';
 import { createRequire } from 'module';
-import ByteBufferPkg from 'bytebuffer';
 import { pipeline } from 'stream';
 import { promisify } from 'util';
 import crypto from 'crypto';
@@ -12,6 +11,12 @@ const pipe = promisify(pipeline);
 // Serve the repository root so that /example/browser/index.html can import ../../src/browser/*.js
 const ROOT = path.resolve(process.cwd());
 const BASE_PORT = Number(process.env.PORT) || 8088;
+const HOST = '0.0.0.0';
+
+const options = {
+  key: fs.readFileSync(path.resolve('./private.key')), // 私钥文件路径
+  cert: fs.readFileSync(path.resolve('./certificate.crt')) // 证书文件路径
+};
 
 function send(res, code, headers, body){
   res.writeHead(code, headers); res.end(body);
@@ -66,10 +71,11 @@ function mime(file){
   return 'application/octet-stream';
 }
 
-const server = http.createServer(async (req, res)=>{
+const server = https.createServer(options, async (req, res)=>{
   console.log(`[req] ${req.method} ${req.url}`);
   const parsed = url.parse(req.url);
   let pathname = decodeURIComponent(parsed.pathname || '/');
+  console.log(`[req] pathname: ${pathname}`);
   // health check
   if(req.method === 'GET' && (pathname === '/healthz' || pathname === '/.health')){
     res.writeHead(200, {'Content-Type':'application/json','Cache-Control':'no-cache','Access-Control-Allow-Origin':'*'});
@@ -79,16 +85,16 @@ const server = http.createServer(async (req, res)=>{
   // API: generate sample sealed stream and keys
   if(req.method === 'GET' && pathname === '/api/gen'){
     const outDir = path.join(ROOT, 'example', 'browser');
+    console.log("outDir: ", outDir);
     try{
       const builtPath = path.join(ROOT, 'build', 'commonjs', 'index.cjs');
       if(!fs.existsSync(builtPath)){
         return send(res, 500, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({error:'build_missing', message:'build/commonjs/index.cjs not found. Please run `yarn build`.'}));
       }
+      console.log("builtPath: ", builtPath);
       const require = createRequire(import.meta.url);
       const built = require(builtPath);
   const { Sealer, Unsealer, YPCCrypto } = built;
-
-      const ByteBuffer = ByteBufferPkg.default || ByteBufferPkg; const LITTLE_ENDIAN = ByteBuffer.LITTLE_ENDIAN;
       const HeaderSize = 64; const BlockInfoSize = 32;
       const sk = YPCCrypto.generatePrivateKey();
       const pk = YPCCrypto.generatePublicKeyFromPrivateKey(sk);
@@ -97,9 +103,9 @@ const server = http.createServer(async (req, res)=>{
   const sealedPath = path.join(outDir, 'sealed_full.bin');
   const plainPath = path.join(outDir, 'plain.bin');
       const keyPath = path.join(outDir, 'keys.json');
-
+      console.log("sealedPath: ", sealedPath);
   // parse size param (bytes); default 1 MiB
-      const query = new url.URL(req.url, `http://${req.headers.host}`).searchParams;
+      const query = new url.URL(req.url, `https://${req.headers.host}`).searchParams;
   const sizeParam = query.get('size');
   const targetBytes = Math.max(1, Number(sizeParam || (1024*1024)));
 
@@ -149,7 +155,7 @@ const server = http.createServer(async (req, res)=>{
   // API: stream plain content of requested size for verification
   if(req.method === 'GET' && pathname === '/api/plain'){
     try{
-      const query = new url.URL(req.url, `http://${req.headers.host}`).searchParams;
+      const query = new url.URL(req.url, `https://${req.headers.host}`).searchParams;
       const sizeParam = query.get('size');
       const targetBytes = Math.max(0, Number(sizeParam || 0));
       const unit = 'The quick brown fox jumps over the lazy dog. 0123456789 ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz\n';
@@ -270,13 +276,13 @@ function listenWithFallback(startPort, maxAttempts = 20){
         if(err && err.code === 'EADDRINUSE' && maxAttempts > 0){
           console.warn(`[static-server] Port ${port} in use, trying ${port+1}...`);
           maxAttempts -= 1; port += 1;
-          setTimeout(()=> server.listen(port), 50);
+          setTimeout(()=> server.listen(port, HOST), 50);
         } else {
           reject(err);
         }
       });
       server.once('listening', ()=>{
-        console.log(`[static-server] Serving ${ROOT} at http://localhost:${port}/`);
+        console.log(`[static-server] Serving ${ROOT} at https://${HOST}:${port}/`);
         resolve(port);
       });
       server.listen(port);

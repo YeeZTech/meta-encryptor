@@ -1,7 +1,7 @@
 import { Transform } from "stream";
 import Provider from "./DataProvider.js";
 import streams from 'memory-streams';
-import YPCNt_Object from "./ypcntobject.js"
+import YPCNt_Object from "../common/ypcntobject.js"
 
 const {
   DataProvider,
