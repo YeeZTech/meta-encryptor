@@ -1,5 +1,17 @@
 // jest.setup.browser.mjs
 
+globalThis.JS_SHA256_NO_NODE_JS = true;
+globalThis.JS_SHA256_NO_COMMON_JS = true;
+globalThis.JS_SHA3_NO_NODE_JS = true;
+globalThis.JS_SHA3_NO_COMMON_JS = true;
+
+await import('js-sha256/src/sha256.js');
+await import('js-sha3/src/sha3.js');
+
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+require('./jest.hooks.cjs');
+
 // 模拟浏览器的 TextEncoder 和 TextDecoder API
 if (typeof globalThis.TextEncoder === 'undefined') {
   const { TextEncoder, TextDecoder } = await import('node:util');

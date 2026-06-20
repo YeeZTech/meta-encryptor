@@ -21,3 +21,14 @@ node_modules
 *.lock
 build
 yarn-error.log
+test_tmp/
+
+# 本地生成的密钥/测试 fixture（含 private key，勿提交）
+example/browser/keys.json
+test/fixtures/browser-unsealer-fixture-*.json
+test/fixtures/ypc-browser-fixtures.json
+test/fixtures/browser-unsealer-*.file
+test/fixtures/browser-unsealer-*.file.sealed
+example/browser/plain.bin
+example/browser/sealed_full.bin
+package-lock.json

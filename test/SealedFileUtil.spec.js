@@ -6,10 +6,10 @@ import {isSealedFile, sealedFileVersion, dataHashOfSealedFile, signedDataHash, f
 const path = require('path');
 import fs from "fs";
 
-import{calculateMD5, key_pair} from "./helper"
+import{calculateMD5, key_pair, copyRepoFileToTest} from "./helper"
 
 test('true', async()=>{
-  let src = './package.json';
+  let src = copyRepoFileToTest('./package.json');
   let dst = path.join(path.dirname(src), path.basename(src) + ".util.sealed");
   let rs = fs.createReadStream(src)
   let ws = fs.createWriteStream(dst)

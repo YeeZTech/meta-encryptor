@@ -12,7 +12,6 @@ const externalDeps = [
   ...Object.keys(packageJson.peerDependencies || {})
 ];
 
-// Node build should treat package deps as external.
 const nodeConfig = {
   input: [
     "src/index.node.js",
@@ -50,13 +49,12 @@ const nodeConfig = {
   external: externalDeps,
 };
 
-// Browser build should bundle most deps and include node polyfills;
 const browserConfig = {
-  input: [
-    "src/index.browser.js"
-  ],
+  input: "src/index.browser.js",
   plugins: [
-    polyfillNode(), // provide buffer/stream/process/crypto shims for browser
+    polyfillNode({
+      exclude: ['crypto'],
+    }),
     resolve({
       browser: true,
       preferBuiltins: false,
@@ -70,7 +68,6 @@ const browserConfig = {
       ],
       transformMixedEsModules: true
     }),
-    // Transpile problematic node_modules (aes-js) for browser
     rollupBabel({
       babelHelpers: 'bundled',
       babelrc: false,
@@ -89,15 +86,13 @@ const browserConfig = {
       ]
     }),
   ],
-  output: [
-    {
-      dir: "build/es",
-      format: "es",
-      entryFileNames: "[name].js",
-      exports: "named"
-    }
-  ],
-  // keep browser bundle self-contained; do not mark regular deps as external
-  external: externalDeps //Object.keys(packageJson.peerDependencies || {}),
-}
+  output: {
+    file: "build/es/index.browser.js",
+    format: "es",
+    exports: "named",
+    inlineDynamicImports: true,
+  },
+  external: [],
+};
+
 export default [nodeConfig, browserConfig];

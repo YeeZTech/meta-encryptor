@@ -87,9 +87,9 @@ const server = https.createServer(options, async (req, res)=>{
     const outDir = path.join(ROOT, 'example', 'browser');
     console.log("outDir: ", outDir);
     try{
-      const builtPath = path.join(ROOT, 'build', 'commonjs', 'index.cjs');
+      const builtPath = path.join(ROOT, 'build', 'commonjs', 'index.node.cjs');
       if(!fs.existsSync(builtPath)){
-        return send(res, 500, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({error:'build_missing', message:'build/commonjs/index.cjs not found. Please run `yarn build`.'}));
+        return send(res, 500, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({error:'build_missing', message:'build/commonjs/index.node.cjs not found. Please run `npm run build`.'}));
       }
       console.log("builtPath: ", builtPath);
       const require = createRequire(import.meta.url);
@@ -189,7 +189,7 @@ const server = https.createServer(options, async (req, res)=>{
         return send(res, 400, {'Content-Type':'application/json','Access-Control-Allow-Origin':'*'}, JSON.stringify({ok:false, error:'missing_files', message:'sealed_full.bin 或 keys.json 不存在, 请先调用 /api/gen'}));
       }
       const require = createRequire(import.meta.url);
-      const builtPath = path.join(ROOT, 'build', 'commonjs', 'index.cjs');
+      const builtPath = path.join(ROOT, 'build', 'commonjs', 'index.node.cjs');
       const built = require(builtPath);
       const { Unsealer, SealedFileStream } = built;
       const keyPair = JSON.parse(fs.readFileSync(keyPath, 'utf8'));

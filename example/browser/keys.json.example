@@ -1,0 +1,4 @@
+{
+  "private_key": "YOUR_64_BYTE_HEX_PRIVATE_KEY",
+  "public_key": "YOUR_128_BYTE_HEX_PUBLIC_KEY"
+}

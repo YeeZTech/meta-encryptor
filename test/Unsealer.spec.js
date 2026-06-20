@@ -12,7 +12,7 @@ const stream = require('stream');
 const log = require('loglevel');
 var unsealer_log = require('loglevel').getLogger('meta-encryptor/Unsealer');
 var unsealer_stream_log = require('loglevel').getLogger('meta-encryptor/SealedFileStream');
-import {calculateMD5, key_pair, generateFileWithSize, tusConfig} from './helper';
+import {calculateMD5, key_pair, generateFileWithSize, tusConfig, testPath, copyRepoFileToTest} from './helper';
 
 log.setLevel('INFO');
 //unsealer_log.setLevel("error")
@@ -123,17 +123,17 @@ async function sealAndUnsealFile(src, useRemoteSealedFileStream = false) {
 }
 
 test('seal small file', async () => {
-    let src = './rollup.config.js';
+    let src = copyRepoFileToTest('./rollup.config.js');
     await sealAndUnsealFile(src);
 });
 
 test('test medium file', async () => {
-    let src = './README.en.md';
+    let src = copyRepoFileToTest('./README.en.md');
     await sealAndUnsealFile(src);
 });
 
 test.skip('test large file', async () => {
-    let src = 'Unsealerlarge.file';
+    let src = testPath('Unsealerlarge.file');
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     await sealAndUnsealFile(src);
@@ -143,7 +143,7 @@ test.skip('test large file', async () => {
 });
 
 test.skip('test large file use RemoteSealedFileStream', async () => {
-    let src = 'test.remote.xUnsealerlarge.file';
+    let src = testPath('test.remote.xUnsealerlarge.file');
     try {
         fs.unlinkSync(src);
     } catch (error) {}

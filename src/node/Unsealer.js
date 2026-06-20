@@ -1,4 +1,4 @@
-import keccak256 from "keccak256";
+import keccak256 from "../common/keccak256.js";
 import { Transform } from "stream";
 import log from "loglevel";
 

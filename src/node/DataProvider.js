@@ -9,7 +9,7 @@ import {
   fromNtInput,
   batch2ntpackage
 } from "../common/header_util.js"
-import keccak256 from "keccak256";
+import keccak256 from "../common/keccak256.js";
 import YPCCryptoFun from "./ypccrypto.js";
 import YPCNtObjectFun from "../common/ypcntobject.js";
 import BlockFileFun from "./blockfile.js";
