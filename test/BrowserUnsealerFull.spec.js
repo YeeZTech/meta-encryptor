@@ -7,7 +7,7 @@ import Provider from '../src/node/DataProvider.js';
 import { BlockInfoSize, HeaderSize } from '../src/common/limits.js';
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
 import { Unsealer } from '../src/browser/Unsealer.js';
-import { calculateMD5, generateFileWithSize } from './helper';
+import {calculateMD5, generateFileWithSize, testPath, copyRepoFileToTest} from './helper';
 import fs from 'fs';
 import path from 'path';
 
@@ -100,17 +100,17 @@ async function sealAndUnsealFileBrowser(src) {
 
 describe('Browser Unsealer Full Test', () => {
   test('should encrypt and decrypt small file', async () => {
-    const src = './rollup.config.js';
+    const src = copyRepoFileToTest('./rollup.config.js');
     await sealAndUnsealFileBrowser(src);
   }, 30000);
 
   test('should encrypt and decrypt medium file', async () => {
-    const src = './README.en.md';
+    const src = copyRepoFileToTest('./README.en.md');
     await sealAndUnsealFileBrowser(src);
   }, 30000);
 
   test('should encrypt and decrypt large file', async () => {
-    const src = 'BrowserUnsealerLarge.file';
+    const src = testPath('BrowserUnsealerLarge.file');
     try {
       fs.unlinkSync(src);
     } catch (err) {}

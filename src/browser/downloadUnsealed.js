@@ -15,26 +15,55 @@ function isMobile() {
   return /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent);
 }
 
+function makeLogger(onLog) {
+  return (msg) => {
+    const line = String(msg);
+    if (onLog) onLog(line);
+  };
+}
+
 // 检查文件并获取元数据，校验 magic number 和版本号
-async function inspectSealed(url) {
-  const headResp = await fetch(url, { method: 'HEAD' });
+async function inspectSealed(url, log) {
+  log(`HEAD ${url}`);
+  const headResp = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+  const headCl = headResp.headers.get('Content-Length');
+  const acceptRanges = headResp.headers.get('Accept-Ranges');
+  log(`HEAD status=${headResp.status} content-length=${headCl ?? '(none)'} accept-ranges=${acceptRanges ?? '(none)'}`);
   if (!headResp.ok) throw new Error(`HEAD 请求失败: HTTP ${headResp.status}`);
 
-  const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10);
-  if (totalSize < HeaderSize) throw new Error('文件太小，不是有效的封装文件');
+  const totalSize = parseInt(headCl || '0', 10);
+  if (totalSize < HeaderSize) {
+    throw new Error(`文件太小，不是有效的封装文件: content-length=${totalSize}`);
+  }
 
   // 读取末尾 header
   const tailStart = totalSize - HeaderSize;
+  const rangeHeader = `bytes=${tailStart}-${totalSize - 1}`;
+  log(`Range ${rangeHeader} (tail ${HeaderSize} bytes of ${totalSize})`);
   const tailResp = await fetch(url, {
-    headers: { Range: `bytes=${tailStart}-${totalSize - 1}` }
+    headers: { Range: rangeHeader },
+    cache: 'no-store',
   });
-  if (!tailResp.ok) throw new Error(`无法读取文件末尾: HTTP ${tailResp.status}`);
+  const tailCl = tailResp.headers.get('Content-Length');
+  const contentRange = tailResp.headers.get('Content-Range');
+  const contentType = tailResp.headers.get('Content-Type');
+  log(
+    `Range status=${tailResp.status} content-length=${tailCl ?? '(none)'} content-range=${contentRange ?? '(none)'} content-type=${contentType ?? '(none)'}`
+  );
+  if (!tailResp.ok) {
+    throw new Error(`无法读取文件末尾: HTTP ${tailResp.status}, range=${rangeHeader}`);
+  }
 
   const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
-  if (headerBuf.length !== HeaderSize) throw new Error('文件 header 不完整');
+  if (headerBuf.length !== HeaderSize) {
+    throw new Error(
+      `文件 header 不完整: 期望 ${HeaderSize} 字节, 实际 ${headerBuf.length}, totalSize=${totalSize}, range=${rangeHeader}, status=${tailResp.status}`
+    );
+  }
 
   // validateHeader 校验 magic number 和 version，同时返回 blockNumber
   const { blockNumber } = validateHeader(headerBuf);
+  log(`header ok: blockNumber=${blockNumber}`);
 
   const contentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
   if (contentSize <= 0) throw new Error('无效的封装文件：内容大小为0');
@@ -65,22 +94,24 @@ export async function downloadUnsealed({
   onSuccess,
   onError
 }) {
-  const log = onLog || (() => {})
+  const log = makeLogger(onLog);
   const key = privateKey.trim()
 
   try {
-    if (!url || !key || !filename) throw new Error('请提供 URL、私钥和文件名')
+    if (!url || !key || !filename) {
+      throw new Error(`请提供 URL、私钥和文件名 (url=${url ? 'set' : 'empty'}, key=${key ? 'set' : 'empty'}, filename=${filename || 'empty'})`);
+    }
 
-    log('检查文件..., url ', url)
-    const meta = await inspectSealed(url)
-    log('inspect file succ')
-    log(`明文大小(估算)=${meta.contentSize} 字节`)
+    log(`检查文件 url=${url} filename=${filename}`);
+    const meta = await inspectSealed(url, log);
+    log('inspect file succ');
+    log(`明文大小(估算)=${meta.contentSize} 字节, totalSize=${meta.totalSize}`);
 
     // 大小上限
     const mobile = isMobile()
     const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
     const mode = mobile ? 'mobile' : 'desktop'
-    log(`检测到 ${mode} 端，大小限制 ${(limit / 1024 / 1024).toFixed(0)} MB`)
+    log(`检测到 ${mode} 端 (ua=${typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a'})，大小限制 ${(limit / 1024 / 1024).toFixed(0)} MB`);
 
     if (meta.contentSize > limit) {
       throw new Error(`文件过大 (${(meta.contentSize / 1024 / 1024).toFixed(0)} MB)，超出 ${mode} 端限制 ${(limit / 1024 / 1024).toFixed(0)} MB`)

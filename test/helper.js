@@ -1,7 +1,15 @@
 
 import fs from "fs";
+const path = require('path');
 const crypto = require('crypto');
 const log = require('loglevel');
+const { testPath } = require('./tempRegistry.cjs');
+
+function copyRepoFileToTest(relPath) {
+  const dest = testPath(path.basename(relPath));
+  fs.copyFileSync(path.resolve(relPath), dest);
+  return dest;
+}
 
 function calculateMD5(filePath) {
     return new Promise((resolve, reject) => {
@@ -58,5 +66,7 @@ export {
   calculateMD5,
   key_pair,
   generateFileWithSize,
-  tusConfig
+  tusConfig,
+  testPath,
+  copyRepoFileToTest,
 }

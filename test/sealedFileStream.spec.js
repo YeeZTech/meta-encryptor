@@ -1,12 +1,12 @@
 import { SealedFileStream } from "../src/node/SealedFileStream"
 import fs from "fs";
 import path from "path";
-import{ calculateMD5, generateFileWithSize, key_pair } from "./helper"
+import{ calculateMD5, generateFileWithSize, key_pair, testPath } from "./helper"
 import { Sealer } from "../src/node/Sealer"
 
 test('test SealedFileStream on("readable")', async()=>{
-  const src = "SealedFileStream.xlarge.file";
-  const copyFilePath = "SealedFileStream.xlarge.file.copy";
+  const src = testPath("SealedFileStream.xlarge.file");
+  const copyFilePath = testPath("SealedFileStream.xlarge.file.copy");
   let dst = path.join(path.dirname(src), path.basename(src) + ".sealed");
   try{
     fs.unlinkSync(src)
@@ -54,4 +54,4 @@ test('test SealedFileStream on("readable")', async()=>{
   fs.unlinkSync(src)
   fs.unlinkSync(dst)
   fs.unlinkSync(copyFilePath)
-})
+}, 180000)

@@ -1,8 +1,21 @@
 import { ECB } from 'aes-js';
-import keccak256 from 'keccak256';
+import keccak256 from './keccak256.js';
 import secp256k1 from 'secp256k1';
-import { sha256 } from 'js-sha256';
 import { Buffer } from 'buffer';
+
+import 'js-sha256/src/sha256.js';
+
+let sha256Cached;
+function sha256Api() {
+  if (sha256Cached) return sha256Cached;
+  const g = globalThis.sha256;
+  if (g && typeof g.create === 'function') {
+    sha256Cached = g;
+    return sha256Cached;
+  }
+  const hint = g === undefined ? 'undefined' : typeof g;
+  throw new Error(`sha256 is not a function (globalThis.sha256 is ${hint})`);
+}
 
 function hexToBytes(hex){
   const clean = hex.startsWith('0x')? hex.slice(2): hex;
@@ -14,7 +27,7 @@ function hexToBytes(hex){
 function hashfn(x, y) {
   const version = new Uint8Array(33);
 
-  const sha = sha256.create();
+  const sha = sha256Api().create();
 
   version[0] = (y[31] & 1) === 0 ? 0x02 : 0x03;
   version.set(x, 1);

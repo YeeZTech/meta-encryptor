@@ -9,7 +9,7 @@ logger.setLevel('error');
 const {PipelineContextInFile} = require('../src/node/PipelineConext.js');
 const {RecoverableReadStream, RecoverableWriteStream} = require('../src/node/Recoverable.js');
 import fs from 'fs';
-import {calculateMD5, key_pair, generateFileWithSize} from './helper';
+import {calculateMD5, key_pair, generateFileWithSize, testPath} from './helper';
 
 const path = require('path');
 async function sealFile(src) {
@@ -37,8 +37,9 @@ async function compare(src, ret_src) {
 test('test pipeline context basic', async () => {
     //let src = "Unsealerlarge.file";
     //let src = './rollup.config.js'
-    let src = './tsconfig.json';
-    let context_path = 'test_context';
+    let src = testPath('tsconfig.json');
+    fs.copyFileSync('./tsconfig.json', src);
+    let context_path = testPath('test_context');
 
     try {
         //fs.unlinkSync(src)
@@ -70,10 +71,10 @@ test('test pipeline context basic', async () => {
 });
 
 test('test pipeline context large', async () => {
-    let src = 'Unsealerlarge.file';
+    let src = testPath('Unsealerlarge.file');
     //let src = './rollup.config.js'
     //let src = './tsconfig.json'
-    let context_path = 'test_context';
+    let context_path = testPath('test_context');
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
@@ -156,8 +157,8 @@ test('test pipeline context large', async () => {
 
 
 test('test pipeline context with pause and resume from large file', async () => {
-    let src = 'pause_resume_large.file';
-    let context_path = 'pause_resume_large_context';
+    let src = testPath('pause_resume_large.file');
+    let context_path = testPath('pause_resume_large_context');
     let dst, ret_src;
 
     ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
@@ -302,8 +303,8 @@ test('test pipeline context with pause and resume from large file', async () => 
 
 
 test('test pipeline context with multiple random pause and resume', async () => {
-    let src = 'pause_resume_large.rand.file';
-    let context_path = 'pause_resume_large_context.rand';
+    let src = testPath('pause_resume_large.rand.file');
+    let context_path = testPath('pause_resume_large_context.rand');
     let dst, ret_src;
 
     ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
@@ -447,10 +448,10 @@ test('test pipeline context with multiple random pause and resume', async () => 
 }, 300000);
 
 test('test pipeline context large same file', async () => {
-    let src = 'Unsealerlarge.file';
+    let src = testPath('Unsealerlarge.file');
     //let src = './rollup.config.js'
     //let src = './tsconfig.json'
-    let context_path = 'test_context';
+    let context_path = testPath('test_context');
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
@@ -487,8 +488,8 @@ test('test pipeline context large same file', async () => {
     
 });
 test('test pipeline context with pause and resume on same file', async () => {
-    let src = 'pause_resume_large.same.file';
-    let context_path = 'pause_resume_large_context.same';
+    let src = testPath('pause_resume_large.same.file');
+    let context_path = testPath('pause_resume_large_context.same');
     let dst;
 
     try {
@@ -626,8 +627,8 @@ test('test pipeline context with pause and resume on same file', async () => {
 }, 180000);
 
 test('test pipeline context with multiple random pause and resume on same file', async () => {
-    let src = 'multi_pause_resume_large.rand_same.file';
-    let context_path = 'multi_pause_resume_large_context.rand_same';
+    let src = testPath('multi_pause_resume_large.rand_same.file');
+    let context_path = testPath('multi_pause_resume_large_context.rand_same');
     let dst;
 
     try {
@@ -763,7 +764,7 @@ test('test pipeline context with multiple random pause and resume on same file',
     }
 
     // 解密文件进行验证
-    let finalContext = new PipelineContextInFile('final_verify_context');
+    let finalContext = new PipelineContextInFile(testPath('final_verify_context'));
     await finalContext.loadContext();
 
     await new Promise((resolve, reject) => {
@@ -786,7 +787,7 @@ test('test pipeline context with multiple random pause and resume on same file',
         fs.unlinkSync(src);
         fs.unlinkSync(dst);
         fs.unlinkSync(context_path);
-        fs.unlinkSync('final_verify_context');
+        fs.unlinkSync(testPath('final_verify_context'));
     } catch (error) {
         console.warn('Cleanup error:', error.message);
     }

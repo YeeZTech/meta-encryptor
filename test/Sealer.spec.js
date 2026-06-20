@@ -10,7 +10,7 @@ const csv = require('csv-parser')
 const log = require('loglevel');
 var unsealer_log = require("loglevel").getLogger("meta-encryptor/Unsealer");
 var unsealer_stream_log = require("loglevel").getLogger("meta-encryptor/SealedFileStream");
-import{calculateMD5, key_pair, generateFileWithSize} from "./helper"
+import{calculateMD5, key_pair, generateFileWithSize, testPath, copyRepoFileToTest} from "./helper"
 
 // 设置日志级别
 log.setLevel('trace');
@@ -63,7 +63,7 @@ async function sealAndUnsealFile(src){
 }
 test('seal small file', async()=>{
 
-  let src = './small.file';
+  let src = testPath('small.file');
   try{
     fs.unlinkSync(src);
   }catch(error){}
@@ -74,7 +74,7 @@ test('seal small file', async()=>{
 
 
 test('test medium file', async()=>{
-  let src = './medium.file';
+  let src = testPath('medium.file');
   try{
     fs.unlinkSync(src)
   }catch(error){
@@ -89,7 +89,7 @@ test('test medium file', async()=>{
 
 
 test('test large file', async()=>{
-  let src = "large.file";
+  let src = testPath('large.file');
   try{
     fs.unlinkSync(src)
   }catch(error){
@@ -99,7 +99,7 @@ test('test large file', async()=>{
   generateFileWithSize(src,  1024 * 1024 * 100)
    await sealAndUnsealFile(src);
    fs.unlinkSync(src)
-})
+}, 180000)
 
 
 async function sealAndUnsealCSVFile(src){
@@ -138,6 +138,6 @@ async function sealAndUnsealCSVFile(src){
   fs.unlinkSync(ret_src);
 }
 test('test CSV file', async()=>{
-  let src = "./test/test.csv";
+  let src = copyRepoFileToTest('./test/test.csv');
   await sealAndUnsealCSVFile(src);
 })
