@@ -3,14 +3,14 @@
 
 \section{目录树明文格式}\label{sec:directory-tree-chapter}
 
-自本版起，通过\textbf{目录树文件}在单条 \texttt{.sealed} 内索引多个逻辑文件与子目录：封装时将宿主侧目录树（各文件的\textbf{相对路径}与层级）写入目录明文，解封后在集成层指定的输出根路径下按相同相对路径还原，以保留与密封前一致的目录结构（第~\ref{sec:multi-file-chapter} 章给出封装与整包解封流程）。
+自本版起，通过\textbf{目录树文件}在单条 \texttt{.aeff} 内索引多个逻辑文件与子目录：封装时将宿主侧目录树（各文件的\textbf{相对路径}与层级）写入目录明文，解封后在集成层指定的输出根路径下按相同相对路径还原，以保留与密封前一致的目录结构（第~\ref{sec:multi-file-chapter} 章给出封装与整包解封流程）。
 
 \subsection{定位}\label{sec:directory-tree-scope}
 
 \begin{itemize}
   \item \textbf{目录（树）文件}：密封包内的一份逻辑文件，其明文为下文规定的目录索引字节布局；在 Content Region 中与其它逻辑文件一样，经 Item 加密存储（第~\ref{sec:content-region} 节）。\textbf{目录项}（\ttf{dir_item}）与\textbf{文件项}（\ttf{file_entry}）等记录类型见第~\ref{sec:tree-string-section} 节起各小节。
-  \item 本章规定目录明文的\textbf{二进制布局、解析与校验}；封装侧如何\textbf{生成}该明文、Header 目录树 Item 定位字段如何取值及解封侧如何\textbf{消费}解析结果，见第~\ref{sec:multi-file-chapter} 章。
-  \item 本章\textbf{不}重复第~\ref{sec:unseal-chapter} 章的 Item 认证解密步骤；解封侧须先按第~\ref{sec:multi-file-tree-payload-concat} 节得到目录明文字节串，再调用本章解析。
+  \item 本章规定目录明文的\textbf{二进制布局、解析与校验}；封装侧如何\textbf{生成}该明文、Header 目录树 Item 定位字段如何取值及解封侧如何\textbf{消费}解析结果，见附录~\ref{sec:multi-file-chapter}。
+  \item 本章\textbf{不}重复附录~\ref{sec:unseal-chapter} 的 Item 认证解密步骤；解封侧须先按附录~\ref{sec:multi-file-tree-payload-concat} 得到目录明文字节串，再调用本章解析。
 \end{itemize}
 
 \subsection{无目录树情形}\label{sec:directory-tree-no-tree}
@@ -23,7 +23,7 @@
   \item 除特别说明外，整数类型均为无符号，多字节整数均为小端序（LE）；
   \item 本章所称\textbf{目录明文}，指解密目录树 Item 后得到的连续字节串；下文偏移均以目录明文\textbf{首字节为 0} 计量；
   \item 字段名使用下划线命名，与实现互操作对齐；
-  \item 目录树明文格式版本由树头.\ttf{version} 表示，与 \texttt{.sealed} 文件 Header.\ttf{version_number} \textbf{相互独立}；当前版本约定值见第~\ref{sec:tree-header} 节（暂定）。
+  \item 目录树明文格式版本由树头.\ttf{version} 表示，与 \texttt{.aeff} 文件 Header.\ttf{version_number} \textbf{相互独立}；当前版本约定值见第~\ref{sec:tree-header} 节（暂定）。
 \end{itemize}
 
 \subsection{整体布局}\label{sec:tree-file-layout}
@@ -67,7 +67,7 @@
 \noindent\textbf{参考约定参数（当前版本，暂定）：}\label{sec:tree-header-params}
 为保证目录明文互操作，当前约定 \ttf{version = 2}（\ttf{UINT64(LE)}，暂定；\ttf{file_entry} 为 72 字节且含 \ttf{restore_flag}）。
 \ttf{magic_number}（\ttf{UINT64(LE)}，8 字节，暂定）为：字符串形式 ASCII \texttt{YEEZTRID}（恰好 8 字节，\textbf{无}结尾 \texttt{0x00}）；十六进制（自目录明文偏移 \texttt{0} 起连续 8 字节）：\texttt{5945455a54495245}。
-树头.\ttf{version} 仅描述目录明文布局演进，与 \texttt{.sealed} Header.\ttf{version_number} \textbf{无}对应关系，二者 MAY 独立递增；读取器 MUST 在解析目录节前校验 \ttf{magic_number} 与 \ttf{version}；若后续调整树头布局或上述常量，树头.\ttf{version} MUST 递增并提供兼容说明，\textbf{不必}与 sealed 文件版本同步。
+树头.\ttf{version} 仅描述目录明文布局演进，与 \texttt{.aeff} Header.\ttf{version_number} \textbf{无}对应关系，二者 MAY 独立递增；读取器 MUST 在解析目录节前校验 \ttf{magic_number} 与 \ttf{version}；若后续调整树头布局或上述常量，树头.\ttf{version} MUST 递增并提供兼容说明，\textbf{不必}与 aeff 文件版本同步。
 
 \subsection{符号节}\label{sec:tree-string-section}
 
