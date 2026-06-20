@@ -1,21 +1,9 @@
 import { ECB } from 'aes-js';
-import keccak256 from './keccak256.js';
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 import secp256k1 from 'secp256k1';
 import { Buffer } from 'buffer';
 
-import 'js-sha256/src/sha256.js';
-
-let sha256Cached;
-function sha256Api() {
-  if (sha256Cached) return sha256Cached;
-  const g = globalThis.sha256;
-  if (g && typeof g.create === 'function') {
-    sha256Cached = g;
-    return sha256Cached;
-  }
-  const hint = g === undefined ? 'undefined' : typeof g;
-  throw new Error(`sha256 is not a function (globalThis.sha256 is ${hint})`);
-}
+import { sha256 } from '@noble/hashes/sha256';
 
 function hexToBytes(hex){
   const clean = hex.startsWith('0x')? hex.slice(2): hex;
@@ -27,12 +15,12 @@ function hexToBytes(hex){
 function hashfn(x, y) {
   const version = new Uint8Array(33);
 
-  const sha = sha256Api().create();
+  const hasher = sha256.create();
 
   version[0] = (y[31] & 1) === 0 ? 0x02 : 0x03;
   version.set(x, 1);
-  sha.update(version);
-  return new Uint8Array(sha.array());
+  hasher.update(version);
+  return hasher.digest();
 }
 
 function aesCmac(key, message){
@@ -146,11 +134,11 @@ function generateAESKeyFrom(pkey, skey){
 const eth_hash_prefix = Buffer.from("\\x19Ethereum Signed Message:\\n32");
 
 function signMessage(skey, raw) {
-  let raw_hash = keccak256(Buffer.from(raw));
+  let raw_hash = Buffer.from(keccak256(Buffer.from(raw)));
   let msg = new Uint8Array(eth_hash_prefix.length + raw_hash.length)
   msg.set(eth_hash_prefix)
   msg.set(raw_hash, eth_hash_prefix.length)
-  msg = keccak256(Buffer.from(msg))
+  msg = Buffer.from(keccak256(Buffer.from(msg)))
 
   const msgBytes = toUint8Array(msg);
   const skeyBytes = toUint8Array(skey);

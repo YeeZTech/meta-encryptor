@@ -1,5 +1,4 @@
 /* eslint-disable */
-import './node/init-crypto.js';
 import Provider from "./node/DataProvider.js";
 import YPCNt_Object from "./common/ypcntobject.js";
 import nodeYPCCrypto from "./node/ypccrypto.js";

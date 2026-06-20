@@ -1,4 +1,4 @@
-import keccak256 from "../common/keccak256.js";
+import { keccak_256 as keccak256} from '@noble/hashes/sha3';
 import { Transform } from "stream";
 import log from "loglevel";
 
@@ -20,7 +20,7 @@ export class Unsealer extends Transform {
     const context = options ? options.context : undefined;
 
     // Node-specific rolling keccak256 hash
-    let dataHash = keccak256(Buffer.from("Fidelius", "utf-8"));
+    let dataHash = Buffer.from(keccak256(Buffer.from("Fidelius", "utf-8")));
 
     this.#core = new UnsealerCore({
       decrypt: (cipher) =>
@@ -32,7 +32,7 @@ export class Unsealer extends Transform {
           dataHash.toString("hex") + Buffer.from(rawBatch).toString("hex"),
           "hex"
         );
-        dataHash = keccak256(k);
+        dataHash = Buffer.from(keccak256(k));
       },
       onItemDone: ({ consumedBytes, plainSize }) => {
         // update recoverable-stream context

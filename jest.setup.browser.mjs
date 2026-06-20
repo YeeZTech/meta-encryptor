@@ -1,12 +1,6 @@
 // jest.setup.browser.mjs
 
-globalThis.JS_SHA256_NO_NODE_JS = true;
-globalThis.JS_SHA256_NO_COMMON_JS = true;
-globalThis.JS_SHA3_NO_NODE_JS = true;
-globalThis.JS_SHA3_NO_COMMON_JS = true;
-
-await import('js-sha256/src/sha256.js');
-await import('js-sha3/src/sha3.js');
+// sha256 and keccak256 are now imported directly by consumer modules via @noble/hashes
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);

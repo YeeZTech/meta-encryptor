@@ -1,5 +1,4 @@
 /* eslint-disable */
-import './browser/prepare-env.js';
 import { BrowserCrypto } from "./browser/ypccrypto.browser.js";
 
 export const YPCCrypto = BrowserCrypto;

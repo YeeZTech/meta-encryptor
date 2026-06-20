@@ -2,7 +2,7 @@ import { header_t, block_info_t, buffer2header_t } from '../common/header_util.j
 import YPCCryptoFun from './ypccrypto.js';
 const YPCCrypto = YPCCryptoFun();
 import fs from 'fs';
-import keccak256 from '../common/keccak256.js';
+import { keccak_256 as keccak256} from '@noble/hashes/sha3';
 import { BlockNumLimit, MaxItemSize, HeaderSize, MagicNum } from '../common/limits.js';
 const anyEnclave = Buffer.from(
   'bd0c3cce561fac62b90ddd7bfcfe014702aa4327bc2b0b69ef79a7d2a0350f11',
@@ -136,7 +136,7 @@ export function calculateSealedHash(filePath) {
 
   // 计算hash
   const fd = fs.openSync(filePath, 'r');
-  let result_hash = keccak256(Buffer.from('Fidelius', 'utf-8'));
+  let result_hash = Buffer.from(keccak256(Buffer.from('Fidelius', 'utf-8')));
   let offset = 0;
   let currentBlock = 0;
 
@@ -193,7 +193,7 @@ export function calculateSealedHash(filePath) {
       }
 
       let k = Buffer.concat([Buffer.from(result_hash), buf]);
-      result_hash = keccak256(k);
+      result_hash = Buffer.from(keccak256(k));
       offset += len;
     }
 
