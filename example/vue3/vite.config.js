@@ -7,7 +7,8 @@ export default defineConfig({
   plugins: [vue()],
   resolve: {
     alias: {
-      '@': resolve(__dirname, '../../src')
+      '@': resolve(__dirname, '../../src'),
+      '@yeez-tech/meta-encryptor': resolve(__dirname, '../../')
     }
   },
   server: {

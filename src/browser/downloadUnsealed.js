@@ -117,12 +117,10 @@ export async function downloadUnsealed({
       throw new Error(`文件过大 (${(meta.contentSize / 1024 / 1024).toFixed(0)} MB)，超出 ${mode} 端限制 ${(limit / 1024 / 1024).toFixed(0)} MB`)
     }
 
-    // 桌面端优先 stream；移动端或 stream 不可用时走 blob
-    const tryStream = !mobile && typeof window !== 'undefined' && window.streamSaver && typeof window.streamSaver.createWriteStream === 'function'
-
-    if (tryStream) {
+    // 桌面端尝试流式下载（内部自动选择最佳 writable）
+    if (!mobile) {
       try {
-        log('使用流式下载 (StreamSaver)...')
+        log('尝试流式下载...')
         await streamDownloadAndDecrypt(url, key, filename, { log, onProgress })
         if (onSuccess) onSuccess({ filename })
         return
