@@ -26,10 +26,27 @@ yarn add @yeez-tech/meta-encryptor
 
 #### 构建及测试
 
-```base
-yarn install
-yarn test
+```bash
+npm install
+npm run build
+
+# Node 单元测试（临时文件写入 test_tmp/，结束后自动清理）
+npm run test:node
+
+# 浏览器测试（会先 build + gen:fixtures 生成本地 fixture，勿提交仓库）
+npm run test:browser
+
+# 全量测试
+npm test
+
+# 手动清理根目录历史测试残留与 test_tmp/
+npm run test:clean
 ```
+
+**说明：**
+
+- `test/fixtures/` 下的 `*.file`、`*.file.sealed`、`*-fixture-*.json`、`ypc-browser-fixtures.json` 以及 `example/browser/keys.json` 均为**本地生成物**，已在 `.gitignore` 中忽略，克隆后需执行 `npm run gen:fixtures`（`test:browser` 会自动执行）。
+- 示例私钥模板见 `example/browser/keys.json.example`；运行 `npm run serve:example` 后访问 `/api/gen` 可生成 `keys.json` 与 `sealed_full.bin`。
 
 #### 快速开始
 

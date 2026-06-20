@@ -44,17 +44,28 @@ npm run dev
 
 ## 生成测试文件
 
+以下文件**不在 Git 仓库中**，需本地生成：
+
+| 文件 | 生成方式 |
+|------|----------|
+| `example/browser/keys.json` | 复制 `keys.json.example` 并填入密钥，或调用 `/api/gen` |
+| `example/browser/sealed_full.bin`、`plain.bin` | `curl -k https://localhost:8088/api/gen` |
+| `test/fixtures/browser-unsealer-*` | `npm run gen:fixtures`（`test:browser` 会自动执行） |
+
 ```bash
-# serve:example 运行后访问
+# 示例数据（需 serve:example 运行中）
 curl -k https://localhost:8088/api/gen
-# 或浏览器打开该 URL，会在 example/browser/ 下生成 sealed_full.bin 与 keys.json
+
+# 浏览器测试 fixture（需先 npm run build）
+npm run gen:fixtures
 ```
 
 ## 自动化测试
 
 ```bash
-npm run test:node
-npm run test:browser
+npm run test:node    # 临时文件写入 test_tmp/w{N}/，Jest 钩子自动清理
+npm run test:browser # 等价于 build + gen:fixtures + jest
+npm run test:clean   # 清理 test_tmp/ 与根目录历史测试残留
 ```
 
 ## 目录说明
@@ -63,4 +74,5 @@ npm run test:browser
 |------|------|
 | `example/http/` | **本地 HTTPS 后端**（`serve:example` 启动的就是它） |
 | `example/vue3/` | **Vue3 宿主接入示例（维护中）**，前端入口 |
-| `example/browser/` | 仅存放测试数据（`sealed_full.bin`、`keys.json`）；`index.html` 为旧版页面，**未维护** |
+| `example/browser/` | 本地测试数据目录（`keys.json.example` 为模板；`keys.json`、`*.bin` 本地生成）；`index.html` 为旧版页面，**未维护** |
+| `test_tmp/` | Node 测试运行时临时目录（已 gitignore） |
