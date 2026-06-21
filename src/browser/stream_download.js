@@ -25,7 +25,7 @@ async function ensureStreamSaver(log) {
   return null;
 }
 
-export async function getBestWritable(filename, { log } = {}) {
+export async function getBestWritable(filename, { log, size } = {}) {
   /*
   if (typeof window !== 'undefined' && window.showSaveFilePicker) {
     try {
@@ -42,16 +42,16 @@ export async function getBestWritable(filename, { log } = {}) {
   const ss = await ensureStreamSaver(log);
   if (ss) {
     log?.('Using StreamSaver...');
-    return ss.createWriteStream(filename);
+    return ss.createWriteStream(filename, size !== undefined ? { size } : undefined);
   }
 
   return null;
 }
 
-export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, fetch: _fetch } = {}) {
+export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch } = {}) {
   log = log || (() => {})
   try {
-    const out = writable || await getBestWritable(filename, { log })
+    const out = writable || await getBestWritable(filename, { log, size })
     if (!out) throw new MetaEncryptorError('ERR_NO_STREAM_WRITABLE');
     log('Stream download starting...');
 

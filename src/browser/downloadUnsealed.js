@@ -66,13 +66,16 @@ async function inspectSealed(url, log) {
     });
   }
 
-  const { blockNumber } = validateHeader(headerBuf);
-  log('header ok: blockNumber=' + blockNumber);
+  const { blockNumber, itemNumber } = validateHeader(headerBuf);
+  log('header ok: blockNumber=' + blockNumber + ' itemNumber=' + itemNumber);
 
-  const contentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
-  if (contentSize <= 0) throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
+  const sealedContentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
+  if (sealedContentSize <= 0) throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
 
-  return { totalSize, blockNumber, contentSize };
+  // per-item overhead: 8 (len prefix) + 12 (IV) + 64 (public key) + 16 (GCM tag) = 100
+  const plaintextSize = sealedContentSize - itemNumber * 100;
+
+  return { totalSize, blockNumber, itemNumber, sealedContentSize, plaintextSize };
 }
 
 
@@ -111,7 +114,7 @@ export async function downloadUnsealed({
     log('Checking file url=' + url + ' filename=' + filename);
     const meta = await inspectSealed(url, log);
     log('inspect file succ');
-    log(`Plain size(est)=${meta.contentSize} bytes, totalSize=${meta.totalSize}`);
+    log(`Plaintext size=${meta.plaintextSize} bytes, sealed=${meta.sealedContentSize} bytes, totalSize=${meta.totalSize}`);
 
     const mobile = isMobile()
     const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
@@ -119,16 +122,16 @@ export async function downloadUnsealed({
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a';
     log(`Detected ${mode} (ua=${ua}), limit ${(limit / 1024 / 1024).toFixed(0)} MB`);
 
-    if (meta.contentSize > limit) {
+    if (meta.plaintextSize > limit) {
       throw new MetaEncryptorError('ERR_FILE_TOO_LARGE', {
-        detail: { size: (meta.contentSize / 1024 / 1024).toFixed(0), mode, limit: (limit / 1024 / 1024).toFixed(0) }
+        detail: { size: (meta.plaintextSize / 1024 / 1024).toFixed(0), mode, limit: (limit / 1024 / 1024).toFixed(0) }
       })
     }
 
     if (!mobile) {
       try {
         log('Trying stream download...')
-        await streamDownloadAndDecrypt(url, key, filename, { log, onProgress })
+        await streamDownloadAndDecrypt(url, key, filename, { log, onProgress, size: meta.plaintextSize })
         if (onSuccess) onSuccess({ filename })
         return
       } catch (e) {
