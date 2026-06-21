@@ -76,6 +76,14 @@
     "publishConfig": {
         "access": "public"
     },
+    "peerDependencies": {
+        "streamsaver": "^2.0.0"
+    },
+    "peerDependenciesMeta": {
+        "streamsaver": {
+            "optional": true
+        }
+    },
     "engines": {
         "node": "^18.0.0 || >= 18.0.0"
     }
