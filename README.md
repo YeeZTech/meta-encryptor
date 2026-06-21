@@ -69,6 +69,60 @@ const fileContent = crypto.generateFileContentFromSKey(sKey);
 await crypto.decryptMessage(sKey, encryptedMessage);
 ```
 
+#### 错误处理与本地化
+
+meta-encryptor 使用结构化错误 `MetaEncryptorError`，包含 `code`（稳定错误码）、`detail`（上下文数据）和 `cause`（底层错误）。
+
+```js
+import { downloadUnsealed, MetaEncryptorError, configureLocale, detectLocale } from "@yeez-tech/meta-encryptor";
+import zhCN from "@yeez-tech/meta-encryptor/src/locales/zh-CN.json";
+
+// 可选：配置中文（import 时自动检测，默认英文）
+configureLocale({ messages: zhCN });
+
+try {
+  await downloadUnsealed({ url, privateKey, filename });
+} catch (e) {
+  if (e instanceof MetaEncryptorError) {
+    console.log(e.code);             // "ERR_FILE_TOO_LARGE"
+    console.log(e.message);          // "Invalid magic number" (英文默认)
+    console.log(e.localizedMessage); // "无效的魔数" (如果配了中文)
+    console.log(e.detail);           // { size: "200", mode: "desktop", ... }
+    console.log(e.cause);            // 底层异常 (如果有)
+  }
+}
+```
+
+**零配置**：`import` 时自动根据 `navigator.language` / `process.env.LANG` 检测语言。如需覆盖：
+
+```js
+import { configureLocale } from "@yeez-tech/meta-encryptor";
+import zhCN from "@yeez-tech/meta-encryptor/src/locales/zh-CN.json";
+configureLocale({ messages: zhCN });
+```
+
+#### 浏览器端下载与 StreamSaver
+
+`downloadUnsealed` 在桌面端自动选择流式下载方案以获得更好的用户体验：
+
+1. **StreamSaver**（CDN 自动加载，支持原生下载进度条）
+2. **Blob 下载**（最终兜底，兼容所有浏览器）
+
+**你不需要手动引入 StreamSaver**——库会在需要时从 CDN 自动加载。如果想使用本地版本：
+
+```bash
+npm install streamsaver
+```
+
+```html
+<!-- 在 HTML 中手动引入（库检测到 window.streamSaver 后会跳过 CDN 加载） -->
+<script src="/node_modules/streamsaver/StreamSaver.min.js"></script>
+```
+
+StreamSaver 已声明为 `optional` peerDependency，安装后不会报警告。
+
+> **注意**：底层使用 `fetch` + `Range` 分块拉取数据，Safari 浏览器存在重定向后丢失 `Range` 请求头的问题，因此 **URL 必须直连，不能发生 HTTP 重定向**（如 301/302）。
+
 #### API
 
 ##### YPCCrypto.generatePrivateKey

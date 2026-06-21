@@ -19,6 +19,19 @@ await downloadUnsealed({
 npm install @yeez-tech/meta-encryptor
 ```
 
+## 下载策略
+
+桌面端自动选择最佳方案，无需额外配置：
+
+1. **StreamSaver** — CDN 自动加载，提供原生下载进度条
+2. **Blob 下载** — 最终兜底，兼容所有浏览器
+
+如需使用本地 StreamSaver（跳过 CDN），在 HTML 中手动引入即可：
+
+```html
+<script src="/node_modules/streamsaver/StreamSaver.min.js"></script>
+```
+
 ## API 文档
 
 ### downloadUnsealed(options)
@@ -39,13 +52,37 @@ npm install @yeez-tech/meta-encryptor
 
 #### 返回值
 
-`Promise<void>` - 如果提供了 `onError`，错误会被回调处理；否则会抛出异常。
+`Promise<void>` - 如果提供了 `onError`，错误会被回调处理；否则会抛出 `MetaEncryptorError`。
+
+#### 错误处理
+
+所有错误都是 `MetaEncryptorError` 实例，包含结构化错误码和可本地化消息：
+
+```javascript
+import { downloadUnsealed, MetaEncryptorError, configureLocale } from "@yeez-tech/meta-encryptor";
+import zhCN from "@yeez-tech/meta-encryptor/src/locales/zh-CN.json";
+
+configureLocale({ messages: zhCN }); // 可选，import 时自动检测语言
+
+try {
+  await downloadUnsealed({ url, privateKey, filename });
+} catch (e) {
+  if (e instanceof MetaEncryptorError) {
+    e.code;             // "ERR_FILE_TOO_LARGE"
+    e.message;          // "File too large (200 MB), exceeds desktop limit (1024 MB)"
+    e.localizedMessage; // "文件过大（200 MB），超出desktop限制（1024 MB）"
+    e.detail;           // { size: "200", mode: "desktop", limit: "1024" }
+    e.cause;            // underlying Error (if any)
+  }
+}
+```
 
 #### 注意事项
 
 - **文件名必需**：`filename` 参数是必需的，没有默认值
 - **私钥格式**：必须是 64 字节的十六进制字符串（128 个字符）
 - **URL 要求**：必须支持 HTTP Range 请求（用于读取文件头部和分块下载）
+- **禁止重定向**：底层使用 `fetch` + `Range` 拉取数据，Safari 浏览器存在重定向后丢失 `Range` 请求头的问题，因此 **URL 必须直连，不能发生 HTTP 重定向**（如 301/302）
 - **浏览器环境**：此 API 只能在浏览器环境中使用，不支持 Node.js 或 SSR 服务端渲染
 
 ## 使用示例
