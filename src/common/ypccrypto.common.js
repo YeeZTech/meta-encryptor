@@ -2,6 +2,7 @@ import { ECB } from 'aes-js';
 import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 import secp256k1 from 'secp256k1';
 import { Buffer } from 'buffer';
+import { MetaEncryptorError } from './errors.js';
 
 import { sha256 } from '@noble/hashes/sha256';
 
@@ -113,7 +114,7 @@ function toHex(bytes) {
 function generatePublicKeyFromPrivateKey(skey){
   const skeyBytes = toUint8Array(skey);
   if (!secp256k1.privateKeyVerify(skeyBytes)) {
-    throw new Error('invalid private key');
+    throw new MetaEncryptorError('ERR_INVALID_PRIVATE_KEY');
   }
   const pkey = secp256k1.publicKeyCreate(skeyBytes, false).subarray(1);
   return Buffer.from(pkey);

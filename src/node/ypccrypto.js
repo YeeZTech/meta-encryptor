@@ -68,7 +68,6 @@ const YPCCrypto = function () {
     const ots = this.generatePrivateKey();
     return this._encryptMessage(local_pkey, ots, input.buffer, 0x2);
   };
-  // 调用
   this._decryptMessageWithPrefix = function (skey, msg, prefix) {
     const encrypted = msg.slice(0, (msg.length || msg.byteLength) - 64 - 16 - 12);
     const liv = msg.slice(encrypted.length, (msg.length || msg.byteLength) - 64 - 16);

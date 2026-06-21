@@ -3,6 +3,8 @@
  * Works with any Uint8Array-like (Buffer is a Uint8Array subclass).
  */
 
+import { MetaEncryptorError } from './errors.js';
+
 import { HeaderSize, MagicNum, CurrentBlockFileVersion } from './limits.js';
 import { ntpackage2batch, fromNtInput } from './header_util.js';
 
@@ -27,11 +29,11 @@ export function validateHeader(headerBytes) {
   const magic = headerBytes.slice(0, 8);
   const magicNum = _getMagicNumBytes();
   if (magic.length !== magicNum.length) {
-    throw new Error('Invalid magic number: length mismatch');
+    throw new MetaEncryptorError('ERR_INVALID_MAGIC_LENGTH');
   }
   for (let i = 0; i < magic.length; i++) {
     if (magic[i] !== magicNum[i]) {
-      throw new Error('Invalid magic number');
+      throw new MetaEncryptorError('ERR_INVALID_MAGIC');
     }
   }
 
@@ -40,7 +42,7 @@ export function validateHeader(headerBytes) {
   const hiVer = dv.getUint32(12, true);
   const version = hiVer * 0x100000000 + loVer;
   if (version !== CurrentBlockFileVersion) {
-    throw new Error('Unsupported version: ' + version);
+    throw new MetaEncryptorError('ERR_UNSUPPORTED_VERSION', { detail: { version } });
   }
 
   // block_number at offset 16 (uint64 LE)

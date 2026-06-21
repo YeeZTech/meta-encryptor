@@ -2,14 +2,13 @@
 
 import { HeaderSize, BlockInfoSize } from '../common/limits.js';
 import { validateHeader } from '../common/unsealer_core.js';
+import { MetaEncryptorError } from '../common/errors.js';
 import { blobDownloadAndDecrypt } from './blob_download.js';
 import { streamDownloadAndDecrypt } from './stream_download.js';
 
-// 大小限制
-const MOBILE_LIMIT = 200 * 1024 * 1024;   // 200 MB
-const DESKTOP_LIMIT = 1024 * 1024 * 1024; // 1 GB
+const MOBILE_LIMIT = 200 * 1024 * 1024;
+const DESKTOP_LIMIT = 1024 * 1024 * 1024;
 
-/** 简单判断是否为移动端 */
 function isMobile() {
   if (typeof navigator === 'undefined') return false;
   return /Android|iPhone|iPad|iPod|webOS/i.test(navigator.userAgent);
@@ -22,51 +21,56 @@ function makeLogger(onLog) {
   };
 }
 
-// 检查文件并获取元数据，校验 magic number 和版本号
 async function inspectSealed(url, log) {
-  log(`HEAD ${url}`);
-  const headResp = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+  log('HEAD ' + url);
+  let headResp;
+  try {
+    headResp = await fetch(url, { method: 'HEAD', cache: 'no-store' });
+  } catch (e) {
+    throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: e.message }, cause: e });
+  }
   const headCl = headResp.headers.get('Content-Length');
   const acceptRanges = headResp.headers.get('Accept-Ranges');
   log(`HEAD status=${headResp.status} content-length=${headCl ?? '(none)'} accept-ranges=${acceptRanges ?? '(none)'}`);
-  if (!headResp.ok) throw new Error(`HEAD 请求失败: HTTP ${headResp.status}`);
+  if (!headResp.ok) throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } });
 
   const totalSize = parseInt(headCl || '0', 10);
   if (totalSize < HeaderSize) {
-    throw new Error(`文件太小，不是有效的封装文件: content-length=${totalSize}`);
+    throw new MetaEncryptorError('ERR_FILE_NOT_SEALED', { detail: { totalSize } });
   }
 
-  // 读取末尾 header
   const tailStart = totalSize - HeaderSize;
   const rangeHeader = `bytes=${tailStart}-${totalSize - 1}`;
   log(`Range ${rangeHeader} (tail ${HeaderSize} bytes of ${totalSize})`);
-  const tailResp = await fetch(url, {
-    headers: { Range: rangeHeader },
-    cache: 'no-store',
-  });
+  let tailResp;
+  try {
+    tailResp = await fetch(url, {
+      headers: { Range: rangeHeader },
+      cache: 'no-store',
+    });
+  } catch (e) {
+    throw new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: e.message, rangeHeader }, cause: e });
+  }
   const tailCl = tailResp.headers.get('Content-Length');
   const contentRange = tailResp.headers.get('Content-Range');
   const contentType = tailResp.headers.get('Content-Type');
-  log(
-    `Range status=${tailResp.status} content-length=${tailCl ?? '(none)'} content-range=${contentRange ?? '(none)'} content-type=${contentType ?? '(none)'}`
-  );
+  log(`Range status=${tailResp.status} content-length=${tailCl ?? '(none)'} content-range=${contentRange ?? '(none)'} content-type=${contentType ?? '(none)'}`);
   if (!tailResp.ok) {
-    throw new Error(`无法读取文件末尾: HTTP ${tailResp.status}, range=${rangeHeader}`);
+    throw new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: tailResp.status, rangeHeader } });
   }
 
   const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
   if (headerBuf.length !== HeaderSize) {
-    throw new Error(
-      `文件 header 不完整: 期望 ${HeaderSize} 字节, 实际 ${headerBuf.length}, totalSize=${totalSize}, range=${rangeHeader}, status=${tailResp.status}`
-    );
+    throw new MetaEncryptorError('ERR_HEADER_INCOMPLETE', {
+      detail: { expected: HeaderSize, actual: headerBuf.length, totalSize, rangeHeader, status: tailResp.status }
+    });
   }
 
-  // validateHeader 校验 magic number 和 version，同时返回 blockNumber
   const { blockNumber } = validateHeader(headerBuf);
-  log(`header ok: blockNumber=${blockNumber}`);
+  log('header ok: blockNumber=' + blockNumber);
 
   const contentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
-  if (contentSize <= 0) throw new Error('无效的封装文件：内容大小为0');
+  if (contentSize <= 0) throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
 
   return { totalSize, blockNumber, contentSize };
 }
@@ -74,15 +78,15 @@ async function inspectSealed(url, log) {
 
 
 /**
- * 下载并解密加密文件
- * @param {Object} options 配置选项
- * @param {string} options.url - 加密文件的 URL（支持 Range 请求）
- * @param {string} options.privateKey - 私钥（hex 格式，64字节）
- * @param {string} options.filename - 下载文件名
- * @param {Function} [options.onLog] - 日志回调函数
- * @param {Function} [options.onProgress] - 进度回调函数 (total, processed, readBytes, writeBytes) => {}
- * @param {Function} [options.onSuccess] - 成功回调函数 (data) => {}
- * @param {Function} [options.onError] - 错误回调函数 (error) => {}
+ * Download and decrypt a sealed file.
+ * @param {Object} options
+ * @param {string} options.url
+ * @param {string} options.privateKey - hex-encoded private key
+ * @param {string} options.filename
+ * @param {Function} [options.onLog]
+ * @param {Function} [options.onProgress] - (total, processed, readBytes, writeBytes) => {}
+ * @param {Function} [options.onSuccess]
+ * @param {Function} [options.onError]
  * @returns {Promise<void>}
  */
 export async function downloadUnsealed({
@@ -99,42 +103,44 @@ export async function downloadUnsealed({
 
   try {
     if (!url || !key || !filename) {
-      throw new Error(`请提供 URL、私钥和文件名 (url=${url ? 'set' : 'empty'}, key=${key ? 'set' : 'empty'}, filename=${filename || 'empty'})`);
+      throw new MetaEncryptorError('ERR_MISSING_PARAMS', {
+        detail: { url: url ? 'set' : 'empty', key: key ? 'set' : 'empty', filename: filename || 'empty' }
+      });
     }
 
-    log(`检查文件 url=${url} filename=${filename}`);
+    log('Checking file url=' + url + ' filename=' + filename);
     const meta = await inspectSealed(url, log);
     log('inspect file succ');
-    log(`明文大小(估算)=${meta.contentSize} 字节, totalSize=${meta.totalSize}`);
+    log(`Plain size(est)=${meta.contentSize} bytes, totalSize=${meta.totalSize}`);
 
-    // 大小上限
     const mobile = isMobile()
     const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
     const mode = mobile ? 'mobile' : 'desktop'
-    log(`检测到 ${mode} 端 (ua=${typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a'})，大小限制 ${(limit / 1024 / 1024).toFixed(0)} MB`);
+    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a';
+    log(`Detected ${mode} (ua=${ua}), limit ${(limit / 1024 / 1024).toFixed(0)} MB`);
 
     if (meta.contentSize > limit) {
-      throw new Error(`文件过大 (${(meta.contentSize / 1024 / 1024).toFixed(0)} MB)，超出 ${mode} 端限制 ${(limit / 1024 / 1024).toFixed(0)} MB`)
+      throw new MetaEncryptorError('ERR_FILE_TOO_LARGE', {
+        detail: { size: (meta.contentSize / 1024 / 1024).toFixed(0), mode, limit: (limit / 1024 / 1024).toFixed(0) }
+      })
     }
 
-    // 桌面端尝试流式下载（内部自动选择最佳 writable）
     if (!mobile) {
       try {
-        log('尝试流式下载...')
+        log('Trying stream download...')
         await streamDownloadAndDecrypt(url, key, filename, { log, onProgress })
         if (onSuccess) onSuccess({ filename })
         return
       } catch (e) {
-        log(`流式下载失败: ${e.message}，回退到 Blob 下载`)
+        log('Stream failed: ' + e.message + ', falling back to Blob')
       }
     }
 
-    // blob 兜底
-    log('使用 Blob 下载...')
+    log('Using Blob download...')
     await blobDownloadAndDecrypt(url, key, filename, { log, onProgress })
     if (onSuccess) onSuccess({ filename })
   } catch (error) {
-    log('下载失败: ' + error.message)
+    log('Download failed: ' + error.message)
     if (onError) onError(error)
     else throw error
   }

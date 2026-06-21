@@ -1,11 +1,7 @@
-// 浏览器能力检测工具
-// 用于检测浏览器类型和 API 支持情况，帮助选择合适的下载方案
-
 export function detectBrowserCapabilities() {
   const ua = navigator.userAgent.toLowerCase()
   const isMobile = /android|iphone|ipad|ipod|blackberry|iemobile|opera mini/i.test(ua)
   
-  // 检测浏览器类型
   const browserInfo = {
     isMobile,
     isBaidu: /baiduboxapp|baidubrowser/i.test(ua),
@@ -19,7 +15,6 @@ export function detectBrowserCapabilities() {
     isSafari: /safari/i.test(ua) && !/chrome|crios|fxios/i.test(ua),
   }
   
-  // 检测 API 支持
   const capabilities = {
     serviceWorker: 'serviceWorker' in navigator,
     messageChannel: typeof MessageChannel !== 'undefined',
@@ -29,8 +24,7 @@ export function detectBrowserCapabilities() {
     blob: typeof Blob !== 'undefined' && typeof URL !== 'undefined' && 'createObjectURL' in URL,
   }
   
-  // 针对已知有问题的浏览器，禁用某些功能
-  // 这些浏览器对 Service Worker + MessageChannel + ReadableStream 的支持不完整
+  // Known-broken browsers that don't support ServiceWorker + MessageChannel + ReadableStream
   const shouldSkipServiceWorker = 
     browserInfo.isBaidu || 
     browserInfo.isQQ || 

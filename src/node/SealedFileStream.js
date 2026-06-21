@@ -2,6 +2,7 @@ import {Readable} from "stream";
 import fs from "fs";
 import{HeaderSize, BlockInfoSize,
   MagicNum, CurrentBlockFileVersion} from "../common/limits.js";
+import { MetaEncryptorError } from '../common/errors.js';
 import {
   buffer2header_t
 } from "../common/header_util.js"
@@ -48,20 +49,20 @@ export class SealedFileStream extends Readable{
         this.fileHandle.read(this.header, 0, HeaderSize, fileStats.size - HeaderSize)
         .then(({bytesRead}) =>{
           if(bytesRead!= HeaderSize){
-            throw new Error("Cannot read header. File too small");
+            throw new MetaEncryptorError('ERR_FILE_TOO_SMALL_HEADER');
           }
 
           const header = buffer2header_t(this.header);
 
           if (header.version_number != CurrentBlockFileVersion) {
-            throw new Error("only support version ", CurrentBlockFileVersion, ", yet got ", header.version_number);
+            throw new MetaEncryptorError('ERR_VERSION_MISMATCH', { detail: { expected: CurrentBlockFileVersion, actual: header.version_number } });
           }
           if(!header.magic_number.equals(MagicNum)){
-            throw new Error("Invalid magic number, maybe wrong file");
+            throw new MetaEncryptorError('ERR_INVALID_MAGIC');
           }
           this.contentSize = fileStats.size - HeaderSize - BlockInfoSize * header.block_number;
           if(this.contentSize <= 0){
-            throw new Error("Invalid file size.");
+            throw new MetaEncryptorError('ERR_INVALID_FILE_SIZE');
           }
           let endPosition = this.end !== undefined ? this.end : this.contentSize;
           this.end = Math.min(endPosition, this.contentSize);
@@ -120,7 +121,7 @@ export class SealedFileStream extends Readable{
             }
         } else {
           if(this.startReadPos != this.end){
-            throw new Error("Does't reach end, yet cannot read more data");
+            throw new MetaEncryptorError('ERR_UNEXPECTED_EOF');
           }
           this.push(null);
         }

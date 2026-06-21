@@ -1,10 +1,6 @@
 import { Unsealer } from './Unsealer.js'
 import { HttpSealedFileStream } from './HttpSealedFileStream.js'
 
-
-/**
- * 用 HttpSealedFileStream 下载加密文件 → Unsealer 解密 → 内存收集 → Blob 下载
- */
 /**
  * @param {string} url
  * @param {string} privateKeyHex
@@ -41,10 +37,10 @@ export async function blobDownloadAndDecrypt(url, privateKeyHex, filename, { log
     a.click()
     document.body.removeChild(a)
     URL.revokeObjectURL(urlObj)
-    log('下载完成 (页面端解密 Blob)')
+    log('Download complete (client-side Blob decrypt)');
     return { ok: true }
   } catch (e) {
-    log('Blob 下载失败: ' + e.message)
+    log('Blob download failed: ' + e.message);
     throw e
   }
 }

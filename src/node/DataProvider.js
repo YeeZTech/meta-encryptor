@@ -10,6 +10,7 @@ import {
   batch2ntpackage
 } from "../common/header_util.js"
 import { keccak_256 as keccak256} from '@noble/hashes/sha3';
+import { MetaEncryptorError } from '../common/errors.js';
 import YPCCryptoFun from "./ypccrypto.js";
 import YPCNtObjectFun from "../common/ypcntobject.js";
 import BlockFileFun from "./blockfile.js";
@@ -26,7 +27,7 @@ const BlockFile = BlockFileFun(
 );
 const DataProvider = function(_key) {
   if (new.target === undefined) {
-    throw new Error('DataProvider(_filename, _key) must be called with the new keyword.');
+    throw new MetaEncryptorError('ERR_MUST_USE_NEW', { detail: { name: 'DataProvider' } });
   }
   this.header = new header_t(0, 0, 0, 0);
   this.header.version_number = 2;
@@ -148,7 +149,7 @@ const headerAndBlockBufferFromBuffer = function(buf) {
   const buffer = buf.subarray(buf.length - HeaderSize);
   const header = buffer2header_t(buffer);
   if (header.version_number != CurrentBlockFileVersion) {
-    throw new Error("only support version ", CurrentBlockFileVersion, ", yet got ", header.version_number);
+    throw new MetaEncryptorError('ERR_VERSION_MISMATCH', { detail: { expected: CurrentBlockFileVersion, actual: header.version_number } });
   }
 
   if (buf.length <= HeaderSize + BlockInfoSize * header.block_number) {

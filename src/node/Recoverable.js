@@ -23,9 +23,8 @@ export class RecoverableReadStream extends Readable {
         });
         this.inputStream.on('end', () => {
             if (this.state === 'remaining') {
-                this.push(null); // 表示流结束
+                this.push(null);
             }
-            // 读完后显式销毁底层 SealedFileStream，关闭 FileHandle
             if (this.inputStream && typeof this.inputStream.destroy === 'function') {
                 this.inputStream.destroy();
             }
@@ -126,7 +125,6 @@ export class RecoverableReadStream extends Readable {
     }
 
     _destroy(err, callback) {
-        // 确保在流销毁时关闭底层 SealedFileStream 对应的 FileHandle
         if (this.inputStream && typeof this.inputStream.destroy === 'function') {
             this.inputStream.destroy();
         }
@@ -145,17 +143,14 @@ export class RecoverableWriteStream extends Writable {
         const fileExists = fs.existsSync(filePath);
         let streamOptions = {};
         if (fileExists) {
-            // 文件存在，获取文件大小
             this.fileSize = fs.statSync(filePath).size;
             if (writeStart > 0) {
-                // 文件存在且有写入点 - 使用 'r+' 模式，保留现有内容
                 streamOptions = {
                     flags: 'r+',
                     start: writeStart
                 };
                 logger.debug(`Opening file ${filePath} for resuming write at position: ${writeStart}`);
             } else {
-                // 新文件或从头开始 - 也用使用 'r+' 模式，否则会自动截断start后面的内容
                 streamOptions = {
                     flags: 'r+',
                     start: 0
@@ -163,8 +158,6 @@ export class RecoverableWriteStream extends Writable {
                 logger.debug(`File is empty. Creating new file ${filePath} for writing`);
             }
         } else {
-            // 文件不存在，创建新文件
-            // 先创建空文件
             fs.writeFileSync(filePath, '');
             this.fileSize = 0;
 
@@ -279,9 +272,7 @@ export class RecoverableWriteStream extends Writable {
             const writeStart = this.context.context['writeStart'] || 0;
             const length = this.context.context.data ? this.context.context.data.length : 0;
 
-            // 检查是否到达文件末尾
             if (readStart + length >= this.fileSize) {
-                // 到达文件末尾，执行截断
                 fs.truncate(this.filePath, writeStart, (truncateErr) => {
                     if (truncateErr) {
                         logger.warn("Error truncating file:", truncateErr);
@@ -292,7 +283,7 @@ export class RecoverableWriteStream extends Writable {
                     }
                 });
             } else {
-                // 未到达文件末尾，不执行截断
+
                 logger.debug("Not truncating file as not at the end. readStart + length:", readStart + length, ", fileSize:", this.fileSize);
                 callback();
             }

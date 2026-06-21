@@ -3,6 +3,8 @@ import log from 'loglevel';
 import fs from 'fs';
 import { promisify } from 'util';
 
+import { MetaEncryptorError } from '../common/errors.js';
+
 const readFile = promisify(fs.readFile);
 const writeFile = promisify(fs.writeFile);
 const logger = log.getLogger("meta-encryptor/PipelineContext");
@@ -23,11 +25,11 @@ export class PipelineContext {
     }
 
     saveContext() {
-        throw new Error('saveContext should be implemented');
+        throw new MetaEncryptorError('ERR_PIPELINE_CONTEXT_SAVE');
     }
 
     loadContext() {
-        throw new Error('loadContext should be implemented');
+        throw new MetaEncryptorError('ERR_PIPELINE_CONTEXT_LOAD');
     }
 }
 
@@ -79,7 +81,7 @@ export class PipelineContextInFile extends PipelineContext {
             }
             await promisify(fs.close)(fd);
         } catch (error) {
-            console.error('PipelineContextInFile::saveContext error:', error.message);
+            logger.error('PipelineContextInFile::saveContext error:', error.message);
             throw error;
         }
     }
@@ -108,7 +110,7 @@ export class PipelineContextInFile extends PipelineContext {
                     const buffer = Buffer.alloc(info.length);
                     const bytesRead = await promisify(fs.read)(fd, buffer, 0, info.length, 4 + metaLength + info.offset);
                     if (bytesRead.bytesRead !== info.length) {
-                        throw new Error('PipelineContextInFile::loadContext invalid length');
+                        throw new MetaEncryptorError('ERR_PIPELINE_CONTEXT_INVALID');
                     }
                     this.context[key] = buffer;
                 } else {
@@ -124,8 +126,7 @@ export class PipelineContextInFile extends PipelineContext {
             this.runtime.plainCommitted = writeStart;
             this.runtime.pendingBlocks = [];
         } catch (error) {
-            console.error('PipelineContextInFile::loadContext error:', error.message);
-            // 当上下文文件损坏或内容不完整时，视为无上下文，避免直接中断流程
+            logger.error('PipelineContextInFile::loadContext error:', error.message);
             this.context = {};
             throw error;
         }

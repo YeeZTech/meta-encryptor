@@ -3,6 +3,9 @@ import Provider from "./node/DataProvider.js";
 import YPCNt_Object from "./common/ypcntobject.js";
 import nodeYPCCrypto from "./node/ypccrypto.js";
 
+export { configureLocale, detectLocale } from "./common/locale.js";
+export { MetaEncryptorError } from "./common/errors.js";
+
 export { Sealer, ToString } from "./node/Sealer.js";
 
 export { Unsealer } from "./node/Unsealer.js";

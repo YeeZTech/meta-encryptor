@@ -1,6 +1,8 @@
 // Common header utilities usable in both Node and browser.
 // Works with Buffer (Node) and Uint8Array (browser) since Buffer is a Uint8Array subclass.
 
+import { MetaEncryptorError } from './errors.js';
+
 function readUint64LE(buffer, offset) {
   const buf = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
   const dv = new DataView(buf.buffer, buf.byteOffset + offset, 8);
@@ -98,7 +100,7 @@ function batch2ntpackage(batch) {
 // header and block info structures (originally in src/header_util.js)
 export const header_t = function(magic_number, version_number, block_number, item_number) {
   if (new.target == undefined) {
-    throw new Error("header_t must be called with the new keyword");
+    throw new MetaEncryptorError('ERR_MUST_USE_NEW', { detail: { name: 'header_t' } });
   }
   this.magic_number = magic_number;
   this.version_number = version_number;
@@ -115,7 +117,7 @@ export const header_t2buffer = function(header) {
   buf.writeBigUInt64LE(BigInt(header.block_number || 0), 16);
   buf.writeBigUInt64LE(BigInt(header.item_number || 0), 24);
   if (!header.data_hash || header.data_hash.length !== 32) {
-    throw new Error("header.data_hash is invalid");
+    throw new MetaEncryptorError('ERR_INVALID_HEADER_HASH');
   }
   header.data_hash.copy(buf, 32, 0, 32);
   return buf;
@@ -138,7 +140,7 @@ export function block_info_t(
   end_file_pos
 ) {
   if (new.target == undefined) {
-    throw new Error("block_info_t must be called with the new keyword");
+    throw new MetaEncryptorError('ERR_MUST_USE_NEW', { detail: { name: 'block_info_t' } });
   }
   this.start_item_index = start_item_index;
   this.end_item_index = end_item_index;

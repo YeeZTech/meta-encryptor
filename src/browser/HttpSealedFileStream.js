@@ -12,6 +12,7 @@
 
 import { HeaderSize, BlockInfoSize } from '../common/limits.js';
 import { validateHeader } from '../common/unsealer_core.js';
+import { MetaEncryptorError } from '../common/errors.js';
 
 const DEFAULT_CHUNK = 1024 * 1024; // 1 MB per Range request
 
@@ -35,59 +36,71 @@ export class HttpSealedFileStream extends ReadableStream {
 
     super({
       start: async (controller) => {
-        // 1. HEAD 获取文件大小
-        const headResp = await _fetch(url, { method: 'HEAD' });
+        let headResp;
+        try {
+          headResp = await _fetch(url, { method: 'HEAD' });
+        } catch (e) {
+          controller.error(new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: e.message }, cause: e }));
+          return;
+        }
         if (!headResp.ok) {
-          controller.error(new Error(`HTTP ${headResp.status}: ${headResp.statusText}`));
+          controller.error(new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } }));
           return;
         }
         const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10);
         if (totalSize < HeaderSize) {
-          controller.error(new Error('File too small for sealed format'));
+          controller.error(new MetaEncryptorError('ERR_FILE_TOO_SMALL'));
           return;
         }
         state.totalSize = totalSize;
 
-        // 2. 读取末尾 header
         const tailStart = totalSize - HeaderSize;
-        const tailResp = await _fetch(url, {
-          headers: { Range: `bytes=${tailStart}-${totalSize - 1}` }
-        });
+        let tailResp;
+        try {
+          tailResp = await _fetch(url, {
+            headers: { Range: `bytes=${tailStart}-${totalSize - 1}` }
+          });
+        } catch (e) {
+          controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: e.message }, cause: e }));
+          return;
+        }
         if (!tailResp.ok) {
-          controller.error(new Error('Failed to read tail header'));
+          controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: tailResp.status } }));
           return;
         }
         const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
         if (headerBuf.length !== HeaderSize) {
-          controller.error(new Error('Incomplete tail header'));
+          controller.error(new MetaEncryptorError('ERR_HEADER_INCOMPLETE', { detail: { expected: HeaderSize, actual: headerBuf.length } }));
           return;
         }
 
-        // 3. 解析 header → blockNumber
         const dv = new DataView(headerBuf.buffer, headerBuf.byteOffset, headerBuf.byteLength);
         const lo = dv.getUint32(16, true);
         const hi = dv.getUint32(20, true);
         state.blockNumber = hi * 0x100000000 + lo;
 
-        // 4. 发送 header 到前端
         controller.enqueue(headerBuf);
 
-        // 5. 计算内容区间
         state.contentSize = totalSize - HeaderSize - BlockInfoSize * state.blockNumber;
         if (state.contentSize <= 0) {
-          controller.error(new Error('Invalid sealed file: content size is zero or negative'));
+          controller.error(new MetaEncryptorError('ERR_EMPTY_CONTENT'));
           return;
         }
 
-        // 5. 分段 Range 读取内容（跳过 block-info 字节）
         let pos = 0;
         while (pos < state.contentSize) {
           const chunkEnd = Math.min(pos + CHUNK, state.contentSize);
-          const resp = await _fetch(url, {
-            headers: { Range: `bytes=${pos}-${chunkEnd - 1}` }
-          });
+          let resp;
+          try {
+            resp = await _fetch(url, {
+              headers: { Range: `bytes=${pos}-${chunkEnd - 1}` }
+            });
+          } catch (e) {
+            controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { pos, message: e.message }, cause: e }));
+            return;
+          }
           if (!resp.ok) {
-            controller.error(new Error(`Range request failed at byte ${pos}`));
+            controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { pos, status: resp.status } }));
             return;
           }
           const buf = new Uint8Array(await resp.arrayBuffer());
