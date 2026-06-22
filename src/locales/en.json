@@ -24,6 +24,8 @@
   "ERR_PIPELINE_CONTEXT_LOAD": "loadContext should be implemented",
   "ERR_PIPELINE_CONTEXT_INVALID": "PipelineContextInFile::loadContext invalid length",
   "ERR_DOWNLOAD_FAILED": "Download failed: {message}",
+  "ERR_RANGE_NOT_HONORED": "Range request was not honored by the server (got {actualStatus} instead of {expectedStatus}). This usually indicates a network proxy or security software is intercepting HTTP requests. Please try using the desktop client instead, or contact your network administrator.",
+  "ERR_TOO_MANY_REDIRECTS": "Too many redirects (max {redirectCount})",
   "LOG_HEAD": "HEAD {url}",
   "LOG_HEAD_STATUS": "HEAD status={status} content-length={cl} accept-ranges={ar}",
   "LOG_RANGE": "Range {range} (tail {tailSize} bytes of {total})",

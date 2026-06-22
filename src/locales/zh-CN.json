@@ -24,6 +24,8 @@
   "ERR_PIPELINE_CONTEXT_LOAD": "loadContext 需要被实现",
   "ERR_PIPELINE_CONTEXT_INVALID": "PipelineContextInFile::loadContext 无效的长度",
   "ERR_DOWNLOAD_FAILED": "下载失败：{message}",
+  "ERR_RANGE_NOT_HONORED": "服务器未响应 Range 请求（返回 {actualStatus} 而非 {expectedStatus}）。这通常是因为网络环境中设置了安全代理，拦截了 HTTP 请求。请尝试使用桌面客户端下载，或联系网络管理员。",
+  "ERR_TOO_MANY_REDIRECTS": "重定向次数过多（最多 {redirectCount} 次）",
   "LOG_HEAD": "HEAD {url}",
   "LOG_HEAD_STATUS": "HEAD status={status} content-length={cl} accept-ranges={ar}",
   "LOG_RANGE": "Range {range} (tail {tailSize} bytes of {total})",

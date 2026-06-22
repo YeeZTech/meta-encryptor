@@ -5,6 +5,7 @@ import { validateHeader } from '../common/unsealer_core.js';
 import { MetaEncryptorError } from '../common/errors.js';
 import { blobDownloadAndDecrypt } from './blob_download.js';
 import { streamDownloadAndDecrypt } from './stream_download.js';
+import { fetchRange } from './fetchRange.js';
 
 const MOBILE_LIMIT = 200 * 1024 * 1024;
 const DESKTOP_LIMIT = 1024 * 1024 * 1024;
@@ -42,22 +43,16 @@ async function inspectSealed(url, log) {
   const tailStart = totalSize - HeaderSize;
   const rangeHeader = `bytes=${tailStart}-${totalSize - 1}`;
   log(`Range ${rangeHeader} (tail ${HeaderSize} bytes of ${totalSize})`);
-  let tailResp;
-  try {
-    tailResp = await fetch(url, {
-      headers: { Range: rangeHeader },
-      cache: 'no-store',
-    });
-  } catch (e) {
-    throw new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: e.message, rangeHeader }, cause: e });
+
+  const { response: tailResp, finalUrl } = await fetchRange(url, { start: tailStart, end: totalSize - 1 });
+  if (finalUrl !== url) {
+    log(`Range redirected to: ${finalUrl}`);
   }
+
   const tailCl = tailResp.headers.get('Content-Length');
   const contentRange = tailResp.headers.get('Content-Range');
   const contentType = tailResp.headers.get('Content-Type');
   log(`Range status=${tailResp.status} content-length=${tailCl ?? '(none)'} content-range=${contentRange ?? '(none)'} content-type=${contentType ?? '(none)'}`);
-  if (!tailResp.ok) {
-    throw new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: tailResp.status, rangeHeader } });
-  }
 
   const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
   if (headerBuf.length !== HeaderSize) {

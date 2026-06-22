@@ -13,6 +13,7 @@
 import { HeaderSize, BlockInfoSize } from '../common/limits.js';
 import { validateHeader } from '../common/unsealer_core.js';
 import { MetaEncryptorError } from '../common/errors.js';
+import { fetchRange } from './fetchRange.js';
 
 const DEFAULT_CHUNK = 1024 * 1024; // 1 MB per Range request
 
@@ -57,15 +58,10 @@ export class HttpSealedFileStream extends ReadableStream {
         const tailStart = totalSize - HeaderSize;
         let tailResp;
         try {
-          tailResp = await _fetch(url, {
-            headers: { Range: `bytes=${tailStart}-${totalSize - 1}` }
-          });
+          const result = await fetchRange(url, { start: tailStart, end: totalSize - 1, fetch: _fetch });
+          tailResp = result.response;
         } catch (e) {
-          controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: e.message }, cause: e }));
-          return;
-        }
-        if (!tailResp.ok) {
-          controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { status: tailResp.status } }));
+          controller.error(e);
           return;
         }
         const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
@@ -92,15 +88,10 @@ export class HttpSealedFileStream extends ReadableStream {
           const chunkEnd = Math.min(pos + CHUNK, state.contentSize);
           let resp;
           try {
-            resp = await _fetch(url, {
-              headers: { Range: `bytes=${pos}-${chunkEnd - 1}` }
-            });
+            const result = await fetchRange(url, { start: pos, end: chunkEnd - 1, fetch: _fetch });
+            resp = result.response;
           } catch (e) {
-            controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { pos, message: e.message }, cause: e }));
-            return;
-          }
-          if (!resp.ok) {
-            controller.error(new MetaEncryptorError('ERR_CANNOT_READ_TAIL', { detail: { pos, status: resp.status } }));
+            controller.error(e);
             return;
           }
           const buf = new Uint8Array(await resp.arrayBuffer());
