@@ -40,14 +40,16 @@ async function inspectSealed(url, log) {
     throw new MetaEncryptorError('ERR_FILE_NOT_SEALED', { detail: { totalSize } });
   }
 
+  const fetchUrl = headResp.url || url;
+  if (fetchUrl !== url) {
+    log(`HEAD redirected to: ${fetchUrl}`);
+  }
+
   const tailStart = totalSize - HeaderSize;
   const rangeHeader = `bytes=${tailStart}-${totalSize - 1}`;
   log(`Range ${rangeHeader} (tail ${HeaderSize} bytes of ${totalSize})`);
 
-  const { response: tailResp, finalUrl } = await fetchRange(url, { start: tailStart, end: totalSize - 1 });
-  if (finalUrl !== url) {
-    log(`Range redirected to: ${finalUrl}`);
-  }
+  const { response: tailResp } = await fetchRange(fetchUrl, { start: tailStart, end: totalSize - 1 });
 
   const tailCl = tailResp.headers.get('Content-Length');
   const contentRange = tailResp.headers.get('Content-Range');

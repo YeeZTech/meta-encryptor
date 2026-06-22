@@ -13,7 +13,7 @@
 import { HeaderSize, BlockInfoSize } from '../common/limits.js';
 import { validateHeader } from '../common/unsealer_core.js';
 import { MetaEncryptorError } from '../common/errors.js';
-import { fetchRange } from './fetchRange.js';
+import { fetchRange, resolvedFetchUrl } from './fetchRange.js';
 
 const DEFAULT_CHUNK = 1024 * 1024; // 1 MB per Range request
 
@@ -54,11 +54,13 @@ export class HttpSealedFileStream extends ReadableStream {
           return;
         }
         state.totalSize = totalSize;
+        const fetchUrl = resolvedFetchUrl(headResp, url);
+        state.url = fetchUrl;
 
         const tailStart = totalSize - HeaderSize;
         let tailResp;
         try {
-          const result = await fetchRange(url, { start: tailStart, end: totalSize - 1, fetch: _fetch });
+          const result = await fetchRange(fetchUrl, { start: tailStart, end: totalSize - 1, fetch: _fetch });
           tailResp = result.response;
         } catch (e) {
           controller.error(e);
@@ -88,7 +90,7 @@ export class HttpSealedFileStream extends ReadableStream {
           const chunkEnd = Math.min(pos + CHUNK, state.contentSize);
           let resp;
           try {
-            const result = await fetchRange(url, { start: pos, end: chunkEnd - 1, fetch: _fetch });
+            const result = await fetchRange(fetchUrl, { start: pos, end: chunkEnd - 1, fetch: _fetch });
             resp = result.response;
           } catch (e) {
             controller.error(e);
@@ -106,7 +108,7 @@ export class HttpSealedFileStream extends ReadableStream {
     });
 
     // expose state via public getters
-    this.url = url;
+    this.url = state.url || url;
     this.totalSize = state.totalSize;
     this.blockNumber = state.blockNumber;
     this.contentSize = state.contentSize;
