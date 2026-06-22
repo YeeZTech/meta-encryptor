@@ -55,7 +55,6 @@ export class HttpSealedFileStream extends ReadableStream {
         }
         state.totalSize = totalSize;
         const fetchUrl = resolvedFetchUrl(headResp, url);
-        state.url = fetchUrl;
 
         const tailStart = totalSize - HeaderSize;
         let tailResp;
@@ -90,7 +89,7 @@ export class HttpSealedFileStream extends ReadableStream {
           const chunkEnd = Math.min(pos + CHUNK, state.contentSize);
           let resp;
           try {
-            const result = await fetchRange(fetchUrl, { start: pos, end: chunkEnd - 1, fetch: _fetch });
+            const result = await fetchRange(url, { start: pos, end: chunkEnd - 1, fetch: _fetch });
             resp = result.response;
           } catch (e) {
             controller.error(e);
