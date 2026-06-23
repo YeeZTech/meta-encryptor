@@ -1,6 +1,7 @@
 import { Unsealer } from './Unsealer.js'
 import { HttpSealedFileStream } from './HttpSealedFileStream.js'
 import { MetaEncryptorError } from '../common/errors.js';
+import { createProgressTransformer, createDownloadReadyTransformer } from '../common/progress.js';
 
 async function ensureStreamSaver(log) {
   if (typeof window === 'undefined') return null;
@@ -26,7 +27,14 @@ async function ensureStreamSaver(log) {
 }
 
 export async function getBestWritable(filename, { log, size } = {}) {
-  /*
+ 
+
+  const ss = await ensureStreamSaver(log);
+  if (ss) {
+    log?.('Using StreamSaver...');
+    return ss.createWriteStream(filename, size !== undefined ? { size } : undefined);
+  }
+   
   if (typeof window !== 'undefined' && window.showSaveFilePicker) {
     try {
       log?.('Using File System Access API...');
@@ -37,18 +45,12 @@ export async function getBestWritable(filename, { log, size } = {}) {
       log?.(`File System Access API unavailable: ${e.message}`);
     }
   }
-  */
-
-  const ss = await ensureStreamSaver(log);
-  if (ss) {
-    log?.('Using StreamSaver...');
-    return ss.createWriteStream(filename, size !== undefined ? { size } : undefined);
-  }
+  
 
   return null;
 }
 
-export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch } = {}) {
+export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch, onDownloadReady } = {}) {
   log = log || (() => {})
   try {
     const out = writable || await getBestWritable(filename, { log, size })
@@ -64,7 +66,9 @@ export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { l
     })
 
     await stream
+      .pipeThrough(createDownloadReadyTransformer(onDownloadReady))
       .pipeThrough(unsealer)
+      .pipeThrough(createProgressTransformer(size, onProgress))
       .pipeTo(out)
 
     log('Download complete');
