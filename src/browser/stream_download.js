@@ -50,14 +50,14 @@ export async function getBestWritable(filename, { log, size } = {}) {
   return null;
 }
 
-export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch } = {}) {
+export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch, onDownloadReady } = {}) {
   log = log || (() => {})
   try {
     const out = writable || await getBestWritable(filename, { log, size })
     if (!out) throw new MetaEncryptorError('ERR_NO_STREAM_WRITABLE');
     log('Stream download starting...');
 
-    const stream = new HttpSealedFileStream(url, { fetch: _fetch })
+    const stream = new HttpSealedFileStream(url, { fetch: _fetch, onReady: onDownloadReady })
     const unsealer = new Unsealer({
       privateKeyHex: privateKeyHex.trim(),
       progressHandler: (total, processed, readBytes, writeBytes) => {

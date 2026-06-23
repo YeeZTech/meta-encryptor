@@ -117,6 +117,41 @@ describe('HttpSealedFileStream', () => {
     expect(chunks[0].length).toBe(64);
   });
 
+  test('calls onReady after HEAD+tail, before body Range fetches', async () => {
+    const original = Buffer.alloc(100, 'A');
+    const { diskBuf } = sealBuffer(original);
+    let ready = false;
+    let rangeFetchCount = 0;
+
+    const fetch = async (_url, init = {}) => {
+      if (init.method === 'HEAD') {
+        return {
+          ok: true, status: 200,
+          headers: { get: (n) => n.toLowerCase() === 'content-length' ? String(diskBuf.length) : null }
+        };
+      }
+      if (init.headers?.Range) {
+        rangeFetchCount++;
+      }
+      return createMockFetch(diskBuf)(_url, init);
+    };
+
+    const hsfs = new HttpSealedFileStream('http://x', {
+      chunkSize: 4096,
+      fetch,
+      onReady: () => { ready = true; },
+    });
+
+    const reader = hsfs.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+
+    expect(ready).toBe(true);
+    expect(rangeFetchCount).toBeGreaterThan(0);
+  });
+
   test('streams content in multiple chunks with small chunkSize', async () => {
     const original = Buffer.alloc(10000, 'Z');
     const { diskBuf } = sealBuffer(original);
