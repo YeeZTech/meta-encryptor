@@ -4,7 +4,8 @@ export default {
   testMatch: [
     "<rootDir>/test/Browser*.spec.mjs",
     "<rootDir>/test/Http*.spec.mjs",
-    "<rootDir>/test/downloadFunctions.spec.mjs"
+    "<rootDir>/test/downloadFunctions.spec.mjs",
+    "<rootDir>/test/progress.spec.mjs"
   ],
   
   roots: ['<rootDir>/test', '<rootDir>/src'],

@@ -23,9 +23,8 @@ export class HttpSealedFileStream extends ReadableStream {
    * @param {object} [options]
    * @param {number} [options.chunkSize] - bytes per Range request (default 1 MB)
    * @param {Function} [options.fetch] - fetch impl (defaults to globalThis.fetch)
-   * @param {Function} [options.onReady] - called after HEAD+tail validated, before body Range fetches
    */
-  constructor(url, { chunkSize = DEFAULT_CHUNK, fetch: fetchFn, onReady } = {}) {
+  constructor(url, { chunkSize = DEFAULT_CHUNK, fetch: fetchFn } = {}) {
     const _fetch = fetchFn || fetch.bind(globalThis);
     const state = {
       url,
@@ -83,15 +82,6 @@ export class HttpSealedFileStream extends ReadableStream {
         if (state.contentSize <= 0) {
           controller.error(new MetaEncryptorError('ERR_EMPTY_CONTENT'));
           return;
-        }
-
-        if (onReady) {
-          try {
-            onReady();
-          } catch (e) {
-            controller.error(e);
-            return;
-          }
         }
 
         let pos = 0;

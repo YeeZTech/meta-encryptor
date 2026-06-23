@@ -85,7 +85,7 @@ async function inspectSealed(url, log) {
  * @param {string} options.filename
  * @param {Function} [options.onLog]
  * @param {Function} [options.onProgress] - (total, processed, readBytes, writeBytes) => {}
- * @param {Function} [options.onDownloadReady] - HEAD+tail 完成、正文 Range 开始前触发（可关蒙层）
+ * @param {Function} [options.onDownloadReady] - HTTP 流首个数据块进入管道时触发（可关蒙层）
  * @param {Function} [options.onSuccess]
  * @param {Function} [options.onError]
  * @returns {Promise<void>}
