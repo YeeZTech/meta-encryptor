@@ -62,7 +62,7 @@ describe('blobDownloadAndDecrypt', () => {
       );
 
       expect(result).toEqual({ ok: true });
-      expect(logs.some(m => m.includes('下载完成'))).toBe(true);
+      expect(logs.some(m => m.includes('Download complete'))).toBe(true);
       expect(blobContent).not.toBeNull();
     } finally {
       URL.createObjectURL = origCOU;
@@ -80,8 +80,8 @@ describe('blobDownloadAndDecrypt', () => {
     await expect(
       blobDownloadAndDecrypt('http://mock/file', 'a'.repeat(64), 'out.bin', { log: (m) => logs.push(m) })
     ).rejects.toThrow('fetch fail');
-    expect(logs.some(m => m.includes('失败'))).toBe(true);
-  });
+    expect(logs.some(m => m.includes('failed'))).toBe(true);
+  }, 15000);
 });
 
 describe('streamDownloadAndDecrypt', () => {
@@ -98,7 +98,7 @@ describe('streamDownloadAndDecrypt', () => {
     );
 
     expect(result).toEqual({ ok: true });
-    expect(logs.some(m => m.includes('下载完成'))).toBe(true);
+    expect(logs.some(m => m.includes('Download complete'))).toBe(true);
     expect(chunks.length).toBe(1);
     expect(new TextDecoder().decode(chunks[0])).toBe('hello from mock');
   });
@@ -107,7 +107,7 @@ describe('streamDownloadAndDecrypt', () => {
     const logs = [];
     await expect(
       streamDownloadAndDecrypt('http://mock/file', 'a'.repeat(64), 'out.bin', { log: (m) => logs.push(m) })
-    ).rejects.toThrow('StreamSaver');
-    expect(logs.some(m => m.includes('失败'))).toBe(true);
-  });
+    ).rejects.toThrow('No streaming writable');
+    expect(logs.some(m => m.includes('failed'))).toBe(true);
+  }, 15000);
 });

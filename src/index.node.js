@@ -23,7 +23,13 @@ export {
   calculateSealedHash
 } from "./node/SealedFileUtil.js";
 
-export const { DataProvider, checkSealedData, unsealData } = Provider;
+// NOTE: checkSealedData/unsealData were removed — they never existed on the
+// DataProvider default export and were always `undefined`.
+export const { DataProvider } = Provider;
+
+export { HeaderSize, BlockInfoSize, MaxItemSize } from "./common/limits.js";
+export { validateHeader, UnsealerCore } from "./common/unsealer_core.js";
+export { createInactivityWatchdog } from "./common/watchdog.js";
 
 export const YPCNtObject = YPCNt_Object();
 export const YPCCrypto = nodeYPCCrypto();

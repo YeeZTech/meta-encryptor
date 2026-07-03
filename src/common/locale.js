@@ -1,5 +1,5 @@
-import en from '../locales/en.json';
-import zhCN from '../locales/zh-CN.json';
+import en from '../locales/en.js';
+import zhCN from '../locales/zh-CN.js';
 
 const _bundled = { en, 'zh-CN': zhCN };
 let _messages = null;

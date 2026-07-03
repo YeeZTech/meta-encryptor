@@ -1,4 +1,6 @@
-{
+// Auto-converted from en.json so plain Node ESM can import it
+// (raw .json imports require import attributes in Node >= 17.5).
+export default {
   "ERR_INVALID_MAGIC": "Invalid magic number",
   "ERR_INVALID_MAGIC_LENGTH": "Invalid magic number: length mismatch",
   "ERR_UNSUPPORTED_VERSION": "Unsupported version: {version}",
@@ -51,4 +53,4 @@
   "LOG_USING_FSA": "Using File System Access API...",
   "LOG_FSA_UNAVAILABLE": "File System Access API unavailable: {message}",
   "LOG_USING_STREAMSAVER": "Using StreamSaver..."
-}
+};

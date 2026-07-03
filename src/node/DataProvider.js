@@ -30,6 +30,10 @@ const DataProvider = function(_key) {
     throw new MetaEncryptorError('ERR_MUST_USE_NEW', { detail: { name: 'DataProvider' } });
   }
   this.header = new header_t(0, 0, 0, 0);
+  // magic must be set here, not only in BlockFile.append_item — otherwise a
+  // zero-item seal (empty input) writes a header with a zero magic number,
+  // producing a sealed file that can never be validated/unsealed.
+  this.header.magic_number = MagicNum;
   this.header.version_number = 2;
   this.block_meta_info = [];
   this.sealed_data = [];

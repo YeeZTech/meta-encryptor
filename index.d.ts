@@ -1,5 +1,16 @@
 import { Transform, Readable, Writable } from 'stream';
 
+export class MetaEncryptorError extends Error {
+  code: string;
+  detail?: any;
+  readonly localizedMessage: string;
+  constructor(code: string, options?: { detail?: any; cause?: any });
+  toJSON(): { name: string; code: string; message: string; detail?: any; causeMessage?: string };
+}
+
+export function configureLocale(options?: { messages?: Record<string, string> | null }): void;
+export function detectLocale(): string;
+
 export class ToString extends Transform {
   constructor(options?: any, schema?: any);
 }
@@ -63,8 +74,24 @@ export class DataProviderClass {
 }
 
 export const DataProvider: typeof DataProviderClass;
-export const checkSealedData: any;
-export const unsealData: any;
+
+// Sealed format constants / helpers
+export const HeaderSize: number;
+export const BlockInfoSize: number;
+export const MaxItemSize: number;
+export function validateHeader(headerBytes: Uint8Array): { itemNumber: number; blockNumber: number };
+export class UnsealerCore {
+  constructor(opts: any);
+  processChunk(chunk: Uint8Array): Promise<void>;
+  readonly finished: boolean;
+  readonly headerReady: boolean;
+  readonly totalItems: number;
+  readonly readItemCount: number;
+  remaining: Uint8Array;
+  readonly processedBytes: number;
+  readonly writeBytes: number;
+}
+export function createInactivityWatchdog(ms: number, onStall: () => void): { kick(): void; stop(): void };
 
 export const YPCNtObject: any;
 export const YPCCrypto: any;
@@ -87,8 +114,6 @@ export default {
   forwardSkey,
   calculateSealedHash,
   DataProvider,
-  checkSealedData,
-  unsealData,
   YPCNtObject,
   YPCCrypto
 };

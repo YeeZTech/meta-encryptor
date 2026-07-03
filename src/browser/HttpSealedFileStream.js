@@ -3,6 +3,10 @@
  * and streams its raw content (header + data, skipping block-info bytes).
  *
  * Analogous to Node's SealedFileStream but works over HTTP with Range requests.
+ * Pull-based: one Range request per pull(), so downstream backpressure limits
+ * how much data is buffered (the old implementation fetched the whole file
+ * inside start(), buffering it unboundedly when the consumer was slow or
+ * never ready).
  *
  * Usage:
  *   const stream = new HttpSealedFileStream('https://example.com/file.sealed');
@@ -23,94 +27,97 @@ export class HttpSealedFileStream extends ReadableStream {
    * @param {object} [options]
    * @param {number} [options.chunkSize] - bytes per Range request (default 1 MB)
    * @param {Function} [options.fetch] - fetch impl (defaults to globalThis.fetch)
+   * @param {AbortSignal} [options.signal] - aborts in-flight requests
    */
-  constructor(url, { chunkSize = DEFAULT_CHUNK, fetch: fetchFn } = {}) {
+  constructor(url, { chunkSize = DEFAULT_CHUNK, fetch: fetchFn, signal } = {}) {
     const _fetch = fetchFn || fetch.bind(globalThis);
     const state = {
       url,
+      fetchUrl: url,
       totalSize: 0,
       blockNumber: 0,
       contentSize: 0,
+      pos: 0,
     };
 
     const CHUNK = chunkSize;
 
     super({
       start: async (controller) => {
-        let headResp;
         try {
-          headResp = await _fetch(url, { method: 'HEAD' });
-        } catch (e) {
-          controller.error(new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: e.message }, cause: e }));
-          return;
-        }
-        if (!headResp.ok) {
-          controller.error(new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } }));
-          return;
-        }
-        const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10);
-        if (totalSize < HeaderSize) {
-          controller.error(new MetaEncryptorError('ERR_FILE_TOO_SMALL'));
-          return;
-        }
-        state.totalSize = totalSize;
-        const fetchUrl = resolvedFetchUrl(headResp, url);
+          let headResp;
+          try {
+            headResp = await _fetch(url, { method: 'HEAD', signal });
+          } catch (e) {
+            throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: e.message }, cause: e });
+          }
+          if (!headResp.ok) {
+            throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } });
+          }
+          const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10);
+          if (totalSize < HeaderSize) {
+            throw new MetaEncryptorError('ERR_FILE_TOO_SMALL');
+          }
+          state.totalSize = totalSize;
+          state.fetchUrl = resolvedFetchUrl(headResp, url);
 
-        const tailStart = totalSize - HeaderSize;
-        let tailResp;
-        try {
-          const result = await fetchRange(fetchUrl, { start: tailStart, end: totalSize - 1, fetch: _fetch });
-          tailResp = result.response;
+          const tailStart = totalSize - HeaderSize;
+          const { response: tailResp } = await fetchRange(state.fetchUrl, {
+            start: tailStart, end: totalSize - 1, fetch: _fetch, signal
+          });
+          const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
+          if (headerBuf.length !== HeaderSize) {
+            throw new MetaEncryptorError('ERR_HEADER_INCOMPLETE', {
+              detail: { expected: HeaderSize, actual: headerBuf.length }
+            });
+          }
+
+          const { blockNumber } = validateHeader(headerBuf);
+          state.blockNumber = blockNumber;
+
+          state.contentSize = totalSize - HeaderSize - BlockInfoSize * state.blockNumber;
+          if (state.contentSize <= 0) {
+            throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
+          }
+
+          controller.enqueue(headerBuf);
         } catch (e) {
           controller.error(e);
-          return;
         }
-        const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
-        if (headerBuf.length !== HeaderSize) {
-          controller.error(new MetaEncryptorError('ERR_HEADER_INCOMPLETE', { detail: { expected: HeaderSize, actual: headerBuf.length } }));
-          return;
-        }
+      },
 
-        const dv = new DataView(headerBuf.buffer, headerBuf.byteOffset, headerBuf.byteLength);
-        const lo = dv.getUint32(16, true);
-        const hi = dv.getUint32(20, true);
-        state.blockNumber = hi * 0x100000000 + lo;
-
-        controller.enqueue(headerBuf);
-
-        state.contentSize = totalSize - HeaderSize - BlockInfoSize * state.blockNumber;
-        if (state.contentSize <= 0) {
-          controller.error(new MetaEncryptorError('ERR_EMPTY_CONTENT'));
-          return;
-        }
-
-        let pos = 0;
-        while (pos < state.contentSize) {
-          const chunkEnd = Math.min(pos + CHUNK, state.contentSize);
-          let resp;
-          try {
-            const result = await fetchRange(url, { start: pos, end: chunkEnd - 1, fetch: _fetch });
-            resp = result.response;
-          } catch (e) {
-            controller.error(e);
+      pull: async (controller) => {
+        try {
+          if (state.pos >= state.contentSize) {
+            controller.close();
             return;
           }
+          const chunkEnd = Math.min(state.pos + CHUNK, state.contentSize);
+          const { response: resp } = await fetchRange(state.fetchUrl, {
+            start: state.pos, end: chunkEnd - 1, fetch: _fetch, signal
+          });
           const buf = new Uint8Array(await resp.arrayBuffer());
-          if (buf.length > 0) {
-            controller.enqueue(buf);
+          const expected = chunkEnd - state.pos;
+          if (buf.length !== expected) {
+            throw new MetaEncryptorError('ERR_UNEXPECTED_EOF', {
+              detail: { expected, actual: buf.length, pos: state.pos }
+            });
           }
-          pos = chunkEnd;
+          controller.enqueue(buf);
+          state.pos = chunkEnd;
+        } catch (e) {
+          controller.error(e);
         }
-
-        controller.close();
       }
     });
 
-    // expose state via public getters
-    this.url = state.url || url;
-    this.totalSize = state.totalSize;
-    this.blockNumber = state.blockNumber;
-    this.contentSize = state.contentSize;
+    // expose live state (start() is async, so plain copies would stay 0)
+    this.url = url;
+    Object.defineProperties(this, {
+      totalSize: { get: () => state.totalSize },
+      blockNumber: { get: () => state.blockNumber },
+      contentSize: { get: () => state.contentSize },
+    });
   }
 }
 

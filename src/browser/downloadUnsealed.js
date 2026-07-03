@@ -22,7 +22,7 @@ function makeLogger(onLog) {
   };
 }
 
-async function inspectSealed(url, log) {
+export async function inspectSealed(url, log) {
   log('HEAD ' + url);
   let headResp;
   try {
@@ -69,10 +69,22 @@ async function inspectSealed(url, log) {
   const sealedContentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
   if (sealedContentSize <= 0) throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
 
-  // per-item overhead: 8 (len prefix) + 12 (IV) + 64 (public key) + 16 (GCM tag) = 100
-  const plaintextSize = sealedContentSize - itemNumber * 100;
+  // Per-item overhead is at least 100 bytes (8 len prefix + 12 IV + 64 public
+  // key + 16 GCM tag), but each encrypted item also contains nt-package
+  // framing (12B per item + 20B per nt-input) that cannot be derived from the
+  // header alone. This value is therefore an OVER-estimate of the plaintext
+  // size — never use it as an exact Content-Length.
+  const plaintextSizeEstimate = sealedContentSize - itemNumber * 100;
 
-  return { totalSize, blockNumber, itemNumber, sealedContentSize, plaintextSize };
+  return {
+    totalSize,
+    blockNumber,
+    itemNumber,
+    sealedContentSize,
+    plaintextSizeEstimate,
+    // legacy alias, kept for compatibility
+    plaintextSize: plaintextSizeEstimate,
+  };
 }
 
 
@@ -88,6 +100,7 @@ async function inspectSealed(url, log) {
  * @param {Function} [options.onDownloadReady] - HTTP 流首个数据块进入管道时触发（可关蒙层）
  * @param {Function} [options.onSuccess]
  * @param {Function} [options.onError]
+ * @param {number} [options.timeoutMs] - inactivity watchdog (ms); 0 disables
  * @returns {Promise<void>}
  */
 export async function downloadUnsealed({
@@ -98,7 +111,8 @@ export async function downloadUnsealed({
   onProgress,
   onDownloadReady,
   onSuccess,
-  onError
+  onError,
+  timeoutMs
 }) {
   const log = makeLogger(onLog);
   const key = privateKey.trim()
@@ -113,7 +127,7 @@ export async function downloadUnsealed({
     log('Checking file url=' + url + ' filename=' + filename);
     const meta = await inspectSealed(url, log);
     log('inspect file succ');
-    log(`Plaintext size=${meta.plaintextSize} bytes, sealed=${meta.sealedContentSize} bytes, totalSize=${meta.totalSize}`);
+    log(`Plaintext size(est)=${meta.plaintextSizeEstimate} bytes, sealed=${meta.sealedContentSize} bytes, totalSize=${meta.totalSize}`);
 
     const mobile = isMobile()
     const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
@@ -121,9 +135,9 @@ export async function downloadUnsealed({
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a';
     log(`Detected ${mode} (ua=${ua}), limit ${(limit / 1024 / 1024).toFixed(0)} MB`);
 
-    if (meta.plaintextSize > limit) {
+    if (meta.plaintextSizeEstimate > limit) {
       throw new MetaEncryptorError('ERR_FILE_TOO_LARGE', {
-        detail: { size: (meta.plaintextSize / 1024 / 1024).toFixed(0), mode, limit: (limit / 1024 / 1024).toFixed(0) }
+        detail: { size: (meta.plaintextSizeEstimate / 1024 / 1024).toFixed(0), mode, limit: (limit / 1024 / 1024).toFixed(0) }
       })
     }
 
@@ -133,8 +147,9 @@ export async function downloadUnsealed({
         await streamDownloadAndDecrypt(url, key, filename, {
           log,
           onProgress,
-          size: meta.plaintextSize,
+          size: meta.plaintextSizeEstimate,
           onDownloadReady,
+          timeoutMs,
         })
         if (onSuccess) onSuccess({ filename })
         return
@@ -144,7 +159,13 @@ export async function downloadUnsealed({
     }
 
     log('Using Blob download...')
-    await blobDownloadAndDecrypt(url, key, filename, { log, onProgress, onDownloadReady })
+    await blobDownloadAndDecrypt(url, key, filename, {
+      log,
+      onProgress,
+      size: meta.plaintextSizeEstimate,
+      onDownloadReady,
+      timeoutMs,
+    })
     if (onSuccess) onSuccess({ filename })
   } catch (error) {
     log('Download failed: ' + error.message)

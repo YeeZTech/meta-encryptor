@@ -5,9 +5,6 @@ import YPCNt_Object from "../common/ypcntobject.js"
 
 const {
   DataProvider,
-  unsealData,
-  checkSealedData,
-  headerAndBlockBufferFromFile
 } = Provider;
 
 const YPCNtObject = YPCNt_Object()

@@ -3,6 +3,7 @@ import { Transform } from "stream";
 import log from "loglevel";
 
 import { UnsealerCore } from '../common/unsealer_core.js';
+import { MetaEncryptorError } from '../common/errors.js';
 const logger = log.getLogger("meta-encryptor/Unsealer");
 
 import YPCCryptoFun from "./ypccrypto.js";
@@ -11,6 +12,9 @@ const YPCCrypto = YPCCryptoFun();
 export class Unsealer extends Transform {
   /** @type {UnsealerCore} */
   #core;
+
+  /** @type {boolean} skip strict truncation check for legacy resumed contexts */
+  #lenientEof = false;
 
   constructor(options) {
     super(options);
@@ -61,6 +65,13 @@ export class Unsealer extends Transform {
       }
     });
 
+    // On resumed sessions the item count may be absent or incomplete (contexts
+    // persisted by older versions), making `finished` unreachable — the strict
+    // truncation check in _flush only applies to fresh (non-resumed) streams.
+    this.#lenientEof =
+      !!options &&
+      ((options.processedBytes || 0) > 0 || (options.processedItemCount || 0) > 0);
+
     // keep references for external consumers (tests may read them)
     this._keyPair = keyPair;
     this._progressHandler = progressHandler;
@@ -75,10 +86,6 @@ export class Unsealer extends Transform {
     try {
       await this.#core.processChunk(chunk);
 
-      if (this.#core.finished) {
-        this.push(null);
-      }
-
       // persist trailing unconsumed bytes for recoverable stream context
       if (this._context && this._context.context && this._context.context["status"] === "file") {
         this._context.context["data"] = this.#core.remaining;
@@ -91,5 +98,24 @@ export class Unsealer extends Transform {
     }
   }
 
-  _flush(callback) { callback(); }
+  // End the readable side only when the input ends (never push(null) inside
+  // _transform — trailing bytes arriving after an early EOF would trigger
+  // ERR_STREAM_PUSH_AFTER_EOF). If the input ended before every declared item
+  // was decrypted, the sealed input was truncated: fail instead of silently
+  // emitting a shorter plaintext.
+  _flush(callback) {
+    // headerReady with totalItems === 0 is a legitimately empty sealed stream.
+    if (!this.#core.headerReady ||
+        (!this.#lenientEof && this.#core.totalItems > 0 && !this.#core.finished)) {
+      callback(new MetaEncryptorError('ERR_TRUNCATED_INPUT', {
+        detail: {
+          headerReady: this.#core.headerReady,
+          readItemCount: this.#core.readItemCount,
+          totalItems: this.#core.totalItems,
+        }
+      }));
+      return;
+    }
+    callback();
+  }
 }

@@ -1,4 +1,6 @@
-{
+// Auto-converted from zh-CN.json so plain Node ESM can import it
+// (raw .json imports require import attributes in Node >= 17.5).
+export default {
   "ERR_INVALID_MAGIC": "无效的魔数",
   "ERR_INVALID_MAGIC_LENGTH": "无效的魔数：长度不匹配",
   "ERR_UNSUPPORTED_VERSION": "不支持的版本：{version}",
@@ -51,4 +53,4 @@
   "LOG_USING_FSA": "使用 File System Access API 流式下载...",
   "LOG_FSA_UNAVAILABLE": "File System Access API 不可用: {message}",
   "LOG_USING_STREAMSAVER": "使用 StreamSaver 流式下载..."
-}
+};

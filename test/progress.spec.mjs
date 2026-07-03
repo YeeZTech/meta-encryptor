@@ -17,7 +17,9 @@ describe('progress transformers', () => {
 
     while (!(await reader.read()).done) {}
 
-    expect(calls).toEqual([[10, 3], [10, 5]]);
+    // plaintextSize is an over-estimate: intermediate reports are clamped
+    // below 100% and flush() emits a final (total, total) on real completion.
+    expect(calls).toEqual([[10, 3], [10, 5], [10, 10]]);
   });
 
   test('createDownloadReadyTransformer fires once on first chunk', async () => {

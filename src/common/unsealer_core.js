@@ -162,6 +162,11 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
   }
 
   while (true) {
+    // Once all declared items are read, ignore any trailing bytes (block-info /
+    // tail header when the source streams the raw file) instead of parsing
+    // them as items.
+    if (state.totalItems > 0 && state.readItemCount >= state.totalItems) break;
+
     const item = tryReadItem(state.accumulated);
     if (!item) break;
 
@@ -169,7 +174,18 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
     state.processedBytes += item.consumedBytes;
 
     const decrypted = await decrypt(item.cipher);
-    if (!decrypted || decrypted.length < 12) continue;
+    if (!decrypted || decrypted.length < 12) {
+      // A failed/short decrypt means a wrong key or corrupt data. Silently
+      // skipping would leave readItemCount short of totalItems forever (the
+      // stream would hang instead of finishing) and truncate the output.
+      throw new MetaEncryptorError('ERR_DECRYPT_FAILED', {
+        detail: {
+          itemIndex: state.readItemCount,
+          cipherLength: item.cipher.length,
+          decryptedLength: decrypted ? decrypted.length : 0,
+        }
+      });
+    }
 
     let plainSize = 0;
     const batch = ntpackage2batch(decrypted);
@@ -189,7 +205,6 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
     if (onProgress) {
       onProgress(state.totalItems, state.readItemCount, state.processedBytes, state.writeBytes);
     }
-    if (state.readItemCount >= state.totalItems) break;
   }
 }
 
@@ -286,6 +301,7 @@ export class UnsealerCore {
   }
 
   get finished() { return this.#state.totalItems > 0 && this.#state.readItemCount >= this.#state.totalItems; }
+  get headerReady() { return this.#state.isHeaderReady; }
   get totalItems() { return this.#state.totalItems; }
   get readItemCount() { return this.#state.readItemCount; }
   /** @type {Uint8Array} unconsumed trailing bytes (for context persistence) */

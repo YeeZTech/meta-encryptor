@@ -2,6 +2,7 @@ import {WriteStream} from 'fs';
 import {Readable, Writable} from 'stream';
 import { SealedFileStream } from './SealedFileStream.js';
 import { HeaderSize } from '../common/limits.js';
+import { MetaEncryptorError } from '../common/errors.js';
 import fs from 'fs';
 import log from 'loglevel';
 
@@ -17,17 +18,41 @@ export class RecoverableReadStream extends Readable {
         });
         this.state = 'header';
         this.headerRead = 0;
+        this.inputEnded = false;
+        this.pushedEof = false;
+        this.waitingReadable = false;
 
         this.inputStream.on('error', (err) => {
             this.emit('error', err);
         });
         this.inputStream.on('end', () => {
-            if (this.state === 'remaining') {
-                this.push(null);
+            this.inputEnded = true;
+            if (this.state === 'header') {
+                // input ended before a full header could be read — corrupt file
+                this.emit('error', new MetaEncryptorError('ERR_UNEXPECTED_EOF'));
+            } else if (this.state === 'remaining') {
+                this._pushEof();
             }
+            // 'contextData' needs no action: once the context data is drained,
+            // _read switches to 'remaining' and sees inputEnded.
             if (this.inputStream && typeof this.inputStream.destroy === 'function') {
                 this.inputStream.destroy();
             }
+        });
+    }
+
+    _pushEof() {
+        if (this.pushedEof) return;
+        this.pushedEof = true;
+        this.push(null);
+    }
+
+    _waitReadable(size) {
+        if (this.waitingReadable) return;
+        this.waitingReadable = true;
+        this.inputStream.once('readable', () => {
+            this.waitingReadable = false;
+            this._read(size);
         });
     }
 
@@ -68,10 +93,10 @@ export class RecoverableReadStream extends Readable {
                     if (this.headerRead === HeaderSize) {
                         this.state = 'contextData';
                     }
+                } else if (this.inputEnded || this.inputStream.readableEnded) {
+                    this.emit('error', new MetaEncryptorError('ERR_UNEXPECTED_EOF'));
                 } else {
-                    this.inputStream.once('readable', () => {
-                        this._read(size);
-                    });
+                    this._waitReadable(size);
                 }
                 logger.debug("Reading header, read so far:", this.headerRead);
                 break;
@@ -110,13 +135,10 @@ export class RecoverableReadStream extends Readable {
                     
                     this.push(remainingChunk);
                 } else {
-                    if (this.inputStream.readableEnded) {
-                        //console.log("push null")
-                        this.push(null);
+                    if (this.inputEnded || this.inputStream.readableEnded) {
+                        this._pushEof();
                     } else {
-                        this.inputStream.once('readable', () => {
-                            this._read(size);
-                        });
+                        this._waitReadable(size);
                     }
                 }
                 logger.debug("Reading remaining data from file");
@@ -217,6 +239,9 @@ export class RecoverableWriteStream extends Writable {
         let remain = writtenBytes;
         const runtime = this.context.runtime;
         const blocks = runtime.pendingBlocks || [];
+        if (runtime.itemsCommitted === undefined) {
+            runtime.itemsCommitted = (this.context.context && this.context.context['readItemCount']) || 0;
+        }
 
         let hasCommittedBlock = false;
         let committedRawBytes = 0;
@@ -234,6 +259,7 @@ export class RecoverableWriteStream extends Writable {
                 runtime.rawCommitted += block.rawSize;
                 runtime.plainCommitted += block.plainSize;
                 committedRawBytes += block.rawSize;
+                runtime.itemsCommitted += 1;
                 blocks.shift();
                 hasCommittedBlock = true;
             }
@@ -257,6 +283,7 @@ export class RecoverableWriteStream extends Writable {
             }
             this.context.context['readStart'] = runtime.rawCommitted;
             this.context.context['writeStart'] = runtime.plainCommitted;
+            this.context.context['readItemCount'] = runtime.itemsCommitted;
             logger.debug("After writing, updated readStart to:", this.context.context['readStart'],
                          " writeStart to:", this.context.context['writeStart'],
                          " data length to:", this.context.context['data'] ? this.context.context['data'].length : 0);
@@ -267,7 +294,13 @@ export class RecoverableWriteStream extends Writable {
     }
 
     _final(callback) {
-        this.writeStream.on('finish', () => {
+        let settled = false;
+        const settle = (err) => {
+            if (settled) return;
+            settled = true;
+            callback(err);
+        };
+        const finalize = () => {
             const readStart = this.context.context['readStart'] || 0;
             const writeStart = this.context.context['writeStart'] || 0;
             const length = this.context.context.data ? this.context.context.data.length : 0;
@@ -276,19 +309,39 @@ export class RecoverableWriteStream extends Writable {
                 fs.truncate(this.filePath, writeStart, (truncateErr) => {
                     if (truncateErr) {
                         logger.warn("Error truncating file:", truncateErr);
-                        callback(truncateErr);
+                        settle(truncateErr);
                     } else {
                         logger.debug("File truncated successfully to length:", writeStart);
-                        callback();
+                        settle();
                     }
                 });
             } else {
 
                 logger.debug("Not truncating file as not at the end. readStart + length:", readStart + length, ", fileSize:", this.fileSize);
-                callback();
+                settle();
             }
-        });
-        this.writeStream.end();
+        };
+
+        // The inner fs stream may already be finished or destroyed (pause /
+        // cleanup paths call end()/destroy() directly). Waiting for a 'finish'
+        // that will never fire would leave _final's callback pending forever,
+        // so the outer stream would never emit 'finish'.
+        if (this.writeStream.writableFinished) {
+            finalize();
+        } else if (this.writeStream.destroyed) {
+            settle(new Error('RecoverableWriteStream: inner stream destroyed before finalize'));
+        } else {
+            this.writeStream.once('finish', finalize);
+            this.writeStream.once('error', (err) => settle(err));
+            this.writeStream.end();
+        }
         logger.debug("Finalizing write stream");
+    }
+
+    _destroy(err, callback) {
+        if (this.writeStream && !this.writeStream.destroyed) {
+            this.writeStream.destroy();
+        }
+        callback(err);
     }
 }
