@@ -268,25 +268,19 @@ export class RecoverableWriteStream extends Writable {
 
     _final(callback) {
         this.writeStream.on('finish', () => {
-            const readStart = this.context.context['readStart'] || 0;
             const writeStart = this.context.context['writeStart'] || 0;
-            const length = this.context.context.data ? this.context.context.data.length : 0;
 
-            if (readStart + length >= this.fileSize) {
-                fs.truncate(this.filePath, writeStart, (truncateErr) => {
-                    if (truncateErr) {
-                        logger.warn("Error truncating file:", truncateErr);
-                        callback(truncateErr);
-                    } else {
-                        logger.debug("File truncated successfully to length:", writeStart);
-                        callback();
-                    }
-                });
-            } else {
-
-                logger.debug("Not truncating file as not at the end. readStart + length:", readStart + length, ", fileSize:", this.fileSize);
-                callback();
-            }
+            // Always truncate to writeStart to remove any residual
+            // data from previous incomplete write attempts.
+            fs.truncate(this.filePath, writeStart, (truncateErr) => {
+                if (truncateErr) {
+                    logger.warn("Error truncating file:", truncateErr);
+                    callback(truncateErr);
+                } else {
+                    logger.debug("File truncated successfully to length:", writeStart);
+                    callback();
+                }
+            });
         });
         this.writeStream.end();
         logger.debug("Finalizing write stream");

@@ -791,4 +791,242 @@ test('test pipeline context with multiple random pause and resume on same file',
     } catch (error) {
         console.warn('Cleanup error:', error.message);
     }
-}, 300000);
+});
+
+test('test truncate removes residual bytes after pause/resume', async () => {
+    // This test verifies that _final always truncates to writeStart,
+    // removing any residual garbage bytes left from a prior incomplete
+    // write attempt. In the old code, the condition
+    //   readStart + length >= fileSize
+    // could be false when residual bytes exist, skipping truncate
+    // and causing SHA256 mismatch.
+
+    let src = testPath('truncate_residual_test.file');
+    let context_path = testPath('truncate_residual_context');
+    let dst, ret_src;
+
+    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
+        fs.unlinkSync(ret_src);
+    } catch (error) {}
+
+    // Create a small source file (32 bytes — tiny enough to expose the bug)
+    const sourceContent = 'hello from FileDownloader test!!';
+    fs.writeFileSync(src, sourceContent, 'utf8');
+    dst = await sealFile(src);
+
+    // --- Stage 1: partial write, then pause ---
+    let context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    let pauseTriggered = false;
+    let totalBytesProcessed = 0;
+    const pauseThreshold = 10; // pause after ~10 plaintext bytes
+
+    class PauseController extends require('stream').Transform {
+        constructor(options) { super(options); }
+        _transform(chunk, encoding, callback) {
+            totalBytesProcessed += chunk.length;
+            this.push(chunk);
+            if (!pauseTriggered && totalBytesProcessed >= pauseThreshold) {
+                pauseTriggered = true;
+            }
+            callback();
+        }
+    }
+
+    await new Promise((resolve, reject) => {
+        let rs = new RecoverableReadStream(dst, context);
+        let unsealer = new meta.Unsealer({keyPair: key_pair, context: context});
+        let pauseController = new PauseController();
+        let ws = new RecoverableWriteStream(ret_src, context);
+
+        let checkInterval = setInterval(() => {
+            if (pauseTriggered) {
+                clearInterval(checkInterval);
+                rs.unpipe(unsealer);
+                unsealer.unpipe(pauseController);
+                pauseController.unpipe(ws);
+                setTimeout(() => {
+                    rs.destroy();
+                    unsealer.destroy();
+                    pauseController.destroy();
+                    ws.end();
+                    resolve();
+                }, 100);
+            }
+        }, 50);
+
+        rs.pipe(unsealer).pipe(pauseController).pipe(ws);
+        ws.on('error', reject);
+    });
+
+    // --- Simulate residual garbage bytes ---
+    // Append garbage to the output file so fileSize becomes larger
+    // than what writeStart represents. This is exactly the scenario
+    // where the old code would skip truncate.
+    const beforeResidualSize = fs.statSync(ret_src).size;
+    const garbage = Buffer.alloc(64, 0xFF); // 64 bytes of 0xFF
+    fs.appendFileSync(ret_src, garbage);
+    const afterResidualSize = fs.statSync(ret_src).size;
+    logger.debug(`Appended ${afterResidualSize - beforeResidualSize} garbage bytes. ` +
+                 `File size before: ${beforeResidualSize}, after: ${afterResidualSize}`);
+
+    // --- Stage 2: resume and complete ---
+    context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    await new Promise((resolve, reject) => {
+        let rs = new RecoverableReadStream(dst, context);
+        let unsealer = new meta.Unsealer({
+            keyPair: key_pair,
+            processedItemCount: context.context.readItemCount || 0,
+            processedBytes: context.context.readStart || 0,
+            writeBytes: context.context.writeStart || 0,
+            context: context
+        });
+        let ws = new RecoverableWriteStream(ret_src, context);
+
+        ws.on('finish', () => {
+            logger.debug('Resume completed.');
+            resolve();
+        });
+        ws.on('error', reject);
+
+        rs.pipe(unsealer).pipe(ws);
+    });
+
+    // --- Verify: final file must match source (no residual garbage) ---
+    const finalSize = fs.statSync(ret_src).size;
+    expect(finalSize).toBe(sourceContent.length);
+    await compare(src, ret_src);
+
+    // Cleanup
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(dst);
+        fs.unlinkSync(context_path);
+        fs.unlinkSync(ret_src);
+    } catch (error) {
+        console.warn('Cleanup error:', error.message);
+    }
+}, 30000);
+
+test('test context file disappears after pause - same file', async () => {
+    // 模拟场景：原地解密（同文件）时暂停，context 文件丢失，恢复后观察会发生什么错误
+
+    let src = testPath('context_disappear_src.file');
+    let context_path = testPath('context_disappear_context');
+    let dst;
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
+    } catch (error) {}
+
+    // 准备测试文件
+    const fileSize = 1024 * 1024 * 2; // 2MB
+    generateFileWithSize(src, fileSize);
+    const originalMD5 = await calculateMD5(src);  // 保存原始 MD5
+    dst = await sealFile(src);                     // 加密 → dst
+
+    const dstSizeBefore = fs.statSync(dst).size;
+    console.log('加密文件大小:', dstSizeBefore);
+
+    // --- 第一阶段：原地解密部分数据后暂停 ---
+    let context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+
+    let pauseTriggered = false;
+    let totalBytesProcessed = 0;
+    const pauseThreshold = 1024 * 512; // 处理 512KB 后暂停
+
+    class PauseController extends require('stream').Transform {
+        constructor(options) { super(options); }
+        _transform(chunk, encoding, callback) {
+            totalBytesProcessed += chunk.length;
+            this.push(chunk);
+            if (!pauseTriggered && totalBytesProcessed >= pauseThreshold) {
+                pauseTriggered = true;
+            }
+            callback();
+        }
+    }
+
+    await new Promise((resolve, reject) => {
+        let rs = new RecoverableReadStream(dst, context);
+        let unsealer = new meta.Unsealer({keyPair: key_pair, context: context});
+        let pauseController = new PauseController();
+        let ws = new RecoverableWriteStream(dst, context);  // ★ 写入同一个文件
+
+        let checkInterval = setInterval(() => {
+            if (pauseTriggered) {
+                clearInterval(checkInterval);
+                rs.unpipe(unsealer);
+                unsealer.unpipe(pauseController);
+                pauseController.unpipe(ws);
+                setTimeout(() => {
+                    rs.destroy();
+                    unsealer.destroy();
+                    pauseController.destroy();
+                    ws.end();
+                    resolve();
+                }, 200);
+            }
+        }, 50);
+
+        rs.pipe(unsealer).pipe(pauseController).pipe(ws);
+        ws.on('error', reject);
+    });
+
+    // 第一阶段后的状态
+    console.log('--- 第一阶段完成，context 内容 ---');
+    const ctxAfterPause = new PipelineContextInFile(context_path);
+    await ctxAfterPause.loadContext();
+    console.log('readStart:', ctxAfterPause.context.readStart);
+    console.log('writeStart:', ctxAfterPause.context.writeStart);
+    console.log('data length:', ctxAfterPause.context.data ? ctxAfterPause.context.data.length : 0);
+    console.log('同文件当前大小:', fs.statSync(dst).size);
+    console.log('同文件前半段 MD5:', await calculateMD5(dst));
+    console.log('文件状态: 前半段已解密为明文，后半段仍是密文 — 文件已损坏不可用');
+
+    // --- 关键步骤：删除 context 文件！---
+    console.log('--- 删除 context 文件 ---');
+    fs.unlinkSync(context_path);
+    expect(fs.existsSync(context_path)).toBe(false);
+
+    // --- 第二阶段：尝试恢复（context 已消失）---
+    console.log('--- 第二阶段：尝试恢复（context 已消失）---');
+
+    context = new PipelineContextInFile(context_path);
+    await context.loadContext();
+    console.log('loadContext 后 context:', JSON.stringify(context.context));
+
+    // context 丢失后，readStart 回到 0，从文件头部开始读
+    // 但文件前半段已是明文，SealedFileStream 解析明文时 version_number 为垃圾值
+    let resumeError = await new Promise((resolve) => {
+        let rs = new RecoverableReadStream(dst, context);
+        rs.on('error', (err) => {
+            console.log('--- 捕获到预期异常 ---');
+            console.log('错误消息:', err.message);
+            resolve(err);
+        });
+        rs.read();
+        setTimeout(() => resolve(null), 5000);
+    });
+
+    expect(resumeError).not.toBeNull();
+    expect(resumeError.message).toContain('Only version 2 is supported');
+
+    // 清理
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(dst);
+        // context_path 已在测试体中删除，忽略清理错误
+        if (fs.existsSync(context_path)) fs.unlinkSync(context_path);
+    } catch (error) {
+        console.warn('Cleanup error:', error.message);
+    }
+}, 30000);
