@@ -18,6 +18,7 @@ export class Unsealer extends Transform {
     const keyPair = options.keyPair;
     const progressHandler = options.progressHandler;
     const context = options ? options.context : undefined;
+    const ctx = context && context.context ? context.context : {};
 
     // Node-specific rolling keccak256 hash
     let dataHash = Buffer.from(keccak256(Buffer.from("Fidelius", "utf-8")));
@@ -55,9 +56,9 @@ export class Unsealer extends Transform {
         }
       },
       initialState: {
-        readItemCount: options ? (options.processedItemCount || 0) : 0,
-        processedBytes: options ? (options.processedBytes || 0) : 0,
-        writeBytes: options ? (options.writeBytes || 0) : 0,
+        readItemCount: options?.processedItemCount ?? ctx.readItemCount ?? 0,
+        processedBytes: options?.processedBytes ?? ctx.readStart ?? 0,
+        writeBytes: options?.writeBytes ?? ctx.writeStart ?? 0,
       }
     });
 
@@ -81,7 +82,10 @@ export class Unsealer extends Transform {
 
       // persist trailing unconsumed bytes for recoverable stream context
       if (this._context && this._context.context && this._context.context["status"] === "file") {
-        this._context.context["data"] = this.#core.remaining;
+        const remaining = this.#core.remaining;
+        this._context.context["data"] = remaining.length > 0
+          ? Buffer.from(remaining.buffer, remaining.byteOffset, remaining.byteLength)
+          : Buffer.alloc(0);
       }
 
       callback();

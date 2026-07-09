@@ -219,7 +219,7 @@ export class RecoverableWriteStream extends Writable {
         const blocks = runtime.pendingBlocks || [];
 
         let hasCommittedBlock = false;
-        let committedRawBytes = 0;
+        let committedItems = 0;
 
         logger.debug("On plaintext written:", writtenBytes, " bytes. Current runtime:", runtime);
         while(remain > 0 && blocks.length > 0){
@@ -233,9 +233,9 @@ export class RecoverableWriteStream extends Writable {
                 // Block fully committed
                 runtime.rawCommitted += block.rawSize;
                 runtime.plainCommitted += block.plainSize;
-                committedRawBytes += block.rawSize;
                 blocks.shift();
                 hasCommittedBlock = true;
+                committedItems += 1;
             }
         }
         logger.debug("After committing, remaining to commit:", remain, " bytes. Updated runtime:", runtime);
@@ -244,31 +244,33 @@ export class RecoverableWriteStream extends Writable {
             return Promise.resolve();
         }
         if(this.context.context){
-            const buf = this.context.context['data'];
-            if(Buffer.isBuffer(buf) && buf.length > 0 &&
-               committedRawBytes > 0){
-                if(committedRawBytes >= buf.length){
-                    // All data committed
-                    this.context.context['data'] = Buffer.alloc(0);
-                }else{
-                    // Partial data committed
-                    this.context.context['data'] = buf.subarray(committedRawBytes);
-                }
-            }
             this.context.context['readStart'] = runtime.rawCommitted;
             this.context.context['writeStart'] = runtime.plainCommitted;
+            if (committedItems > 0) {
+                this.context.context['readItemCount'] =
+                    (this.context.context['readItemCount'] || 0) + committedItems;
+            }
+            // Checkpoint only fully committed progress; discard in-flight cipher tail.
+            this.context.context['data'] = Buffer.alloc(0);
             logger.debug("After writing, updated readStart to:", this.context.context['readStart'],
                          " writeStart to:", this.context.context['writeStart'],
-                         " data length to:", this.context.context['data'] ? this.context.context['data'].length : 0);
-            //
-            this.context.saveContext();
+                         " readItemCount to:", this.context.context['readItemCount']);
+            return this.context.saveContext();
         }
         return Promise.resolve();
     }
 
     _final(callback) {
         this.writeStream.on('finish', () => {
-            const writeStart = this.context.context['writeStart'] || 0;
+            const ctx = this.context && this.context.context;
+            const runtime = this.context && this.context.runtime;
+            const writeStart = (ctx && ctx['writeStart']) || (runtime && runtime.plainCommitted) || 0;
+
+            if (ctx && runtime) {
+                ctx['readStart'] = runtime.rawCommitted;
+                ctx['writeStart'] = runtime.plainCommitted;
+                ctx['data'] = Buffer.alloc(0);
+            }
 
             // Always truncate to writeStart to remove any residual
             // data from previous incomplete write attempts.
@@ -276,8 +278,14 @@ export class RecoverableWriteStream extends Writable {
                 if (truncateErr) {
                     logger.warn("Error truncating file:", truncateErr);
                     callback(truncateErr);
+                    return;
+                }
+                logger.debug("File truncated successfully to length:", writeStart);
+                if (this.context && typeof this.context.saveContext === 'function') {
+                    Promise.resolve(this.context.saveContext())
+                        .then(() => callback())
+                        .catch((err) => callback(err));
                 } else {
-                    logger.debug("File truncated successfully to length:", writeStart);
                     callback();
                 }
             });
