@@ -1,7 +1,7 @@
 import { Unsealer } from './Unsealer.js'
 import { HttpSealedFileStream } from './HttpSealedFileStream.js'
 import { MetaEncryptorError } from '../common/errors.js';
-import { createProgressTransformer } from '../common/progress.js';
+import { createProgressTransformer, createDownloadReadyTransformer } from '../common/progress.js';
 
 async function ensureStreamSaver(log) {
   if (typeof window === 'undefined') return null;
@@ -50,7 +50,7 @@ export async function getBestWritable(filename, { log, size } = {}) {
   return null;
 }
 
-export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch } = {}) {
+export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, writable, size, fetch: _fetch, onDownloadReady } = {}) {
   log = log || (() => {})
   try {
     const out = writable || await getBestWritable(filename, { log, size })
@@ -66,6 +66,7 @@ export async function streamDownloadAndDecrypt(url, privateKeyHex, filename, { l
     })
 
     await stream
+      .pipeThrough(createDownloadReadyTransformer(onDownloadReady))
       .pipeThrough(unsealer)
       .pipeThrough(createProgressTransformer(size, onProgress))
       .pipeTo(out)

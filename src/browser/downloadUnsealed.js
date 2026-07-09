@@ -85,6 +85,7 @@ async function inspectSealed(url, log) {
  * @param {string} options.filename
  * @param {Function} [options.onLog]
  * @param {Function} [options.onProgress] - (total, processed, readBytes, writeBytes) => {}
+ * @param {Function} [options.onDownloadReady] - HTTP 流首个数据块进入管道时触发（可关蒙层）
  * @param {Function} [options.onSuccess]
  * @param {Function} [options.onError]
  * @returns {Promise<void>}
@@ -95,6 +96,7 @@ export async function downloadUnsealed({
   filename,
   onLog,
   onProgress,
+  onDownloadReady,
   onSuccess,
   onError
 }) {
@@ -128,7 +130,12 @@ export async function downloadUnsealed({
     if (!mobile) {
       try {
         log('Trying stream download...')
-        await streamDownloadAndDecrypt(url, key, filename, { log, onProgress, size: meta.plaintextSize })
+        await streamDownloadAndDecrypt(url, key, filename, {
+          log,
+          onProgress,
+          size: meta.plaintextSize,
+          onDownloadReady,
+        })
         if (onSuccess) onSuccess({ filename })
         return
       } catch (e) {
@@ -137,7 +144,7 @@ export async function downloadUnsealed({
     }
 
     log('Using Blob download...')
-    await blobDownloadAndDecrypt(url, key, filename, { log, onProgress })
+    await blobDownloadAndDecrypt(url, key, filename, { log, onProgress, onDownloadReady })
     if (onSuccess) onSuccess({ filename })
   } catch (error) {
     log('Download failed: ' + error.message)

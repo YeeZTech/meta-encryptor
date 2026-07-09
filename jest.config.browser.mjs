@@ -7,6 +7,7 @@ export default {
     "<rootDir>/test/downloadFunctions.spec.mjs",
     "<rootDir>/test/downloadCallbacks.spec.mjs",
     "<rootDir>/test/downloadUnsealedCallbacks.spec.mjs",
+    "<rootDir>/test/progress.spec.mjs",
   ],
   
   roots: ['<rootDir>/test', '<rootDir>/src'],

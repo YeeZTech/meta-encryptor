@@ -1,14 +1,14 @@
 import { Unsealer } from './Unsealer.js'
 import { HttpSealedFileStream } from './HttpSealedFileStream.js'
-import { createProgressTransformer } from '../common/progress.js';
+import { createProgressTransformer, createDownloadReadyTransformer } from '../common/progress.js';
 
 /**
  * @param {string} url
  * @param {string} privateKeyHex
  * @param {string} filename
- * @param {{ log?: Function, onProgress?: Function, fetch?: Function, size?: number }} [opts]
+ * @param {{ log?: Function, onProgress?: Function, fetch?: Function, size?: number, onDownloadReady?: Function }} [opts]
  */
-export async function blobDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, fetch: _fetch, size } = {}) {
+export async function blobDownloadAndDecrypt(url, privateKeyHex, filename, { log, onProgress, fetch: _fetch, size, onDownloadReady } = {}) {
   log = log || (() => {})
   try {
     const chunks = []
@@ -22,6 +22,7 @@ export async function blobDownloadAndDecrypt(url, privateKeyHex, filename, { log
     })
 
     await stream
+      .pipeThrough(createDownloadReadyTransformer(onDownloadReady))
       .pipeThrough(unsealer)
       .pipeThrough(createProgressTransformer(size, onProgress))
       .pipeTo(new WritableStream({
