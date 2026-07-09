@@ -47,6 +47,7 @@ npm install @yeez-tech/meta-encryptor
 | `filename`   | string   | ✅   | 下载文件名（必需，无默认值）                                 |
 | `onLog`      | function | ❌   | 日志回调 `(message: string) => void`                         |
 | `onProgress` | function | ❌   | 进度回调 `(total, processed, readBytes, writeBytes) => void` |
+| `onDownloadReady` | function | ❌ | 下载就绪回调：HTTP 流首个数据块进入管道时触发（HEAD+tail 完成后），可用于关闭准备蒙层 |
 | `onSuccess`  | function | ❌   | 成功回调 `(data: { filename }) => void`                      |
 | `onError`    | function | ❌   | 错误回调 `(error: Error) => void`                            |
 

@@ -132,14 +132,17 @@ function generateAESKeyFrom(pkey, skey){
   return derived_key;
 }
 
-const eth_hash_prefix = Buffer.from("\\x19Ethereum Signed Message:\\n32");
+const eth_hash_prefix = Buffer.concat([
+  Buffer.from([0x19]),
+  Buffer.from("Ethereum Signed Message:\n32"),
+]);
 
 function signMessage(skey, raw) {
-  let raw_hash = Buffer.from(keccak256(Buffer.from(raw)));
+  let raw_hash = Buffer.from(keccak256(toUint8Array(raw)));
   let msg = new Uint8Array(eth_hash_prefix.length + raw_hash.length)
   msg.set(eth_hash_prefix)
   msg.set(raw_hash, eth_hash_prefix.length)
-  msg = Buffer.from(keccak256(Buffer.from(msg)))
+  msg = Buffer.from(keccak256(toUint8Array(msg)))
 
   const msgBytes = toUint8Array(msg);
   const skeyBytes = toUint8Array(skey);

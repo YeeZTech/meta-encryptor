@@ -13,6 +13,7 @@ import { HeaderSize, BlockInfoSize } from '../src/common/limits.js';
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
 import { Unsealer } from '../src/browser/Unsealer.js';
 import { HttpSealedFileStream } from '../src/browser/HttpSealedFileStream.js';
+import { createDownloadReadyTransformer } from '../src/common/progress.js';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -115,6 +116,26 @@ describe('HttpSealedFileStream', () => {
     // first chunk is the 64-byte header
     expect(chunks.length).toBeGreaterThanOrEqual(1);
     expect(chunks[0].length).toBe(64);
+  });
+
+  test('createDownloadReadyTransformer fires on first chunk from HttpSealedFileStream', async () => {
+    const original = Buffer.alloc(100, 'A');
+    const { diskBuf } = sealBuffer(original);
+    let ready = false;
+
+    const fetch = createMockFetch(diskBuf);
+    const hsfs = new HttpSealedFileStream('http://x', {
+      chunkSize: 4096,
+      fetch,
+    }).pipeThrough(createDownloadReadyTransformer(() => { ready = true; }));
+
+    const reader = hsfs.getReader();
+    while (true) {
+      const { done } = await reader.read();
+      if (done) break;
+    }
+
+    expect(ready).toBe(true);
   });
 
   test('streams content in multiple chunks with small chunkSize', async () => {

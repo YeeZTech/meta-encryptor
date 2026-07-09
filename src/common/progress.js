@@ -18,3 +18,25 @@ export function createProgressTransformer(plaintextSize, onProgress) {
     }
   })
 }
+
+/**
+ * Create a TransformStream that fires once when the first chunk flows through.
+ * Place after HttpSealedFileStream to signal download stream is ready (e.g. dismiss overlay).
+ *
+ * @param {Function} [onDownloadReady]
+ * @returns {TransformStream}
+ */
+export function createDownloadReadyTransformer(onDownloadReady) {
+  let called = false
+  return new TransformStream({
+    transform(chunk, controller) {
+      if (!called) {
+        called = true
+        if (onDownloadReady) {
+          onDownloadReady()
+        }
+      }
+      controller.enqueue(chunk)
+    }
+  })
+}

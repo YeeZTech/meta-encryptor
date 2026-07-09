@@ -5,9 +5,21 @@ import { promisify } from 'util';
 
 import { MetaEncryptorError } from '../common/errors.js';
 
-const readFile = promisify(fs.readFile);
-const writeFile = promisify(fs.writeFile);
+const open = promisify(fs.open);
+const close = promisify(fs.close);
+const fsync = promisify(fs.fsync);
+const rename = promisify(fs.rename);
 const logger = log.getLogger("meta-encryptor/PipelineContext");
+
+function toBinaryChunk(value) {
+    if (Buffer.isBuffer(value)) {
+        return value;
+    }
+    if (value instanceof Uint8Array) {
+        return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    }
+    return null;
+}
 
 export class PipelineContext {
     constructor(options) {
@@ -37,25 +49,25 @@ export class PipelineContextInFile extends PipelineContext {
     constructor(filePath, options) {
         super(options);
         this.filePath = filePath;
+        this._saveTail = Promise.resolve();
+        this._saveDirty = false;
     }
 
-    async saveContext() {
+    _buildPayload() {
         const binaryChunks = [];
         const meta = {};
         let offset = 0;
 
-        logger.debug("Context before save:", this.context);
-        logger.debug("PipelineContextInFile::saveContext saving to ", this.filePath);
-
         for (const [key, value] of Object.entries(this.context)) {
-            if (Buffer.isBuffer(value)) {
-                binaryChunks.push(value);
+            const binary = toBinaryChunk(value);
+            if (binary) {
+                binaryChunks.push(binary);
                 meta[key] = {
                     type: 'binary',
                     offset,
-                    length: value.length
+                    length: binary.length
                 };
-                offset += value.length;
+                offset += binary.length;
             } else {
                 meta[key] = {
                     type: 'json',
@@ -68,26 +80,58 @@ export class PipelineContextInFile extends PipelineContext {
         const metaBuffer = Buffer.from(metaStr);
         const metaLength = metaBuffer.length;
 
-        try {
-            const fd = await promisify(fs.open)(this.filePath, 'w');
-            const lengthBuffer = Buffer.alloc(4);
-            lengthBuffer.writeUInt32BE(metaLength);
-            await promisify(fs.write)(fd, lengthBuffer, 0, 4, 0);
-            await promisify(fs.write)(fd, metaBuffer, 0, metaLength, 4);
-            let currentOffset = 4 + metaLength;
-            for (const chunk of binaryChunks) {
-                await promisify(fs.write)(fd, chunk, 0, chunk.length, currentOffset);
-                currentOffset += chunk.length;
-            }
-            await promisify(fs.close)(fd);
-        } catch (error) {
-            logger.error('PipelineContextInFile::saveContext error:', error.message);
-            throw error;
+        const totalSize = 4 + metaLength + offset;
+        const fileBuffer = Buffer.alloc(totalSize);
+        fileBuffer.writeUInt32BE(metaLength, 0);
+        metaBuffer.copy(fileBuffer, 4);
+        let currentOffset = 4 + metaLength;
+        for (const chunk of binaryChunks) {
+            chunk.copy(fileBuffer, currentOffset);
+            currentOffset += chunk.length;
         }
+
+        return fileBuffer;
+    }
+
+    async _writeContextAtomic() {
+        const fileBuffer = this._buildPayload();
+        const tmpPath = `${this.filePath}.tmp`;
+
+        logger.debug("PipelineContextInFile::saveContext saving to ", this.filePath);
+
+        const fd = await open(tmpPath, 'w');
+        try {
+            await promisify(fs.write)(fd, fileBuffer, 0, fileBuffer.length, 0);
+            await fsync(fd);
+        } finally {
+            await close(fd);
+        }
+
+        await rename(tmpPath, this.filePath);
+    }
+
+    async _flushAll() {
+        while (this._saveDirty) {
+            this._saveDirty = false;
+            try {
+                await this._writeContextAtomic();
+            } catch (error) {
+                logger.error('PipelineContextInFile::saveContext error:', error.message);
+                throw error;
+            }
+        }
+    }
+
+    saveContext() {
+        this._saveDirty = true;
+        this._saveTail = this._saveTail.then(() => this._flushAll());
+        return this._saveTail;
     }
 
     async loadContext() {
         try {
+            await this._saveTail;
+
             if (!fs.existsSync(this.filePath)) {
                 this.context = {};
                 this.runtime.rawCommitted = 0;
@@ -96,7 +140,7 @@ export class PipelineContextInFile extends PipelineContext {
                 return;
             }
 
-            const fd = await promisify(fs.open)(this.filePath, 'r');
+            const fd = await open(this.filePath, 'r');
             const metaLengthBuffer = Buffer.alloc(4);
             await promisify(fs.read)(fd, metaLengthBuffer, 0, 4, 0);
             const metaLength = metaLengthBuffer.readUInt32BE();
@@ -118,7 +162,7 @@ export class PipelineContextInFile extends PipelineContext {
                 }
             }
 
-            await promisify(fs.close)(fd);
+            await close(fd);
 
             const readStart = this.context.readStart || 0;
             const writeStart = this.context.writeStart || 0;

@@ -1,4 +1,5 @@
 import { BrowserCrypto } from '../src/browser/ypccrypto.browser.js';
+import { eth_hash_prefix } from '../src/common/ypccrypto.common.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -253,6 +254,35 @@ describe('BrowserCrypto compatibility with Node YPCCrypto', () => {
       const sig2 = browserCrypto.signMessage(keyB, testMessage);
       expect(Buffer.from(sig2).toString('hex')).not.toBe(Buffer.from(sig1).toString('hex'));
     });
+  });
+});
+
+describe('signMessage Ethereum prefix regression', () => {
+  test('eth_hash_prefix uses correct Ethereum Signed Message format', () => {
+    expect(eth_hash_prefix.length).toBe(28);
+    expect(eth_hash_prefix[0]).toBe(0x19);
+    expect(Buffer.from(eth_hash_prefix.subarray(1)).toString()).toBe(
+      'Ethereum Signed Message:\n32'
+    );
+  });
+
+  test('generateSignature matches v4.x compatible vector', () => {
+    const skey = Buffer.from(
+      '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      'hex'
+    );
+    const epkey = Buffer.from(
+      '2acc91b839b115519fa43b7a0bcf20f7e83ef983c00e854343025a5a26a08a3e2b1bbb2c178989126d09d7a7def36fd029eafd60bdfe046b12b226877e018d92',
+      'hex'
+    );
+    const ehash = Buffer.from(
+      '30890aacb90c4a6440023df1a51a74050756d04811ce0a47eea86dd47dec320a',
+      'hex'
+    );
+    const sig = BrowserCrypto.generateSignature(skey, epkey, ehash);
+    expect(Buffer.from(sig).toString('hex')).toBe(
+      '568643ef491fb8e32d061783a6ac94aacdf7967b39ef53490121c39d7997e043630af675554b5538db2b2bab96068351842490a1ee7551d13417fd1052e41cf61c'
+    );
   });
 });
 
