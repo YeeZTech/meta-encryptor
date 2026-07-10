@@ -1,6 +1,7 @@
 const meta = require("../src/index.node.js");
 const {PipelineContextInFile} = require("../src/node/PipelineConext.js")
 import fs from "fs";
+import { testPath } from "./helper";
 
 
 test('test pipeline context basic', async ()=>{
@@ -24,4 +25,44 @@ test('test pipeline context basic', async ()=>{
         fs.unlinkSync(filePath);
     }
 })
+
+test('context save queue recovers after a failed write', async () => {
+    const filePath = testPath('pipeline_context_retry');
+    const pc = new PipelineContextInFile(filePath);
+    const writeAtomic = pc._writeContextAtomic.bind(pc);
+    let attempts = 0;
+
+    pc._writeContextAtomic = async () => {
+        attempts += 1;
+        if (attempts === 1) {
+            throw new Error('injected context write failure');
+        }
+        return writeAtomic();
+    };
+
+    pc.context.value = 'first';
+    await expect(pc.saveContext()).rejects.toThrow('injected context write failure');
+
+    pc.context.value = 'latest';
+    await expect(pc.saveContext()).resolves.toBeUndefined();
+
+    const loaded = new PipelineContextInFile(filePath);
+    await loaded.loadContext();
+    expect(loaded.context.value).toBe('latest');
+    expect(attempts).toBe(2);
+});
+
+test('Uint8Array context data round-trips as exact binary bytes', async () => {
+    const filePath = testPath('pipeline_context_uint8array');
+    const pc = new PipelineContextInFile(filePath);
+    const backing = Uint8Array.from([0xff, 0x01, 0x02, 0x03, 0xee]);
+
+    pc.context.data = new Uint8Array(backing.buffer, 1, 3);
+    await pc.saveContext();
+
+    const loaded = new PipelineContextInFile(filePath);
+    await loaded.loadContext();
+    expect(Buffer.isBuffer(loaded.context.data)).toBe(true);
+    expect([...loaded.context.data]).toEqual([0x01, 0x02, 0x03]);
+});
 

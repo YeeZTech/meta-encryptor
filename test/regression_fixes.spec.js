@@ -26,14 +26,21 @@ const other_key_pair = {
     '2b3e4b3f6cba1a54a219c521c825f1a30045d9c62571a83b56c8e6b56b3e0a12',
 };
 
-function sealBuffer(input) {
+function sealBuffer(input, chunkSize) {
   return new Promise((resolve, reject) => {
     const sealer = new Sealer({ keyPair: key_pair });
     const chunks = [];
     sealer.on('data', (c) => chunks.push(c));
     sealer.on('end', () => resolve(Buffer.concat(chunks)));
     sealer.on('error', reject);
-    sealer.end(input);
+    if (chunkSize) {
+      for (let offset = 0; offset < input.length; offset += chunkSize) {
+        sealer.write(input.subarray(offset, offset + chunkSize));
+      }
+      sealer.end();
+    } else {
+      sealer.end(input);
+    }
   });
 }
 
@@ -46,6 +53,10 @@ function unsealerInput(sealed) {
   const { blockNumber } = validateHeader(header);
   const contentSize = sealed.length - HeaderSize - BlockInfoSize * blockNumber;
   return { header, content: sealed.subarray(0, contentSize), contentSize };
+}
+
+function firstSealedItemSize(content) {
+  return 8 + Number(content.readBigUInt64LE(0));
 }
 
 function collectUnsealed(feed, unsealerOpts = {}) {
@@ -115,6 +126,54 @@ describe('unsealer stream termination fixes', () => {
     ).rejects.toMatchObject({ code: 'ERR_TRUNCATED_INPUT' });
   }, 10000);
 
+  test('modern resumed checkpoint still rejects truncated remaining input', async () => {
+    const sealed = await sealBuffer(Buffer.from('r'.repeat(200 * 1024)), 64 * 1024);
+    const { header, content } = unsealerInput(sealed);
+    const committedBytes = firstSealedItemSize(content);
+    const context = {
+      context: {
+        readStart: committedBytes,
+        writeStart: 64 * 1024,
+        readItemCount: 1,
+        readItemCountReliable: true,
+      },
+      runtime: { rawCommitted: committedBytes, plainCommitted: 64 * 1024, pendingBlocks: [] },
+    };
+
+    await expect(
+      collectUnsealed((src) => {
+        src.write(header);
+        src.write(content.subarray(committedBytes, content.length - 16));
+        src.end();
+      }, { context })
+    ).rejects.toMatchObject({ code: 'ERR_TRUNCATED_INPUT' });
+    expect(context.context.readItemCountReliable).toBe(true);
+  }, 10000);
+
+  test('legacy resumed checkpoint stays lenient and marks item count unreliable', async () => {
+    const sealed = await sealBuffer(Buffer.from('l'.repeat(200 * 1024)), 64 * 1024);
+    const { header, content } = unsealerInput(sealed);
+    const committedBytes = firstSealedItemSize(content);
+    const context = {
+      context: { readStart: committedBytes, writeStart: 64 * 1024 },
+      runtime: { rawCommitted: committedBytes, plainCommitted: 64 * 1024, pendingBlocks: [] },
+    };
+
+    await expect(
+      collectUnsealed((src) => {
+        src.write(header);
+        src.write(content.subarray(committedBytes));
+        src.end();
+      }, { context })
+    ).resolves.toBeInstanceOf(Buffer);
+    expect(context.context.readItemCountReliable).toBe(false);
+
+    // A relative count accumulated later must not upgrade a legacy checkpoint.
+    context.context.readItemCount = 1;
+    new Unsealer({ keyPair: key_pair, context });
+    expect(context.context.readItemCountReliable).toBe(false);
+  }, 10000);
+
   test('wrong key errors instead of silently skipping items', async () => {
     const plain = Buffer.from('z'.repeat(4096));
     const sealed = await sealBuffer(plain);
@@ -152,7 +211,12 @@ describe('RecoverableWriteStream finalize fixes', () => {
     const target = testPath('rws_inner_finished.out');
     try { fs.unlinkSync(target); } catch (e) {}
 
-    const context = { context: { status: 'file' }, runtime: null, saveContext: () => {} };
+    const saveContext = jest.fn(() => Promise.resolve());
+    const context = {
+      context: { status: 'file', readStart: 0, writeStart: 0, data: Buffer.from('stale') },
+      runtime: { rawCommitted: 11, plainCommitted: 3, pendingBlocks: [] },
+      saveContext,
+    };
     const ws = new RecoverableWriteStream(target, context);
 
     await new Promise((resolve, reject) => {
@@ -160,9 +224,12 @@ describe('RecoverableWriteStream finalize fixes', () => {
     });
 
     // simulate a cleanup path ending the inner stream first
-    await new Promise((resolve) => {
-      ws.writeStream.end(() => resolve());
+    await new Promise((resolve, reject) => {
+      ws.writeStream.once('close', resolve);
+      ws.writeStream.once('error', reject);
+      ws.writeStream.end();
     });
+    fs.appendFileSync(target, Buffer.from('garbage tail'));
 
     await expect(
       new Promise((resolve, reject) => {
@@ -175,6 +242,11 @@ describe('RecoverableWriteStream finalize fixes', () => {
         ws.end();
       })
     ).resolves.toBeUndefined();
+
+    expect(fs.readFileSync(target).toString()).toBe('abc');
+    expect(context.context).toMatchObject({ readStart: 11, writeStart: 3 });
+    expect(context.context.data).toEqual(Buffer.alloc(0));
+    expect(saveContext).toHaveBeenCalledTimes(1);
 
     try { fs.unlinkSync(target); } catch (e) {}
   }, 10000);
@@ -200,6 +272,38 @@ describe('RecoverableWriteStream finalize fixes', () => {
         ws.end();
       })
     ).rejects.toBeTruthy();
+
+    try { fs.unlinkSync(target); } catch (e) {}
+  }, 10000);
+
+  test('_final propagates an inner stream error exactly once', async () => {
+    const target = testPath('rws_inner_error.out');
+    try { fs.unlinkSync(target); } catch (e) {}
+
+    const context = { context: {}, runtime: null, saveContext: () => {} };
+    const ws = new RecoverableWriteStream(target, context);
+    const errors = [];
+
+    // Keep _final waiting and inject the inner error through its normal event.
+    ws.writeStream.end = () => {
+      queueMicrotask(() => ws.writeStream.emit('error', new Error('injected inner error')));
+    };
+
+    await new Promise((resolve, reject) => {
+      const guard = setTimeout(
+        () => reject(new Error('RecoverableWriteStream inner error never settled')),
+        5000
+      );
+      ws.on('error', (err) => errors.push(err));
+      ws.on('close', () => {
+        clearTimeout(guard);
+        resolve();
+      });
+      ws.end();
+    });
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0].message).toContain('injected inner error');
 
     try { fs.unlinkSync(target); } catch (e) {}
   }, 10000);

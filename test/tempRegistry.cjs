@@ -31,6 +31,8 @@ const STALE_ROOT_NAMES = new Set([
   'multi_pause_resume_large.rand_same.file',
   'multi_pause_resume_large_context.rand_same',
   'final_verify_context',
+  'truncate_residual_test.file',
+  'truncate_residual_context',
 ]);
 
 const STALE_ROOT_PREFIXES = [

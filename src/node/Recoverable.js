@@ -190,9 +190,14 @@ export class RecoverableWriteStream extends Writable {
             logger.debug(`File not exist.Created new file ${filePath} for writing`);
         }
         this.writeStream = new WriteStream(filePath, streamOptions);
+        this._finalSettle = null;
 
         this.writeStream.on('error', (err) => {
-            this.emit('error', err);
+            if (this._finalSettle) {
+                this._finalSettle(err);
+            } else if (!this.destroyed) {
+                this.destroy(err);
+            }
         });
         this.writeStream.on('close', () => {
         });
@@ -239,12 +244,9 @@ export class RecoverableWriteStream extends Writable {
         let remain = writtenBytes;
         const runtime = this.context.runtime;
         const blocks = runtime.pendingBlocks || [];
-        if (runtime.itemsCommitted === undefined) {
-            runtime.itemsCommitted = (this.context.context && this.context.context['readItemCount']) || 0;
-        }
 
         let hasCommittedBlock = false;
-        let committedRawBytes = 0;
+        let committedItems = 0;
 
         logger.debug("On plaintext written:", writtenBytes, " bytes. Current runtime:", runtime);
         while(remain > 0 && blocks.length > 0){
@@ -258,10 +260,9 @@ export class RecoverableWriteStream extends Writable {
                 // Block fully committed
                 runtime.rawCommitted += block.rawSize;
                 runtime.plainCommitted += block.plainSize;
-                committedRawBytes += block.rawSize;
-                runtime.itemsCommitted += 1;
                 blocks.shift();
                 hasCommittedBlock = true;
+                committedItems += 1;
             }
         }
         logger.debug("After committing, remaining to commit:", remain, " bytes. Updated runtime:", runtime);
@@ -270,70 +271,100 @@ export class RecoverableWriteStream extends Writable {
             return Promise.resolve();
         }
         if(this.context.context){
-            const buf = this.context.context['data'];
-            if(Buffer.isBuffer(buf) && buf.length > 0 &&
-               committedRawBytes > 0){
-                if(committedRawBytes >= buf.length){
-                    // All data committed
-                    this.context.context['data'] = Buffer.alloc(0);
-                }else{
-                    // Partial data committed
-                    this.context.context['data'] = buf.subarray(committedRawBytes);
-                }
-            }
             this.context.context['readStart'] = runtime.rawCommitted;
             this.context.context['writeStart'] = runtime.plainCommitted;
-            this.context.context['readItemCount'] = runtime.itemsCommitted;
+            if (committedItems > 0) {
+                this.context.context['readItemCount'] =
+                    (this.context.context['readItemCount'] || 0) + committedItems;
+            }
+            // Checkpoint only fully committed progress; discard in-flight cipher tail.
+            this.context.context['data'] = Buffer.alloc(0);
             logger.debug("After writing, updated readStart to:", this.context.context['readStart'],
                          " writeStart to:", this.context.context['writeStart'],
-                         " data length to:", this.context.context['data'] ? this.context.context['data'].length : 0);
-            //
-            this.context.saveContext();
+                         " readItemCount to:", this.context.context['readItemCount']);
+            return this.context.saveContext();
         }
         return Promise.resolve();
     }
 
     _final(callback) {
+        const inner = this.writeStream;
         let settled = false;
+        let finalizing = false;
+
+        const cleanup = () => {
+            if (!inner) return;
+            inner.removeListener('finish', finalize);
+            inner.removeListener('close', onInnerClose);
+            if (this._finalSettle === settle) {
+                this._finalSettle = null;
+            }
+        };
+
         const settle = (err) => {
             if (settled) return;
             settled = true;
+            cleanup();
             callback(err);
         };
-        const finalize = () => {
-            const readStart = this.context.context['readStart'] || 0;
-            const writeStart = this.context.context['writeStart'] || 0;
-            const length = this.context.context.data ? this.context.context.data.length : 0;
 
-            if (readStart + length >= this.fileSize) {
-                fs.truncate(this.filePath, writeStart, (truncateErr) => {
-                    if (truncateErr) {
-                        logger.warn("Error truncating file:", truncateErr);
-                        settle(truncateErr);
-                    } else {
-                        logger.debug("File truncated successfully to length:", writeStart);
-                        settle();
-                    }
-                });
-            } else {
+        const finalize = async () => {
+            if (settled || finalizing) return;
+            finalizing = true;
 
-                logger.debug("Not truncating file as not at the end. readStart + length:", readStart + length, ", fileSize:", this.fileSize);
+            const ctx = this.context && this.context.context;
+            const runtime = this.context && this.context.runtime;
+            const readStart = runtime?.rawCommitted ?? ctx?.readStart ?? 0;
+            const writeStart = runtime?.plainCommitted ?? ctx?.writeStart ?? 0;
+
+            try {
+                // Always remove stale output beyond the last fully committed item.
+                await fs.promises.truncate(this.filePath, writeStart);
+
+                if (ctx) {
+                    ctx['readStart'] = readStart;
+                    ctx['writeStart'] = writeStart;
+                    ctx['data'] = Buffer.alloc(0);
+                }
+
+                if (this.context && typeof this.context.saveContext === 'function') {
+                    await this.context.saveContext();
+                }
+
+                logger.debug("File truncated successfully to length:", writeStart);
                 settle();
+            } catch (err) {
+                logger.warn("Error finalizing recoverable output:", err);
+                settle(err);
             }
         };
+
+        const onInnerClose = () => {
+            if (!inner.writableFinished) {
+                settle(new Error('RecoverableWriteStream: inner stream closed before finalize'));
+            }
+        };
+
+        // The constructor's single inner-error handler routes errors here
+        // while _final is active, avoiding duplicate outer error emissions.
+        this._finalSettle = settle;
 
         // The inner fs stream may already be finished or destroyed (pause /
         // cleanup paths call end()/destroy() directly). Waiting for a 'finish'
         // that will never fire would leave _final's callback pending forever,
         // so the outer stream would never emit 'finish'.
-        if (this.writeStream.writableFinished) {
-            finalize();
-        } else if (this.writeStream.destroyed) {
+        if (inner.writableFinished) {
+            void finalize();
+        } else if (inner.destroyed) {
             settle(new Error('RecoverableWriteStream: inner stream destroyed before finalize'));
         } else {
-            this.writeStream.once('finish', finalize);
-            this.writeStream.once('error', (err) => settle(err));
-            this.writeStream.end();
+            inner.once('finish', finalize);
+            inner.once('close', onInnerClose);
+            try {
+                inner.end();
+            } catch (err) {
+                settle(err);
+            }
         }
         logger.debug("Finalizing write stream");
     }

@@ -22,6 +22,33 @@ export class Unsealer extends Transform {
     const keyPair = options.keyPair;
     const progressHandler = options.progressHandler;
     const context = options ? options.context : undefined;
+    const ctx = context && context.context ? context.context : {};
+    const resumeBytesValue = options?.processedBytes ?? ctx.readStart ?? 0;
+    const resumeBytes = Number.isFinite(resumeBytesValue) && resumeBytesValue > 0
+      ? resumeBytesValue
+      : 0;
+    const restoredItemCount = options?.processedItemCount ?? ctx.readItemCount;
+    const hasValidItemCount =
+      Number.isInteger(restoredItemCount) && restoredItemCount >= 0;
+
+    // A false marker is sticky: a relative count produced while recovering a
+    // legacy checkpoint must not become "reliable" on the following resume.
+    let readItemCountReliable;
+    if (resumeBytes === 0) {
+      readItemCountReliable = true;
+    } else if (ctx.readItemCountReliable === false) {
+      readItemCountReliable = false;
+    } else if (ctx.readItemCountReliable === true) {
+      readItemCountReliable = hasValidItemCount;
+    } else {
+      // Existing develop checkpoints predate the marker but contain a valid
+      // absolute count. Older checkpoints have an offset without that count.
+      readItemCountReliable = hasValidItemCount && restoredItemCount > 0;
+    }
+
+    if (context && context.context) {
+      context.context.readItemCountReliable = readItemCountReliable;
+    }
 
     // Node-specific rolling keccak256 hash
     let dataHash = Buffer.from(keccak256(Buffer.from("Fidelius", "utf-8")));
@@ -59,18 +86,15 @@ export class Unsealer extends Transform {
         }
       },
       initialState: {
-        readItemCount: options ? (options.processedItemCount || 0) : 0,
-        processedBytes: options ? (options.processedBytes || 0) : 0,
-        writeBytes: options ? (options.writeBytes || 0) : 0,
+        readItemCount: hasValidItemCount ? restoredItemCount : 0,
+        processedBytes: resumeBytesValue,
+        writeBytes: options?.writeBytes ?? ctx.writeStart ?? 0,
       }
     });
 
-    // On resumed sessions the item count may be absent or incomplete (contexts
-    // persisted by older versions), making `finished` unreachable — the strict
-    // truncation check in _flush only applies to fresh (non-resumed) streams.
-    this.#lenientEof =
-      !!options &&
-      ((options.processedBytes || 0) > 0 || (options.processedItemCount || 0) > 0);
+    // Only legacy resumes without a reliable absolute item count are lenient.
+    // Fresh streams and modern checkpoints retain strict truncation detection.
+    this.#lenientEof = resumeBytes > 0 && !readItemCountReliable;
 
     // keep references for external consumers (tests may read them)
     this._keyPair = keyPair;
@@ -88,7 +112,10 @@ export class Unsealer extends Transform {
 
       // persist trailing unconsumed bytes for recoverable stream context
       if (this._context && this._context.context && this._context.context["status"] === "file") {
-        this._context.context["data"] = this.#core.remaining;
+        const remaining = this.#core.remaining;
+        this._context.context["data"] = remaining.length > 0
+          ? Buffer.from(remaining.buffer, remaining.byteOffset, remaining.byteLength)
+          : Buffer.alloc(0);
       }
 
       callback();

@@ -45,7 +45,7 @@ export class SealedFileStream extends Readable{
       const fileStats = await this.fileHandle.stat();
       this.header = Buffer.alloc(HeaderSize);
       logger.debug("to read, " + fileStats.size);
-      await new Promise((resolve)=>{
+      await new Promise((resolve, reject)=>{
         this.fileHandle.read(this.header, 0, HeaderSize, fileStats.size - HeaderSize)
         .then(({bytesRead}) =>{
           if(bytesRead!= HeaderSize){
@@ -68,8 +68,8 @@ export class SealedFileStream extends Readable{
           this.end = Math.min(endPosition, this.contentSize);
           this.streamSize = HeaderSize + this.end - this.start;
           resolve();
-        });
-      }) ;
+        }).catch(reject);
+      });
       this.initialized = true;
       callback();
       this.emit('ready');
