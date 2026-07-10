@@ -29,7 +29,7 @@ jest.unstable_mockModule('../src/browser/Unsealer.js', () => ({
 }));
 
 const { blobDownloadAndDecrypt } = await import('../src/browser/blob_download.js');
-const { streamDownloadAndDecrypt } = await import('../src/browser/stream_download.js');
+const { streamDownloadAndDecrypt, getBestWritable } = await import('../src/browser/stream_download.js');
 
 const PLAIN_BYTES = new TextEncoder().encode('hello from mock');
 
@@ -82,6 +82,13 @@ describe('blobDownloadAndDecrypt', () => {
     ).rejects.toThrow('fetch fail');
     expect(logs.some(m => m.includes('failed'))).toBe(true);
   }, 15000);
+
+  test('enforces Blob admission limit before downloading', async () => {
+    await expect(blobDownloadAndDecrypt(
+      'http://mock/file', 'a'.repeat(64), 'out.bin',
+      { sealedSize: 101, maxSize: 100 }
+    )).rejects.toMatchObject({ code: 'ERR_FILE_TOO_LARGE' });
+  });
 });
 
 describe('streamDownloadAndDecrypt', () => {
@@ -110,4 +117,19 @@ describe('streamDownloadAndDecrypt', () => {
     ).rejects.toThrow('No streaming writable');
     expect(logs.some(m => m.includes('failed'))).toBe(true);
   }, 15000);
+});
+
+describe('getBestWritable', () => {
+  test('uses an explicitly supplied StreamSaver without injecting scripts', async () => {
+    const writable = new WritableStream();
+    const streamSaver = { createWriteStream: jest.fn(() => writable) };
+    const createElement = jest.spyOn(document, 'createElement');
+    try {
+      await expect(getBestWritable('out.bin', { streamSaver })).resolves.toBe(writable);
+      expect(streamSaver.createWriteStream).toHaveBeenCalledWith('out.bin');
+      expect(createElement).not.toHaveBeenCalledWith('script');
+    } finally {
+      createElement.mockRestore();
+    }
+  });
 });

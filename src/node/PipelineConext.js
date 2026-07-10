@@ -1,35 +1,79 @@
 import log from 'loglevel';
-
 import fs from 'fs';
-import { promisify } from 'util';
+import path from 'path';
+import crypto from 'crypto';
 
 import { MetaEncryptorError } from '../common/errors.js';
 
-const open = promisify(fs.open);
-const close = promisify(fs.close);
-const fsync = promisify(fs.fsync);
-const rename = promisify(fs.rename);
-const logger = log.getLogger("meta-encryptor/PipelineContext");
+const logger = log.getLogger('meta-encryptor/PipelineContext');
+const CONTEXT_VERSION = 2;
+const MAX_METADATA_SIZE = 16 * 1024 * 1024;
 
 function toBinaryChunk(value) {
-    if (Buffer.isBuffer(value)) {
-        return value;
-    }
+    if (Buffer.isBuffer(value)) return value;
     if (value instanceof Uint8Array) {
         return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
     }
     return null;
 }
 
+function resetRuntime(runtime) {
+    runtime.rawCommitted = 0;
+    runtime.plainCommitted = 0;
+    runtime.pendingBlocks = [];
+    runtime.unattributedPlain = 0;
+    runtime.inputComplete = false;
+    runtime.skipSealedInput = false;
+}
+
+function assertOffset(value, key) {
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+            detail: { field: key, value }
+        });
+    }
+}
+
+async function readExactly(handle, buffer, offset, length, position) {
+    let total = 0;
+    while (total < length) {
+        const { bytesRead } = await handle.read(
+            buffer,
+            offset + total,
+            length - total,
+            position + total
+        );
+        if (bytesRead === 0) {
+            throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+                detail: { expected: length, actual: total }
+            });
+        }
+        total += bytesRead;
+    }
+}
+
+async function writeExactly(handle, buffer, position = 0) {
+    let total = 0;
+    while (total < buffer.length) {
+        const { bytesWritten } = await handle.write(
+            buffer,
+            total,
+            buffer.length - total,
+            position + total
+        );
+        if (bytesWritten === 0) {
+            throw new MetaEncryptorError('ERR_PIPELINE_CONTEXT_SAVE');
+        }
+        total += bytesWritten;
+    }
+}
+
 export class PipelineContext {
     constructor(options) {
         this.context = {};
         this.options = options || {};
-        this.runtime = {
-            rawCommitted: 0,
-            plainCommitted: 0,
-            pendingBlocks: [] //[{rawSize, plainSize, remainingPlain}]
-        };
+        this.runtime = {};
+        resetRuntime(this.runtime);
     }
 
     update(key, value) {
@@ -55,77 +99,76 @@ export class PipelineContextInFile extends PipelineContext {
 
     _buildPayload() {
         const binaryChunks = [];
-        const meta = {};
+        const meta = Object.create(null);
         let offset = 0;
 
         for (const [key, value] of Object.entries(this.context)) {
             const binary = toBinaryChunk(value);
             if (binary) {
                 binaryChunks.push(binary);
-                meta[key] = {
-                    type: 'binary',
-                    offset,
-                    length: binary.length
-                };
+                meta[key] = { type: 'binary', offset, length: binary.length };
                 offset += binary.length;
             } else {
-                meta[key] = {
-                    type: 'json',
-                    value
-                };
+                meta[key] = { type: 'json', value };
             }
         }
 
-        const metaStr = JSON.stringify(meta);
-        const metaBuffer = Buffer.from(metaStr);
-        const metaLength = metaBuffer.length;
+        const metaBuffer = Buffer.from(JSON.stringify(meta));
+        if (metaBuffer.length > MAX_METADATA_SIZE) {
+            throw new MetaEncryptorError('ERR_PIPELINE_CONTEXT_SAVE', {
+                detail: { metadataSize: metaBuffer.length }
+            });
+        }
 
-        const totalSize = 4 + metaLength + offset;
-        const fileBuffer = Buffer.alloc(totalSize);
-        fileBuffer.writeUInt32BE(metaLength, 0);
+        const fileBuffer = Buffer.allocUnsafe(4 + metaBuffer.length + offset);
+        fileBuffer.writeUInt32BE(metaBuffer.length, 0);
         metaBuffer.copy(fileBuffer, 4);
-        let currentOffset = 4 + metaLength;
+        let currentOffset = 4 + metaBuffer.length;
         for (const chunk of binaryChunks) {
             chunk.copy(fileBuffer, currentOffset);
             currentOffset += chunk.length;
         }
-
         return fileBuffer;
     }
 
     async _writeContextAtomic() {
         const fileBuffer = this._buildPayload();
-        const tmpPath = `${this.filePath}.tmp`;
+        const directory = path.dirname(path.resolve(this.filePath));
+        const tmpPath = path.join(
+            directory,
+            `.${path.basename(this.filePath)}.${process.pid}.${Date.now()}.${crypto.randomBytes(8).toString('hex')}.tmp`
+        );
+        let handle;
 
-        logger.debug("PipelineContextInFile::saveContext saving to ", this.filePath);
-
-        const fd = await open(tmpPath, 'w');
+        logger.debug('PipelineContextInFile::saveContext saving to', this.filePath);
         try {
-            await promisify(fs.write)(fd, fileBuffer, 0, fileBuffer.length, 0);
-            await fsync(fd);
+            handle = await fs.promises.open(tmpPath, 'wx', 0o600);
+            await writeExactly(handle, fileBuffer);
+            await handle.sync();
+        } catch (error) {
+            try { await fs.promises.unlink(tmpPath); } catch (_) {}
+            throw error;
         } finally {
-            await close(fd);
+            if (handle) await handle.close();
         }
 
-        await rename(tmpPath, this.filePath);
+        try {
+            await fs.promises.rename(tmpPath, this.filePath);
+        } catch (error) {
+            try { await fs.promises.unlink(tmpPath); } catch (_) {}
+            throw error;
+        }
     }
 
     async _flushAll() {
         while (this._saveDirty) {
             this._saveDirty = false;
-            try {
-                await this._writeContextAtomic();
-            } catch (error) {
-                logger.error('PipelineContextInFile::saveContext error:', error.message);
-                throw error;
-            }
+            await this._writeContextAtomic();
         }
     }
 
     saveContext() {
         this._saveDirty = true;
-        // The caller that observes a failed save still receives its rejection,
-        // while the next queued save is allowed to retry with the latest state.
         this._saveTail = this._saveTail.then(
             () => this._flushAll(),
             () => this._flushAll()
@@ -134,50 +177,91 @@ export class PipelineContextInFile extends PipelineContext {
     }
 
     async loadContext() {
+        let handle;
         try {
             await this._saveTail;
-
             if (!fs.existsSync(this.filePath)) {
                 this.context = {};
-                this.runtime.rawCommitted = 0;
-                this.runtime.plainCommitted = 0;
-                this.runtime.pendingBlocks = [];
+                resetRuntime(this.runtime);
                 return;
             }
 
-            const fd = await open(this.filePath, 'r');
-            const metaLengthBuffer = Buffer.alloc(4);
-            await promisify(fs.read)(fd, metaLengthBuffer, 0, 4, 0);
-            const metaLength = metaLengthBuffer.readUInt32BE();
+            handle = await fs.promises.open(this.filePath, 'r');
+            const stat = await handle.stat();
+            if (stat.size < 4) {
+                throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID');
+            }
 
-            const metaBuffer = Buffer.alloc(metaLength);
-            await promisify(fs.read)(fd, metaBuffer, 0, metaLength, 4);
-            const meta = JSON.parse(metaBuffer.toString());
+            const metaLengthBuffer = Buffer.allocUnsafe(4);
+            await readExactly(handle, metaLengthBuffer, 0, 4, 0);
+            const metaLength = metaLengthBuffer.readUInt32BE(0);
+            if (metaLength > MAX_METADATA_SIZE || metaLength > stat.size - 4) {
+                throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+                    detail: { metadataSize: metaLength, fileSize: stat.size }
+                });
+            }
 
+            const metaBuffer = Buffer.allocUnsafe(metaLength);
+            await readExactly(handle, metaBuffer, 0, metaLength, 4);
+            let meta;
+            try {
+                meta = JSON.parse(metaBuffer.toString('utf8'));
+            } catch (cause) {
+                throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', { cause });
+            }
+            if (!meta || typeof meta !== 'object' || Array.isArray(meta)) {
+                throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID');
+            }
+
+            const binaryStart = 4 + metaLength;
+            const binarySize = stat.size - binaryStart;
+            const loaded = {};
             for (const [key, info] of Object.entries(meta)) {
+                if (!info || typeof info !== 'object') {
+                    throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', { detail: { field: key } });
+                }
                 if (info.type === 'binary') {
-                    const buffer = Buffer.alloc(info.length);
-                    const bytesRead = await promisify(fs.read)(fd, buffer, 0, info.length, 4 + metaLength + info.offset);
-                    if (bytesRead.bytesRead !== info.length) {
-                        throw new MetaEncryptorError('ERR_PIPELINE_CONTEXT_INVALID');
+                    assertOffset(info.offset, `${key}.offset`);
+                    assertOffset(info.length, `${key}.length`);
+                    if (info.offset + info.length > binarySize) {
+                        throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', { detail: { field: key } });
                     }
-                    this.context[key] = buffer;
+                    const buffer = Buffer.allocUnsafe(info.length);
+                    await readExactly(handle, buffer, 0, info.length, binaryStart + info.offset);
+                    loaded[key] = buffer;
+                } else if (info.type === 'json' && Object.hasOwn(info, 'value')) {
+                    loaded[key] = info.value;
                 } else {
-                    this.context[key] = info.value;
+                    throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', { detail: { field: key } });
                 }
             }
 
-            await close(fd);
+            if (loaded.checkpointVersion !== undefined && loaded.checkpointVersion !== CONTEXT_VERSION) {
+                throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+                    detail: { version: loaded.checkpointVersion }
+                });
+            }
+            assertOffset(loaded.readStart ?? 0, 'readStart');
+            assertOffset(loaded.writeStart ?? 0, 'writeStart');
+            if (loaded.readItemCount !== undefined) assertOffset(loaded.readItemCount, 'readItemCount');
 
-            const readStart = this.context.readStart || 0;
-            const writeStart = this.context.writeStart || 0;
-            this.runtime.rawCommitted = readStart;
-            this.runtime.plainCommitted = writeStart;
+            this.context = loaded;
+            this.runtime.rawCommitted = loaded.readStart ?? 0;
+            this.runtime.plainCommitted = loaded.writeStart ?? 0;
             this.runtime.pendingBlocks = [];
+            this.runtime.unattributedPlain = 0;
+            this.runtime.inputComplete = loaded.phase === 'replacing' || loaded.phase === 'complete';
+            this.runtime.skipSealedInput = false;
         } catch (error) {
             logger.error('PipelineContextInFile::loadContext error:', error.message);
             this.context = {};
-            throw error;
+            resetRuntime(this.runtime);
+            if (error instanceof MetaEncryptorError) throw error;
+            throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', { cause: error });
+        } finally {
+            if (handle) await handle.close();
         }
     }
 }
+
+export { CONTEXT_VERSION };

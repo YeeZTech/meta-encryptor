@@ -1,4 +1,5 @@
 import secp256k1 from "secp256k1";
+import { MetaEncryptorError } from '../common/errors.js';
 import { hexToBytes, toUint8Array, toHex, 
   generateAESKeyFrom, generatePublicKeyFromPrivateKey, aad, 
   signMessage} from '../common/ypccrypto.common.js';
@@ -8,6 +9,9 @@ import { hexToBytes, toUint8Array, toHex,
 async function decryptMessage(privKeyHex, msg){
   const skey = hexToBytes(privKeyHex);
   const total = msg.length;
+  if (total < 64 + 16 + 12) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'encryptedMessageLength', length: total } });
+  }
   const encrypted = msg.slice(0, total - 64 - 16 - 12);
   const liv = msg.slice(encrypted.length, total - 64 - 16);
   const pkey = msg.slice(encrypted.length + 12, total - 16);
@@ -107,7 +111,7 @@ const YPCCrypto = function () {
 
   this.generateEncryptedInput = async function (local_pkey, input) {
     const ots = this.generatePrivateKey();
-    const inputBytes = toUint8Array(input.buffer || input);
+    const inputBytes = toUint8Array(input);
     return await this._encryptMessage(local_pkey, ots, inputBytes, 0x2);
   };
 
@@ -116,6 +120,9 @@ const YPCCrypto = function () {
     const skeyHex = typeof skey === 'string' ? skey : toHex(skeyBytes);
     const msgBytes = toUint8Array(msg);
     const total = msgBytes.length;
+    if (total < 64 + 16 + 12) {
+      throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'encryptedMessageLength', length: total } });
+    }
     
     const encrypted = msgBytes.slice(0, total - 64 - 16 - 12);
     const liv = msgBytes.slice(encrypted.length, total - 64 - 16);

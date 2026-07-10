@@ -4,9 +4,34 @@
  */
 
 import { MetaEncryptorError } from './errors.js';
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
 
-import { HeaderSize, MagicNum, CurrentBlockFileVersion } from './limits.js';
-import { ntpackage2batch, fromNtInput } from './header_util.js';
+import {
+  HeaderSize,
+  BlockInfoSize,
+  MagicNum,
+  CurrentBlockFileVersion,
+  BlockNumLimit,
+  ItemsPerBlockLimit,
+  MaxItemNumber,
+  MaxSealedItemSize,
+  CryptoEnvelopeSize,
+  NtPackageHeaderSize,
+} from './limits.js';
+import { ntpackage2batch, fromNtInput, readUint64LE, buffer2block_info_t } from './header_util.js';
+
+const INITIAL_DATA_HASH = new TextEncoder().encode('Fidelius');
+
+function normalizeMaxSealedItemSize(value) {
+  const maximum = value ?? MaxSealedItemSize;
+  const minimum = CryptoEnvelopeSize + NtPackageHeaderSize;
+  if (!Number.isSafeInteger(maximum) || maximum < minimum) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'maxSealedItemSize', value: maximum, minimum }
+    });
+  }
+  return maximum;
+}
 
 // ---------------------------------------------------------------------------
 // Header validation — pure function, works on Uint8Array | Buffer
@@ -19,12 +44,11 @@ import { ntpackage2batch, fromNtInput } from './header_util.js';
  * @throws {Error} if magic or version is invalid
  */
 export function validateHeader(headerBytes) {
-  const dv = new DataView(
-    headerBytes.buffer,
-    headerBytes.byteOffset,
-    headerBytes.byteLength
-  );
-
+  if (!(headerBytes instanceof Uint8Array) || headerBytes.byteLength !== HeaderSize) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'headerLength', expected: HeaderSize, actual: headerBytes?.byteLength }
+    });
+  }
   // read magic number (first 8 bytes, little-endian uint64)
   const magic = headerBytes.slice(0, 8);
   const magicNum = _getMagicNumBytes();
@@ -38,24 +62,36 @@ export function validateHeader(headerBytes) {
   }
 
   // version_number at offset 8 (uint64 LE)
-  const loVer = dv.getUint32(8, true);
-  const hiVer = dv.getUint32(12, true);
-  const version = hiVer * 0x100000000 + loVer;
+  const version = readUint64LE(headerBytes, 8).toNumber();
   if (version !== CurrentBlockFileVersion) {
     throw new MetaEncryptorError('ERR_UNSUPPORTED_VERSION', { detail: { version } });
   }
 
   // block_number at offset 16 (uint64 LE)
-  const loBlock = dv.getUint32(16, true);
-  const hiBlock = dv.getUint32(20, true);
-  const blockNumber = hiBlock * 0x100000000 + loBlock;
+  const blockNumber = readUint64LE(headerBytes, 16).toNumber();
 
   // item_number at offset 24 (uint64 LE)
-  const loItem = dv.getUint32(24, true);
-  const hiItem = dv.getUint32(28, true);
-  const itemNumber = hiItem * 0x100000000 + loItem;
+  const itemNumber = readUint64LE(headerBytes, 24).toNumber();
 
-  return { itemNumber, blockNumber };
+  if (blockNumber > BlockNumLimit || itemNumber > MaxItemNumber) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'headerCounts', blockNumber, itemNumber }
+    });
+  }
+  const expectedBlockNumber = itemNumber === 0
+    ? 0
+    : Math.ceil(itemNumber / ItemsPerBlockLimit);
+  if (blockNumber !== expectedBlockNumber) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'blockItemCount', blockNumber, itemNumber, expectedBlockNumber }
+    });
+  }
+
+  return {
+    itemNumber,
+    blockNumber,
+    dataHash: headerBytes.slice(32, 64),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -70,17 +106,15 @@ export function validateHeader(headerBytes) {
  * @param {Uint8Array} accumulated - bytes after header
  * @returns {{ cipher: Uint8Array, remaining: Uint8Array, consumedBytes: number } | null}
  */
-export function tryReadItem(accumulated) {
+export function tryReadItem(accumulated, maxSealedItemSize = MaxSealedItemSize) {
   if (accumulated.length < 8) return null;
-
-  const dv = new DataView(
-    accumulated.buffer,
-    accumulated.byteOffset,
-    accumulated.byteLength
-  );
-  const lo = dv.getUint32(0, true);
-  const hi = dv.getUint32(4, true);
-  const itemSize = hi * 0x100000000 + lo;
+  const maximum = normalizeMaxSealedItemSize(maxSealedItemSize);
+  const itemSize = readUint64LE(accumulated, 0).toNumber();
+  if (itemSize < CryptoEnvelopeSize + NtPackageHeaderSize || itemSize > maximum) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'itemSize', itemSize, maximum }
+    });
+  }
 
   const totalItemBytes = 8 + itemSize; // prefix + data
   if (accumulated.length < totalItemBytes) return null;
@@ -135,6 +169,12 @@ export function concatUint8Array(a, b) {
  * Create a fresh unseal state object.
  */
 export function createUnsealState(initial = {}) {
+  const initialHash = initial.runningDataHash || initial.dataHash;
+  if (initialHash !== undefined && (!(initialHash instanceof Uint8Array) || initialHash.byteLength !== 32)) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'runningDataHash', length: initialHash?.byteLength }
+    });
+  }
   return {
     accumulated: initial.accumulated || new Uint8Array(0),
     isHeaderReady: initial.isHeaderReady || false,
@@ -142,35 +182,122 @@ export function createUnsealState(initial = {}) {
     readItemCount: initial.readItemCount || 0,
     processedBytes: initial.processedBytes || 0,
     writeBytes: initial.writeBytes || 0,
+    expectedDataHash: initial.expectedDataHash || null,
+    runningDataHash: initialHash
+      ? new Uint8Array(initialHash)
+      : new Uint8Array(keccak256(INITIAL_DATA_HASH)),
   };
+}
+
+/**
+ * Validate the block-info table against header counts and the sealed content
+ * size.  This can be called after reading only the file tail; content bytes do
+ * not need to be allocated.
+ */
+export function validateSealedLayout(
+  headerBytes,
+  blockInfoBytes,
+  contentSize,
+  totalFileSize,
+  maxSealedItemSize = MaxSealedItemSize
+) {
+  const header = validateHeader(headerBytes);
+  const maximumItemSize = normalizeMaxSealedItemSize(maxSealedItemSize);
+  if (!Number.isSafeInteger(contentSize) || contentSize < 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'contentSize', contentSize }
+    });
+  }
+  if (!(blockInfoBytes instanceof Uint8Array) ||
+      blockInfoBytes.byteLength !== header.blockNumber * BlockInfoSize) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: {
+        field: 'blockInfoLength',
+        expected: header.blockNumber * BlockInfoSize,
+        actual: blockInfoBytes?.byteLength,
+      }
+    });
+  }
+  const expectedTotal = contentSize + blockInfoBytes.byteLength + HeaderSize;
+  if (totalFileSize !== undefined &&
+      (!Number.isSafeInteger(totalFileSize) || totalFileSize !== expectedTotal)) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'fileSize', expected: expectedTotal, actual: totalFileSize }
+    });
+  }
+
+  let expectedItemStart = 0;
+  let expectedFileStart = 0;
+  for (let i = 0; i < header.blockNumber; i++) {
+    const info = buffer2block_info_t(
+      blockInfoBytes.subarray(i * BlockInfoSize, (i + 1) * BlockInfoSize)
+    );
+    const itemCount = info.end_item_index - info.start_item_index;
+    const blockByteLength = info.end_file_pos - info.start_file_pos;
+    const minimumBlockBytes = itemCount * (8 + CryptoEnvelopeSize + NtPackageHeaderSize);
+    const maximumBlockBytes = itemCount * (8 + maximumItemSize);
+    if (info.start_item_index !== expectedItemStart ||
+        itemCount <= 0 || itemCount > ItemsPerBlockLimit ||
+        (i < header.blockNumber - 1 && itemCount !== ItemsPerBlockLimit) ||
+        info.end_item_index > header.itemNumber ||
+        info.start_file_pos !== expectedFileStart ||
+        info.end_file_pos <= info.start_file_pos ||
+        info.end_file_pos > contentSize ||
+        blockByteLength < minimumBlockBytes ||
+        blockByteLength > maximumBlockBytes) {
+      throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+        detail: { field: 'blockInfo', blockIndex: i }
+      });
+    }
+    expectedItemStart = info.end_item_index;
+    expectedFileStart = info.end_file_pos;
+  }
+  if (expectedItemStart !== header.itemNumber || expectedFileStart !== contentSize) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: {
+        field: 'blockInfoCoverage',
+        coveredItems: expectedItemStart,
+        itemNumber: header.itemNumber,
+        coveredBytes: expectedFileStart,
+        contentSize,
+      }
+    });
+  }
+  return { ...header, contentSize, totalFileSize: expectedTotal };
 }
 
 /**
  * Feed one chunk through the unseal state machine.
  */
-export async function processSealedChunk(state, newChunk, { decrypt, onPlain, onProgress, onItemDone, onBatchItem }) {
+export async function processSealedChunk(state, newChunk, {
+  decrypt,
+  onPlain,
+  onProgress,
+  onItemDone,
+  onBatchItem,
+  maxSealedItemSize = MaxSealedItemSize,
+}) {
   const data = newChunk instanceof Uint8Array ? newChunk : new Uint8Array(newChunk);
   state.accumulated = concatUint8Array(state.accumulated, data);
+  let offset = 0;
 
   if (!state.isHeaderReady) {
     if (state.accumulated.length < HeaderSize) return;
-    const headerBytes = state.accumulated.slice(0, HeaderSize);
-    const { itemNumber } = validateHeader(headerBytes);
+    const headerBytes = state.accumulated.subarray(0, HeaderSize);
+    const { itemNumber, dataHash } = validateHeader(headerBytes);
     state.totalItems = itemNumber;
-    state.accumulated = state.accumulated.slice(HeaderSize);
+    state.expectedDataHash = dataHash;
+    offset = HeaderSize;
     state.isHeaderReady = true;
   }
 
   while (true) {
-    // Once all declared items are read, ignore any trailing bytes (block-info /
-    // tail header when the source streams the raw file) instead of parsing
-    // them as items.
-    if (state.totalItems > 0 && state.readItemCount >= state.totalItems) break;
+    if (state.readItemCount >= state.totalItems) break;
 
-    const item = tryReadItem(state.accumulated);
+    const item = tryReadItem(state.accumulated.subarray(offset), maxSealedItemSize);
     if (!item) break;
 
-    state.accumulated = item.remaining;
+    offset += item.consumedBytes;
     state.processedBytes += item.consumedBytes;
 
     const decrypted = await decrypt(item.cipher);
@@ -189,11 +316,19 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
 
     let plainSize = 0;
     const batch = ntpackage2batch(decrypted);
+    if (batch.length === 0) {
+      throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+        detail: { field: 'emptyNtPackage', itemIndex: state.readItemCount }
+      });
+    }
     for (let i = 0; i < batch.length; i++) {
       let it = batch[i];
       if (it instanceof ArrayBuffer) it = new Uint8Array(it);
       else if (ArrayBuffer.isView(it)) it = new Uint8Array(it.buffer, it.byteOffset, it.byteLength);
       if (onBatchItem) onBatchItem(it);
+      state.runningDataHash = new Uint8Array(keccak256(
+        concatUint8Array(state.runningDataHash, it)
+      ));
       const plain = fromNtInput(it);
       plainSize += plain.length;
       state.writeBytes += plain.length;
@@ -206,6 +341,50 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
       onProgress(state.totalItems, state.readItemCount, state.processedBytes, state.writeBytes);
     }
   }
+
+  state.accumulated = state.accumulated.slice(offset);
+
+  if (state.readItemCount >= state.totalItems && state.accumulated.length > 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'trailingBytes', trailingBytes: state.accumulated.length }
+    });
+  }
+}
+
+function hashesEqual(a, b) {
+  if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array) || a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
+/** Strictly verify that a sealed stream was consumed in full and is authentic. */
+export function verifyFinalState(state) {
+  if (!state.isHeaderReady || state.readItemCount !== state.totalItems) {
+    throw new MetaEncryptorError('ERR_TRUNCATED_INPUT', {
+      detail: {
+        headerReady: state.isHeaderReady,
+        readItemCount: state.readItemCount,
+        totalItems: state.totalItems,
+      }
+    });
+  }
+  if (state.accumulated.length !== 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'trailingBytes', trailingBytes: state.accumulated.length }
+    });
+  }
+  if (!hashesEqual(state.runningDataHash, state.expectedDataHash)) {
+    throw new MetaEncryptorError('ERR_INTEGRITY_MISMATCH', {
+      detail: { readItemCount: state.readItemCount }
+    });
+  }
+  return {
+    totalItems: state.totalItems,
+    processedBytes: state.processedBytes,
+    writeBytes: state.writeBytes,
+    dataHash: new Uint8Array(state.runningDataHash),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -270,6 +449,9 @@ export class UnsealerCore {
   /** @type {(rawBatchItem: Uint8Array) => void} */
   #onBatchItem;
 
+  /** @type {number} */
+  #maxSealedItemSize;
+
   /**
    * @param {{
    *   decrypt: (cipher: Uint8Array) => Promise<Uint8Array>,
@@ -277,11 +459,13 @@ export class UnsealerCore {
    *   onProgress?: (total:number, read:number, procBytes:number, writeBytes:number) => void,
    *   onItemDone?: (info: {consumedBytes:number, plainSize:number}) => void,
    *   onBatchItem?: (rawBatchItem: Uint8Array) => void,
-   *   initialState?: { accumulated?: Uint8Array, isHeaderReady?: boolean, totalItems?: number, readItemCount?: number, processedBytes?: number, writeBytes?: number }
-   * }} opts
-   */
-  constructor({ decrypt, onPlain, onProgress, onItemDone, onBatchItem, initialState }) {
+    *   initialState?: { accumulated?: Uint8Array, isHeaderReady?: boolean, totalItems?: number, readItemCount?: number, processedBytes?: number, writeBytes?: number },
+    *   maxSealedItemSize?: number
+    * }} opts
+    */
+  constructor({ decrypt, onPlain, onProgress, onItemDone, onBatchItem, initialState, maxSealedItemSize }) {
     this.#state = createUnsealState(initialState || {});
+    this.#maxSealedItemSize = normalizeMaxSealedItemSize(maxSealedItemSize);
     this.#decrypt = decrypt;
     this.onPlain = onPlain || (() => {});
     this.#onProgress = onProgress || null;
@@ -297,10 +481,17 @@ export class UnsealerCore {
       onProgress: this.#onProgress,
       onItemDone: this.#onItemDone,
       onBatchItem: this.#onBatchItem,
+      maxSealedItemSize: this.#maxSealedItemSize,
     });
   }
 
-  get finished() { return this.#state.totalItems > 0 && this.#state.readItemCount >= this.#state.totalItems; }
+  /** Verify item count, exact consumption, and the header data hash. */
+  finalize() { return verifyFinalState(this.#state); }
+
+  /** Alias for callers that prefer an explicit verification name. */
+  verifyFinalState() { return this.finalize(); }
+
+  get finished() { return this.#state.isHeaderReady && this.#state.readItemCount === this.#state.totalItems; }
   get headerReady() { return this.#state.isHeaderReady; }
   get totalItems() { return this.#state.totalItems; }
   get readItemCount() { return this.#state.readItemCount; }
@@ -309,6 +500,8 @@ export class UnsealerCore {
   set remaining(buf) { this.#state.accumulated = buf; }
   get processedBytes() { return this.#state.processedBytes; }
   get writeBytes() { return this.#state.writeBytes; }
+  get expectedDataHash() { return this.#state.expectedDataHash && new Uint8Array(this.#state.expectedDataHash); }
+  get runningDataHash() { return new Uint8Array(this.#state.runningDataHash); }
 }
 
 // ---------------------------------------------------------------------------

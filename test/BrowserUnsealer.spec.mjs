@@ -1,6 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { Unsealer } from '../src/browser/Unsealer.js';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 /**
  * Helper: feed chunks into an Unsealer via its writable and collect all
@@ -30,7 +33,6 @@ async function collectOutputs(unsealer, chunks) {
 
 describe('Browser Unsealer compatibility', () => {
   it('should decrypt to original content (single chunk input)', async () => {
-    const repoRoot = path.resolve(new URL(import.meta.url).pathname, '..', '..');
     const fixturePath = path.join(repoRoot, 'test', 'fixtures', 'browser-unsealer-fixture-small.json');
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
     const streamBuf = fs.readFileSync(fixture.sealed_path);
@@ -47,7 +49,6 @@ describe('Browser Unsealer compatibility', () => {
   }, 20000);
 
   it('should decrypt multiple inputs batched', async () => {
-    const repoRoot = path.resolve(new URL(import.meta.url).pathname, '..', '..');
     const fixturePath = path.join(repoRoot, 'test', 'fixtures', 'browser-unsealer-fixture-small.json');
     const fixture = JSON.parse(fs.readFileSync(fixturePath, 'utf8'));
     const streamBuf = fs.readFileSync(fixture.sealed_path);

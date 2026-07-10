@@ -27,7 +27,7 @@ yarn add @yeez-tech/meta-encryptor
 #### 构建及测试
 
 ```bash
-npm install
+npm ci
 npm run build
 
 # Node 单元测试（临时文件写入 test_tmp/，结束后自动清理）
@@ -74,11 +74,10 @@ await crypto.decryptMessage(sKey, encryptedMessage);
 meta-encryptor 使用结构化错误 `MetaEncryptorError`，包含 `code`（稳定错误码）、`detail`（上下文数据）和 `cause`（底层错误）。
 
 ```js
-import { downloadUnsealed, MetaEncryptorError, configureLocale, detectLocale } from "@yeez-tech/meta-encryptor";
-import zhCN from "@yeez-tech/meta-encryptor/src/locales/zh-CN.json";
+import { downloadUnsealed, MetaEncryptorError, configureLocale, detectLocale } from "@yeez-tech/meta-encryptor/browser";
 
 // 可选：配置中文（import 时自动检测，默认英文）
-configureLocale({ messages: zhCN });
+configureLocale(); // 使用内置语言检测；也可以传入自定义 messages
 
 try {
   await downloadUnsealed({ url, privateKey, filename });
@@ -97,31 +96,37 @@ try {
 
 ```js
 import { configureLocale } from "@yeez-tech/meta-encryptor";
-import zhCN from "@yeez-tech/meta-encryptor/src/locales/zh-CN.json";
-configureLocale({ messages: zhCN });
+configureLocale(); // 使用内置语言检测；也可以传入自定义 messages
 ```
 
 #### 浏览器端下载与 StreamSaver
 
 `downloadUnsealed` 在桌面端自动选择流式下载方案以获得更好的用户体验：
 
-1. **StreamSaver**（CDN 自动加载，支持原生下载进度条）
-2. **Blob 下载**（最终兜底，兼容所有浏览器）
+1. **调用方提供的 StreamSaver**（可选）
+2. **File System Access API**（浏览器支持时）
+3. **Blob 下载**（最终兜底，兼容所有浏览器）
 
-**你不需要手动引入 StreamSaver**——库会在需要时从 CDN 自动加载。如果想使用本地版本：
+库不会从 CDN 注入脚本。需要 StreamSaver 时，请由应用本地安装、打包并通过
+`streamSaver` 参数传入可信实例：
 
 ```bash
 npm install streamsaver
 ```
 
-```html
-<!-- 在 HTML 中手动引入（库检测到 window.streamSaver 后会跳过 CDN 加载） -->
-<script src="/node_modules/streamsaver/StreamSaver.min.js"></script>
+```js
+await downloadUnsealed({ url, privateKey, filename, streamSaver });
 ```
 
 StreamSaver 已声明为 `optional` peerDependency，安装后不会报警告。
 
-> **注意**：底层使用 `fetch` + `Range` 分块拉取数据，Safari 浏览器存在重定向后丢失 `Range` 请求头的问题，因此 **URL 必须直连，不能发生 HTTP 重定向**（如 301/302）。
+> **注意**：底层会固定重定向后的最终 URL，并要求 Range 请求返回 `206`。
+> 跨域下载默认只发送 CORS safelisted 的单段 `Range`，不会添加会强制预检的
+> `If-Range`。服务端如通过 `Access-Control-Expose-Headers` 暴露
+> `Content-Range`、`ETag` 或 `Last-Modified`，库会严格校验这些值；未暴露时仍会
+> 校验每段响应的精确字节数，并在解密结束时验证完整文件的数据哈希。
+> consumer 默认将单个 sealed item 限制为 64 MiB；恢复旧版生产者生成的更大单 item
+> 时，可显式传入更高的 `maxSealedItemSize`，该值会直接影响解密峰值内存。
 
 #### API
 
@@ -250,13 +255,13 @@ await crypto.decryptMessage(...)
 在浏览器环境中，可以使用 `downloadUnsealed` 直接下载并解密文件：
 
 ```js
-import { downloadUnsealed } from "@yeez-tech/meta-encryptor";
+import { downloadUnsealed } from "@yeez-tech/meta-encryptor/browser";
 
 await downloadUnsealed({
   url: "https://example.com/encrypted file",
-  privateKeyHex: "YOUR_PRIVATE_KEY_HEX",
+  privateKey: "YOUR_PRIVATE_KEY_HEX",
   filename: "decrypted-file.txt",
-  progressHandler: (totalItems, processedItems, readBytes, writeBytes) => {
+  onProgress: (totalItems, processedItems, readBytes, writeBytes) => {
     console.log(`Progress: ${processedItems}/${totalItems}`);
   },
 });

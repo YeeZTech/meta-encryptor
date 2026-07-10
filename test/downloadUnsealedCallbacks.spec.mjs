@@ -19,6 +19,7 @@ jest.unstable_mockModule('../src/browser/stream_download.js', () => ({
     opts?.log?.('Stream download starting...');
     opts?.onDownloadReady?.();
     opts?.onProgress?.(100, 50, 50, 50);
+    opts?.onByteProgress?.(1000, 500);
     opts?.log?.('Download complete');
   }),
 }));
@@ -28,11 +29,12 @@ jest.unstable_mockModule('../src/browser/blob_download.js', () => ({
     opts?.log?.('Using Blob download...');
     opts?.onDownloadReady?.();
     opts?.onProgress?.(100, 50, 50, 50);
+    opts?.onByteProgress?.(1000, 500);
     opts?.log?.('Download complete (client-side Blob decrypt)');
   }),
 }));
 
-const { downloadUnsealed } = await import('../src/browser/downloadUnsealed.js');
+const { downloadUnsealed, inspectSealed } = await import('../src/browser/downloadUnsealed.js');
 const { streamDownloadAndDecrypt } = await import('../src/browser/stream_download.js');
 const { blobDownloadAndDecrypt } = await import('../src/browser/blob_download.js');
 
@@ -41,7 +43,7 @@ function makeInspectDiskBuf(contentBytes = 200) {
   const header = Buffer.alloc(HeaderSize);
   Buffer.from('1fe2ef7f3ed18847', 'hex').copy(header, 0);
   header.writeUInt32LE(2, 8);
-  header.writeUInt32LE(0, 16);
+  header.writeUInt32LE(1, 16);
   header.writeUInt32LE(1, 24);
   return Buffer.concat([Buffer.alloc(contentBytes, 0xab), header]);
 }
@@ -64,7 +66,9 @@ function createMockFetch(diskBuf) {
       return {
         ok: true,
         status: 206,
-        headers: { get: () => null },
+        headers: { get: (n) => n.toLowerCase() === 'content-range'
+          ? `bytes ${start}-${end}/${totalSize}`
+          : null },
         arrayBuffer: async () => sliced.buffer.slice(sliced.byteOffset, sliced.byteOffset + sliced.byteLength),
       };
     }
@@ -151,5 +155,71 @@ describe('downloadUnsealed callback orchestration', () => {
 
     expect(errors).toHaveLength(1);
     expect(errors[0].message).toMatch(/network down|HEAD/i);
+  });
+
+  test('inspectSealed defaults to a no-op logger', async () => {
+    await expect(inspectSealed('http://fixture/sealed.file')).resolves.toMatchObject({ itemNumber: 1 });
+  });
+
+  test('inspectSealed accepts a 206 when cross-origin Content-Range is not exposed', async () => {
+    const diskBuf = makeInspectDiskBuf();
+    const baseFetch = createMockFetch(diskBuf);
+    globalThis.fetch = async (url, init = {}) => {
+      const response = await baseFetch(url, init);
+      if (init.method !== 'HEAD') response.headers = { get: () => null };
+      return response;
+    };
+
+    await expect(inspectSealed('https://files.example.test/sealed.file'))
+      .resolves.toMatchObject({ itemNumber: 1, totalSize: diskBuf.length });
+  });
+
+  test('keeps item and byte progress callbacks on separate signatures', async () => {
+    Object.defineProperty(navigator, 'userAgent', { value: 'Desktop', configurable: true });
+    const itemCalls = [];
+    const byteCalls = [];
+    await downloadUnsealed({
+      url: 'http://fixture/sealed.file',
+      privateKey: privateKeyHex,
+      filename: 'out.bin',
+      onProgress: (...args) => itemCalls.push(args),
+      onByteProgress: (...args) => byteCalls.push(args),
+    });
+    expect(itemCalls).toEqual([[100, 50, 50, 50]]);
+    expect(byteCalls).toEqual([[1000, 500]]);
+  });
+
+  test('does not retry with Blob after an operational stream failure', async () => {
+    Object.defineProperty(navigator, 'userAgent', { value: 'Desktop', configurable: true });
+    streamDownloadAndDecrypt.mockRejectedValueOnce(new Error('wrong key'));
+    const errors = [];
+    await downloadUnsealed({
+      url: 'http://fixture/sealed.file',
+      privateKey: privateKeyHex,
+      filename: 'out.bin',
+      onError: (error) => errors.push(error),
+    });
+    expect(errors[0]?.message).toBe('wrong key');
+    expect(blobDownloadAndDecrypt).not.toHaveBeenCalled();
+  });
+
+  test('falls back only when no stream writable is available', async () => {
+    Object.defineProperty(navigator, 'userAgent', { value: 'Desktop', configurable: true });
+    const unavailable = new Error('unavailable');
+    unavailable.code = 'ERR_NO_STREAM_WRITABLE';
+    streamDownloadAndDecrypt.mockRejectedValueOnce(unavailable);
+    await downloadUnsealed({
+      url: 'http://fixture/sealed.file',
+      privateKey: privateKeyHex,
+      filename: 'out.bin',
+    });
+    expect(blobDownloadAndDecrypt).toHaveBeenCalledTimes(1);
+  });
+
+  test('missing parameters are reported through onError', async () => {
+    const errors = [];
+    await downloadUnsealed({ filename: 'x', onError: (error) => errors.push(error) });
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'ERR_MISSING_PARAMS' });
   });
 });

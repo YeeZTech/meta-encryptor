@@ -16,10 +16,11 @@ export class Unsealer extends TransformStream {
   /** @type {UnsealerCore} */
   #core;
 
-  constructor({ privateKeyHex, progressHandler } = {}) {
+  constructor({ privateKeyHex, progressHandler, maxSealedItemSize } = {}) {
     const core = new UnsealerCore({
       decrypt: (cipher) => BrowserCrypto.decryptMessage(privateKeyHex, cipher),
       onProgress: progressHandler,
+      maxSealedItemSize,
     });
 
     super({
@@ -28,10 +29,14 @@ export class Unsealer extends TransformStream {
         await core.processChunk(chunk);
       },
       flush: async () => {
+        if (typeof core.finalize === 'function') {
+          await core.finalize();
+          return;
+        }
         // Upstream closed: if not every declared item was decrypted the sealed
         // input was truncated — fail instead of finishing with shorter output.
         // headerReady with totalItems === 0 is a legitimately empty stream.
-        if (!core.headerReady || (core.totalItems > 0 && !core.finished)) {
+        if (!core.headerReady || !core.finished || core.remaining?.length > 0) {
           throw new MetaEncryptorError('ERR_TRUNCATED_INPUT', {
             detail: {
               headerReady: core.headerReady,

@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { createRequire } from 'module';
+import { fileURLToPath } from 'url';
 const require = createRequire(import.meta.url);
 const built = require('../build/commonjs/index.node.cjs');
 const {Sealer, YPCCrypto, SealedFileStream } = built;
@@ -22,7 +23,7 @@ function generateFileWithSize(fp, size){
   }
 }
 
-const root = path.resolve(new URL(import.meta.url).pathname, '..');
+const root = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(root, '..');
 const outDir = path.join(repoRoot, 'test', 'fixtures');
 fs.mkdirSync(outDir, { recursive: true });

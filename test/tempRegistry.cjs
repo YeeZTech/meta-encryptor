@@ -12,34 +12,6 @@ const TEST_TMP_DIR = path.join(
 const registered = new Set();
 let currentTestTemps = new Set();
 
-const STALE_ROOT_NAMES = new Set([
-  'small.file',
-  'medium.file',
-  'large.file',
-  'Unsealerlarge.file',
-  'BrowserUnsealerLarge.file',
-  'test.remote.xUnsealerlarge.file',
-  'SealedFileStream.xlarge.file',
-  'SealedFileStream.xlarge.file.copy',
-  'test_context',
-  'pause_resume_large.file',
-  'pause_resume_large_context',
-  'pause_resume_large.rand.file',
-  'pause_resume_large_context.rand',
-  'pause_resume_large.same.file',
-  'pause_resume_large_context.same',
-  'multi_pause_resume_large.rand_same.file',
-  'multi_pause_resume_large_context.rand_same',
-  'final_verify_context',
-  'truncate_residual_test.file',
-  'truncate_residual_context',
-]);
-
-const STALE_ROOT_PREFIXES = [
-  'pause_resume_large.',
-  'multi_pause_resume_large.',
-];
-
 function rmSafe(target) {
   try {
     fs.rmSync(target, { recursive: true, force: true });
@@ -51,6 +23,10 @@ function rmSafe(target) {
 function registerTemp(target) {
   if (!target) return;
   const abs = path.resolve(target);
+  const tmpRoot = path.resolve(process.cwd(), 'test_tmp');
+  if (abs !== tmpRoot && !abs.startsWith(tmpRoot + path.sep)) {
+    throw new Error(`Refusing to register test artifact outside test_tmp: ${abs}`);
+  }
   registered.add(abs);
   currentTestTemps.add(abs);
 }
@@ -95,33 +71,8 @@ function cleanupRegistered() {
   currentTestTemps.clear();
 }
 
-function cleanupStaleRootArtifacts(cwd = process.cwd()) {
-  let entries = [];
-  try {
-    entries = fs.readdirSync(cwd, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const ent of entries) {
-    const name = ent.name;
-    if (STALE_ROOT_NAMES.has(name)) {
-      rmSafe(path.join(cwd, name));
-      continue;
-    }
-    if (STALE_ROOT_PREFIXES.some((pfx) => name.startsWith(pfx))) {
-      rmSafe(path.join(cwd, name));
-      continue;
-    }
-    if (!ent.isFile()) continue;
-    if (/\.(sealed|sealed\.ret|unsealed\.ret|util\.sealed)$/.test(name)) {
-      rmSafe(path.join(cwd, name));
-    }
-  }
-}
-
 function cleanupAll() {
   cleanupRegistered();
-  cleanupStaleRootArtifacts();
 }
 
 function cleanupTestTmpRoot(cwd = process.cwd()) {
@@ -149,6 +100,5 @@ module.exports = {
   cleanupAfterTest,
   cleanupAll,
   cleanupTestTmpRoot,
-  cleanupStaleRootArtifacts,
   installJestHooks,
 };

@@ -1,4 +1,2 @@
-const { cleanupStaleRootArtifacts, installJestHooks } = require('./test/tempRegistry.cjs');
-
-cleanupStaleRootArtifacts();
+const { installJestHooks } = require('./test/tempRegistry.cjs');
 installJestHooks();

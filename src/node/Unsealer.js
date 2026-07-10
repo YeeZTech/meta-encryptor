@@ -1,4 +1,3 @@
-import { keccak_256 as keccak256} from '@noble/hashes/sha3';
 import { Transform } from "stream";
 import log from "loglevel";
 
@@ -13,9 +12,6 @@ export class Unsealer extends Transform {
   /** @type {UnsealerCore} */
   #core;
 
-  /** @type {boolean} skip strict truncation check for legacy resumed contexts */
-  #lenientEof = false;
-
   constructor(options) {
     super(options);
 
@@ -27,44 +23,18 @@ export class Unsealer extends Transform {
     const resumeBytes = Number.isFinite(resumeBytesValue) && resumeBytesValue > 0
       ? resumeBytesValue
       : 0;
-    const restoredItemCount = options?.processedItemCount ?? ctx.readItemCount;
-    const hasValidItemCount =
-      Number.isInteger(restoredItemCount) && restoredItemCount >= 0;
-
-    // A false marker is sticky: a relative count produced while recovering a
-    // legacy checkpoint must not become "reliable" on the following resume.
-    let readItemCountReliable;
-    if (resumeBytes === 0) {
-      readItemCountReliable = true;
-    } else if (ctx.readItemCountReliable === false) {
-      readItemCountReliable = false;
-    } else if (ctx.readItemCountReliable === true) {
-      readItemCountReliable = hasValidItemCount;
-    } else {
-      // Existing develop checkpoints predate the marker but contain a valid
-      // absolute count. Older checkpoints have an offset without that count.
-      readItemCountReliable = hasValidItemCount && restoredItemCount > 0;
+    const restoredItemCount = options?.processedItemCount ?? ctx.readItemCount ?? 0;
+    if (!Number.isSafeInteger(restoredItemCount) || restoredItemCount < 0) {
+      throw new TypeError('processedItemCount must be a non-negative safe integer');
     }
 
-    if (context && context.context) {
-      context.context.readItemCountReliable = readItemCountReliable;
-    }
-
-    // Node-specific rolling keccak256 hash
-    let dataHash = Buffer.from(keccak256(Buffer.from("Fidelius", "utf-8")));
-
-    this.#core = new UnsealerCore({
+    let core;
+    core = new UnsealerCore({
       decrypt: (cipher) =>
         YPCCrypto.decryptMessage(Buffer.from(keyPair["private_key"], 'hex'), cipher),
       onPlain: (b) => this.push(b),
       onProgress: progressHandler,
-      onBatchItem: (rawBatch) => {
-        const k = Buffer.from(
-          dataHash.toString("hex") + Buffer.from(rawBatch).toString("hex"),
-          "hex"
-        );
-        dataHash = Buffer.from(keccak256(k));
-      },
+      maxSealedItemSize: options?.maxSealedItemSize,
       onItemDone: ({ consumedBytes, plainSize }) => {
         // update recoverable-stream context
         if (context && context.context && context.context["status"] === "file") {
@@ -82,31 +52,45 @@ export class Unsealer extends Transform {
             if (!Array.isArray(context.runtime.pendingBlocks))
               context.runtime.pendingBlocks = [];
           }
-          context.runtime.pendingBlocks.push({ rawSize: consumedBytes, plainSize, remainingPlain: plainSize });
+          context.runtime.pendingBlocks.push({
+            rawSize: consumedBytes,
+            plainSize,
+            remainingPlain: plainSize,
+            dataHash: Buffer.from(core.runningDataHash)
+          });
         }
       },
       initialState: {
-        readItemCount: hasValidItemCount ? restoredItemCount : 0,
+        readItemCount: restoredItemCount,
         processedBytes: resumeBytesValue,
         writeBytes: options?.writeBytes ?? ctx.writeStart ?? 0,
+        runningDataHash: ctx.dataHash,
       }
     });
-
-    // Only legacy resumes without a reliable absolute item count are lenient.
-    // Fresh streams and modern checkpoints retain strict truncation detection.
-    this.#lenientEof = resumeBytes > 0 && !readItemCountReliable;
+    this.#core = core;
 
     // keep references for external consumers (tests may read them)
     this._keyPair = keyPair;
     this._progressHandler = progressHandler;
     this._context = context;
-    this._dataHash = dataHash;
+    this._skipSealedInput = Boolean(
+      context?.runtime?.skipSealedInput ||
+      (ctx.output?.policy === 'same-file-staging' &&
+        (ctx.phase === 'replacing' || ctx.phase === 'complete'))
+    );
+    this._dataHash = Buffer.from(core.runningDataHash);
     this._state = this.#core; // backwards-compat shorthand
 
     logger.debug("Unsealer : ", this);
   }
 
   async _transform(chunk, encoding, callback) {
+    if (this._skipSealedInput) {
+      callback(new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+        detail: { reason: 'terminal same-file checkpoint received sealed input' }
+      }));
+      return;
+    }
     try {
       await this.#core.processChunk(chunk);
 
@@ -131,18 +115,28 @@ export class Unsealer extends Transform {
   // was decrypted, the sealed input was truncated: fail instead of silently
   // emitting a shorter plaintext.
   _flush(callback) {
-    // headerReady with totalItems === 0 is a legitimately empty sealed stream.
-    if (!this.#core.headerReady ||
-        (!this.#lenientEof && this.#core.totalItems > 0 && !this.#core.finished)) {
-      callback(new MetaEncryptorError('ERR_TRUNCATED_INPUT', {
-        detail: {
-          headerReady: this.#core.headerReady,
-          readItemCount: this.#core.readItemCount,
-          totalItems: this.#core.totalItems,
-        }
-      }));
+    if (this._skipSealedInput) {
+      if (this._context?.runtime) this._context.runtime.inputComplete = true;
+      if (this._context?.context?.dataHash) {
+        this._dataHash = Buffer.from(this._context.context.dataHash);
+      }
+      callback();
       return;
     }
-    callback();
+    try {
+      const finalState = this.#core.finalize();
+      this._dataHash = Buffer.from(finalState.dataHash);
+      if (this._context) {
+        if (!this._context.runtime) this._context.runtime = {};
+        this._context.runtime.inputComplete = true;
+        if (this._context.context) {
+          this._context.context.dataHash = Buffer.from(finalState.dataHash);
+          this._context.context.phase = 'verified';
+        }
+      }
+      callback();
+    } catch (error) {
+      callback(error);
+    }
   }
 }

@@ -377,7 +377,7 @@ test('test pipeline context large same file', async () => {
     let m1 = await calculateMD5(src);
 
     let context = new PipelineContextInFile(context_path);
-    context.loadContext();
+    await context.loadContext();
     let rs = new RecoverableReadStream(dst, context);
     // let ws = new RecoverableWriteStream(ret_src, context);
     let ws = new RecoverableWriteStream(dst, context);
@@ -836,7 +836,7 @@ test('test context file disappears after pause - same file', async () => {
     console.log('data length:', ctxAfterPause.context.data ? ctxAfterPause.context.data.length : 0);
     console.log('同文件当前大小:', fs.statSync(dst).size);
     console.log('同文件前半段 MD5:', await calculateMD5(dst));
-    console.log('文件状态: 前半段已解密为明文，后半段仍是密文 — 文件已损坏不可用');
+    console.log('文件状态: 明文只写入 staging，原 sealed 文件保持不变');
 
     // --- 关键步骤：删除 context 文件！---
     console.log('--- 删除 context 文件 ---');
@@ -850,21 +850,20 @@ test('test context file disappears after pause - same file', async () => {
     await context.loadContext();
     console.log('loadContext 后 context:', JSON.stringify(context.context));
 
-    // context 丢失后，readStart 回到 0，从文件头部开始读
-    // 但文件前半段已是明文，SealedFileStream 解析明文时 version_number 为垃圾值
-    let resumeError = await new Promise((resolve) => {
-        let rs = new RecoverableReadStream(dst, context);
-        rs.on('error', (err) => {
-            console.log('--- 捕获到预期异常 ---');
-            console.log('错误消息:', err.message);
-            resolve(err);
-        });
-        rs.read();
-        setTimeout(() => resolve(null), 5000);
+    // context 丢失后从 0 重新开始。same-file staging 保证原 sealed 文件未被
+    // 部分明文破坏，因此完整流水线仍应成功并原子替换目标。
+    const resumedReader = new RecoverableReadStream(dst, context);
+    const resumedUnsealer = new meta.Unsealer({ keyPair: key_pair, context });
+    const resumedWriter = new RecoverableWriteStream(dst, context);
+    resumedReader.pipe(resumedUnsealer).pipe(resumedWriter);
+    await new Promise((resolve, reject) => {
+        for (const stream of [resumedReader, resumedUnsealer, resumedWriter]) {
+            stream.on('error', reject);
+        }
+        resumedWriter.on('finish', resolve);
     });
 
-    expect(resumeError).not.toBeNull();
-    expect(resumeError.code).toBe('ERR_VERSION_MISMATCH');
+    await compare(src, dst);
 
     // 清理
     try {

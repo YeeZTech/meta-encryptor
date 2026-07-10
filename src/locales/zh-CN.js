@@ -1,6 +1,17 @@
 // Auto-converted from zh-CN.json so plain Node ESM can import it
 // (raw .json imports require import attributes in Node >= 17.5).
 export default {
+  "ERR_CHECKPOINT_INVALID": "恢复检查点无效，或无法安全迁移",
+  "ERR_FETCH_UNAVAILABLE": "当前环境不支持 Fetch API",
+  "ERR_HTTP_ENTITY_CHANGED": "下载过程中远程文件发生了变化",
+  "ERR_INTEGRITY_MISMATCH": "密封数据完整性校验失败",
+  "ERR_INVALID_BINARY_INPUT": "输入必须是 ArrayBuffer 或具有明确边界的二进制视图",
+  "ERR_INVALID_FORMAT": "密封数据格式无效或内部信息不一致",
+  "ERR_INVALID_HEX": "十六进制输入无效",
+  "ERR_INVALID_PUBLIC_KEY": "公钥无效",
+  "ERR_OUTPUT_MISMATCH": "恢复输出与检查点不一致",
+  "ERR_SOURCE_CHANGED": "恢复源文件与检查点不再匹配",
+  "ERR_STREAM_PUSH_AFTER_EOF": "数据流结束后仍尝试写入数据",
   "ERR_INVALID_MAGIC": "无效的魔数",
   "ERR_INVALID_MAGIC_LENGTH": "无效的魔数：长度不匹配",
   "ERR_UNSUPPORTED_VERSION": "不支持的版本：{version}",

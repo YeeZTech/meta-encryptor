@@ -1,122 +1,211 @@
-/**
- * HttpSealedFileStream — a ReadableStream that fetches a sealed file from a URL
- * and streams its raw content (header + data, skipping block-info bytes).
- *
- * Analogous to Node's SealedFileStream but works over HTTP with Range requests.
- * Pull-based: one Range request per pull(), so downstream backpressure limits
- * how much data is buffered (the old implementation fetched the whole file
- * inside start(), buffering it unboundedly when the consumer was slow or
- * never ready).
- *
- * Usage:
- *   const stream = new HttpSealedFileStream('https://example.com/file.sealed');
- *   stream.pipeThrough(new Unsealer({ privateKeyHex: '…' }))
- *         .pipeTo(new WritableStream({ write(chunk) { … } }));
- */
-
 import { HeaderSize, BlockInfoSize } from '../common/limits.js';
 import { validateHeader } from '../common/unsealer_core.js';
 import { MetaEncryptorError } from '../common/errors.js';
 import { fetchRange, resolvedFetchUrl } from './fetchRange.js';
 
-const DEFAULT_CHUNK = 1024 * 1024; // 1 MB per Range request
+const DEFAULT_CHUNK = 1024 * 1024;
 
+function parseContentLength(response) {
+  const raw = response.headers.get('Content-Length');
+  if (!/^\d+$/.test(raw || '')) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'missing or invalid Content-Length', value: raw }
+    });
+  }
+  const size = Number(raw);
+  if (!Number.isSafeInteger(size)) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'unsafe Content-Length', value: raw }
+    });
+  }
+  return size;
+}
+
+function linkAbortSignal(source, controller) {
+  if (!source) return () => {};
+  const abort = () => controller.abort(source.reason);
+  if (source.aborted) abort();
+  else source.addEventListener('abort', abort, { once: true });
+  return () => source.removeEventListener('abort', abort);
+}
+
+/** A pull-based sealed-content stream backed by strict HTTP Range requests. */
 export class HttpSealedFileStream extends ReadableStream {
-  /**
-   * @param {string} url - URL of the sealed file (must support HEAD + Range)
-   * @param {object} [options]
-   * @param {number} [options.chunkSize] - bytes per Range request (default 1 MB)
-   * @param {Function} [options.fetch] - fetch impl (defaults to globalThis.fetch)
-   * @param {AbortSignal} [options.signal] - aborts in-flight requests
-   */
-  constructor(url, { chunkSize = DEFAULT_CHUNK, fetch: fetchFn, signal } = {}) {
-    const _fetch = fetchFn || fetch.bind(globalThis);
+  constructor(url, { chunkSize = DEFAULT_CHUNK, fetch: fetchFn, signal, expectedEntity } = {}) {
+    if (typeof url !== 'string' || url.length === 0) {
+      throw new MetaEncryptorError('ERR_MISSING_PARAMS', { detail: { url: 'empty' } });
+    }
+    if (!Number.isSafeInteger(chunkSize) || chunkSize <= 0) {
+      throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+        detail: { reason: 'invalid chunkSize', chunkSize }
+      });
+    }
+    const _fetch = fetchFn || globalThis.fetch;
+    if (typeof _fetch !== 'function') throw new MetaEncryptorError('ERR_FETCH_UNAVAILABLE');
+
+    const abortController = new AbortController();
+    const unlinkAbort = linkAbortSignal(signal, abortController);
     const state = {
-      url,
       fetchUrl: url,
       totalSize: 0,
       blockNumber: 0,
+      itemNumber: 0,
       contentSize: 0,
       pos: 0,
+      etag: null,
+      lastModified: null,
+      closed: false,
     };
-
-    const CHUNK = chunkSize;
+    const rangeOptions = () => ({
+      fetch: _fetch,
+      signal: abortController.signal,
+      expectedUrl: state.fetchUrl,
+      etag: state.etag,
+      lastModified: state.lastModified,
+      totalSize: state.totalSize,
+    });
 
     super({
       start: async (controller) => {
         try {
           let headResp;
           try {
-            headResp = await _fetch(url, { method: 'HEAD', signal });
-          } catch (e) {
-            throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: e.message }, cause: e });
+            headResp = await _fetch(url, {
+              method: 'HEAD',
+              cache: 'no-store',
+              redirect: 'follow',
+              signal: abortController.signal,
+            });
+          } catch (cause) {
+            if (abortController.signal.aborted) throw abortController.signal.reason || cause;
+            throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', {
+              detail: { status: cause?.message }, cause
+            });
           }
           if (!headResp.ok) {
-            throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } });
+            throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', {
+              detail: { status: headResp.status }
+            });
           }
-          const totalSize = parseInt(headResp.headers.get('Content-Length') || '0', 10);
-          if (totalSize < HeaderSize) {
-            throw new MetaEncryptorError('ERR_FILE_TOO_SMALL');
-          }
-          state.totalSize = totalSize;
           state.fetchUrl = resolvedFetchUrl(headResp, url);
+          state.totalSize = parseContentLength(headResp);
+          state.etag = headResp.headers.get('ETag');
+          state.lastModified = headResp.headers.get('Last-Modified');
+          if (expectedEntity) {
+            if (expectedEntity.finalUrl && state.fetchUrl !== expectedEntity.finalUrl) {
+              throw new MetaEncryptorError('ERR_HTTP_ENTITY_CHANGED', {
+                detail: { reason: 'final URL changed after inspection' }
+              });
+            }
+            if (expectedEntity.totalSize !== undefined && state.totalSize !== expectedEntity.totalSize) {
+              throw new MetaEncryptorError('ERR_HTTP_ENTITY_CHANGED', {
+                detail: {
+                  reason: 'entity size changed after inspection',
+                  expectedSize: expectedEntity.totalSize,
+                  actualSize: state.totalSize,
+                }
+              });
+            }
+            if (expectedEntity.etag && state.etag !== expectedEntity.etag) {
+              throw new MetaEncryptorError('ERR_HTTP_ENTITY_CHANGED', {
+                detail: { reason: 'ETag changed after inspection' }
+              });
+            }
+            if (!expectedEntity.etag && expectedEntity.lastModified &&
+                state.lastModified !== expectedEntity.lastModified) {
+              throw new MetaEncryptorError('ERR_HTTP_ENTITY_CHANGED', {
+                detail: { reason: 'Last-Modified changed after inspection' }
+              });
+            }
+          }
+          if (state.totalSize < HeaderSize) throw new MetaEncryptorError('ERR_FILE_TOO_SMALL');
 
-          const tailStart = totalSize - HeaderSize;
-          const { response: tailResp } = await fetchRange(state.fetchUrl, {
-            start: tailStart, end: totalSize - 1, fetch: _fetch, signal
+          const tailStart = state.totalSize - HeaderSize;
+          const { response } = await fetchRange(state.fetchUrl, {
+            start: tailStart,
+            end: state.totalSize - 1,
+            ...rangeOptions(),
           });
-          const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
+          const headerBuf = new Uint8Array(await response.arrayBuffer());
           if (headerBuf.length !== HeaderSize) {
             throw new MetaEncryptorError('ERR_HEADER_INCOMPLETE', {
               detail: { expected: HeaderSize, actual: headerBuf.length }
             });
           }
 
-          const { blockNumber } = validateHeader(headerBuf);
+          const { blockNumber, itemNumber } = validateHeader(headerBuf);
           state.blockNumber = blockNumber;
-
-          state.contentSize = totalSize - HeaderSize - BlockInfoSize * state.blockNumber;
-          if (state.contentSize <= 0) {
-            throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
+          state.itemNumber = itemNumber;
+          state.contentSize = state.totalSize - HeaderSize - BlockInfoSize * blockNumber;
+          if (!Number.isSafeInteger(state.contentSize) || state.contentSize < 0) {
+            throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+              detail: { reason: 'block metadata exceeds file size' }
+            });
           }
-
+          if (state.contentSize === 0 && (blockNumber !== 0 || itemNumber !== 0)) {
+            throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+              detail: { reason: 'non-empty header describes empty content', blockNumber, itemNumber }
+            });
+          }
+          if (state.contentSize > 0 && itemNumber === 0) {
+            throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+              detail: { reason: 'zero items with trailing sealed content', contentSize: state.contentSize }
+            });
+          }
           controller.enqueue(headerBuf);
-        } catch (e) {
-          controller.error(e);
+        } catch (error) {
+          unlinkAbort();
+          state.closed = true;
+          abortController.abort(error);
+          controller.error(error);
         }
       },
 
       pull: async (controller) => {
         try {
           if (state.pos >= state.contentSize) {
+            state.closed = true;
+            unlinkAbort();
             controller.close();
             return;
           }
-          const chunkEnd = Math.min(state.pos + CHUNK, state.contentSize);
-          const { response: resp } = await fetchRange(state.fetchUrl, {
-            start: state.pos, end: chunkEnd - 1, fetch: _fetch, signal
+          const chunkEnd = Math.min(state.pos + chunkSize, state.contentSize);
+          const { response } = await fetchRange(state.fetchUrl, {
+            start: state.pos,
+            end: chunkEnd - 1,
+            ...rangeOptions(),
           });
-          const buf = new Uint8Array(await resp.arrayBuffer());
+          const buf = new Uint8Array(await response.arrayBuffer());
           const expected = chunkEnd - state.pos;
           if (buf.length !== expected) {
             throw new MetaEncryptorError('ERR_UNEXPECTED_EOF', {
               detail: { expected, actual: buf.length, pos: state.pos }
             });
           }
-          controller.enqueue(buf);
           state.pos = chunkEnd;
-        } catch (e) {
-          controller.error(e);
+          controller.enqueue(buf);
+        } catch (error) {
+          unlinkAbort();
+          state.closed = true;
+          abortController.abort(error);
+          controller.error(error);
         }
-      }
+      },
+
+      cancel: (reason) => {
+        state.closed = true;
+        unlinkAbort();
+        abortController.abort(reason);
+      },
     });
 
-    // expose live state (start() is async, so plain copies would stay 0)
     this.url = url;
     Object.defineProperties(this, {
       totalSize: { get: () => state.totalSize },
       blockNumber: { get: () => state.blockNumber },
+      itemNumber: { get: () => state.itemNumber },
       contentSize: { get: () => state.contentSize },
+      finalUrl: { get: () => state.fetchUrl },
     });
   }
 }

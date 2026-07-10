@@ -68,7 +68,7 @@ describe('download pipeline callbacks (mocked stream)', () => {
     jest.clearAllMocks();
   });
 
-  test('blobDownloadAndDecrypt invokes onDownloadReady once and onProgress', async () => {
+  test('blobDownloadAndDecrypt keeps item and byte progress separate', async () => {
     const events = [];
     const restore = stubBlobDom();
     try {
@@ -76,6 +76,7 @@ describe('download pipeline callbacks (mocked stream)', () => {
         size: PLAIN_BYTES.length,
         onDownloadReady: () => events.push('ready'),
         onProgress: (...args) => events.push(['progress', ...args]),
+        onByteProgress: (...args) => events.push(['bytes', ...args]),
       });
     } finally {
       restore();
@@ -83,6 +84,8 @@ describe('download pipeline callbacks (mocked stream)', () => {
 
     expect(events.filter((e) => e === 'ready')).toHaveLength(1);
     expect(events.some((e) => Array.isArray(e) && e[0] === 'progress')).toBe(true);
+    expect(events.filter((e) => Array.isArray(e) && e[0] === 'progress').every((e) => e.length === 5)).toBe(true);
+    expect(events.filter((e) => Array.isArray(e) && e[0] === 'bytes').every((e) => e.length === 3)).toBe(true);
     const readyIdx = events.indexOf('ready');
     const firstProgressIdx = events.findIndex((e) => Array.isArray(e) && e[0] === 'progress');
     expect(readyIdx).toBeLessThan(firstProgressIdx);
@@ -97,9 +100,11 @@ describe('download pipeline callbacks (mocked stream)', () => {
       size: PLAIN_BYTES.length,
       onDownloadReady: () => events.push('ready'),
       onProgress: (...args) => events.push(['progress', ...args]),
+      onByteProgress: (...args) => events.push(['bytes', ...args]),
     });
 
     expect(events.filter((e) => e === 'ready')).toHaveLength(1);
     expect(events.some((e) => Array.isArray(e) && e[0] === 'progress')).toBe(true);
+    expect(events.filter((e) => Array.isArray(e) && e[0] === 'bytes').every((e) => e.length === 3)).toBe(true);
   });
 });

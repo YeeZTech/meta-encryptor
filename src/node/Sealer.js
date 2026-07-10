@@ -1,13 +1,12 @@
 import { Transform } from "stream";
 import Provider from "./DataProvider.js";
 import streams from 'memory-streams';
-import YPCNt_Object from "../common/ypcntobject.js"
+import { MaxPlaintextChunkSize } from "../common/limits.js";
 
 const {
   DataProvider,
 } = Provider;
 
-const YPCNtObject = YPCNt_Object()
 export class ToString extends Transform {
   constructor(options, schema) {
     super({
@@ -27,7 +26,6 @@ export class ToString extends Transform {
     }
     let line = vs.join(",");
     line = line + "\n";
-    //let inputNt = YPCNtObject.autoGenerateBytes(vs);
     this.push(line);
     callback();
   }
@@ -58,19 +56,19 @@ export class Sealer extends Transform {
   constructor(options) {
     super(options);
     this.accumulatedBuffer = Buffer.alloc(0);
-    this.threshold = 64 * 1024;
+    this.threshold = MaxPlaintextChunkSize;
     this.keyPair = options.keyPair;
     this.DP = new DataProvider(this.keyPair);
   }
 
   _transform(chunk, encoding, callback) {
     this.accumulatedBuffer = Buffer.concat([this.accumulatedBuffer, chunk]);
-    if (this.accumulatedBuffer.length >= this.threshold) {
+    while (this.accumulatedBuffer.length >= this.threshold) {
       let rs = new streams.WritableStream()
-      this.DP.sealData(this.accumulatedBuffer, rs, false);
+      this.DP.sealData(this.accumulatedBuffer.subarray(0, this.threshold), rs, false);
       const out = rs.toBuffer();
-      this.push(Buffer.isBuffer(out) ? out : Buffer.from(out));
-      this.accumulatedBuffer = Buffer.alloc(0);
+      if (out.length > 0) this.push(Buffer.isBuffer(out) ? out : Buffer.from(out));
+      this.accumulatedBuffer = this.accumulatedBuffer.subarray(this.threshold);
     }
     callback();
   }

@@ -1,6 +1,17 @@
 // Auto-converted from en.json so plain Node ESM can import it
 // (raw .json imports require import attributes in Node >= 17.5).
 export default {
+  "ERR_CHECKPOINT_INVALID": "The recovery checkpoint is invalid or cannot be migrated safely",
+  "ERR_FETCH_UNAVAILABLE": "Fetch API is unavailable in this environment",
+  "ERR_HTTP_ENTITY_CHANGED": "The remote file changed while it was being downloaded",
+  "ERR_INTEGRITY_MISMATCH": "Sealed data integrity verification failed",
+  "ERR_INVALID_BINARY_INPUT": "Expected an ArrayBuffer or a bounded binary view",
+  "ERR_INVALID_FORMAT": "Invalid or inconsistent sealed-data format",
+  "ERR_INVALID_HEX": "Invalid hexadecimal input",
+  "ERR_INVALID_PUBLIC_KEY": "Invalid public key",
+  "ERR_OUTPUT_MISMATCH": "The recovery output does not match the checkpoint",
+  "ERR_SOURCE_CHANGED": "The recovery source no longer matches the checkpoint",
+  "ERR_STREAM_PUSH_AFTER_EOF": "Stream attempted to write after it had ended",
   "ERR_INVALID_MAGIC": "Invalid magic number",
   "ERR_INVALID_MAGIC_LENGTH": "Invalid magic number: length mismatch",
   "ERR_UNSUPPORTED_VERSION": "Unsupported version: {version}",

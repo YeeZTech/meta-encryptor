@@ -1,7 +1,8 @@
 import crypto from "crypto";
 import secp256k1 from "secp256k1";
+import { MetaEncryptorError } from '../common/errors.js';
 import {
-  generateAESKeyFrom, generatePublicKeyFromPrivateKey, aad, 
+  generateAESKeyFrom, generatePublicKeyFromPrivateKey, aad, toUint8Array,
   signMessage } from '../common/ypccrypto.common.js';
 
 
@@ -27,6 +28,7 @@ const YPCCrypto = function () {
   this.generateAESKeyFrom = generateAESKeyFrom;
 
   this._encryptMessage = function (pkey, skey, msg, prefix) {
+    const messageBytes = toUint8Array(msg);
     const enc_key = this.generateAESKeyFrom(pkey, skey);
     let iv = randomBytes(12);
     let cipher = crypto.createCipheriv(algorithm, enc_key, iv);
@@ -35,9 +37,13 @@ const YPCCrypto = function () {
     tad[24] = prefix;
 
     cipher.setAAD(Buffer.from(tad), {
-      plaintextLength: msg.length || msg.byteLength,
+      plaintextLength: messageBytes.byteLength,
     });
-    const message = Buffer.from(msg).toString('hex');
+    const message = Buffer.from(
+      messageBytes.buffer,
+      messageBytes.byteOffset,
+      messageBytes.byteLength
+    ).toString('hex');
     let encrypted = cipher.update(message, "hex", "hex");
     encrypted += cipher.final("hex");
     encrypted = Buffer.from(encrypted, "hex");
@@ -66,9 +72,13 @@ const YPCCrypto = function () {
   };
   this.generateEncryptedInput = function (local_pkey, input) {
     const ots = this.generatePrivateKey();
-    return this._encryptMessage(local_pkey, ots, input.buffer, 0x2);
+    return this._encryptMessage(local_pkey, ots, toUint8Array(input), 0x2);
   };
   this._decryptMessageWithPrefix = function (skey, msg, prefix) {
+    msg = toUint8Array(msg);
+    if (msg.byteLength < 64 + 16 + 12) {
+      throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'encryptedMessageLength', length: msg.byteLength } });
+    }
     const encrypted = msg.slice(0, (msg.length || msg.byteLength) - 64 - 16 - 12);
     const liv = msg.slice(encrypted.length, (msg.length || msg.byteLength) - 64 - 16);
     const pkey = msg.slice(encrypted.length + 12, (msg.length || msg.byteLength) - 16);

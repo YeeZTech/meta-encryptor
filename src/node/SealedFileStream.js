@@ -1,153 +1,258 @@
-import {Readable} from "stream";
-import fs from "fs";
-import{HeaderSize, BlockInfoSize,
-  MagicNum, CurrentBlockFileVersion} from "../common/limits.js";
-import { MetaEncryptorError } from '../common/errors.js';
+import { Readable } from 'stream';
+import fs from 'fs';
+import { keccak_256 as keccak256 } from '@noble/hashes/sha3';
+
 import {
-  buffer2header_t
-} from "../common/header_util.js"
+  HeaderSize,
+  BlockInfoSize,
+  BlockNumLimit,
+  MagicNum,
+  CurrentBlockFileVersion
+} from '../common/limits.js';
+import { buffer2header_t } from '../common/header_util.js';
+import { MetaEncryptorError } from '../common/errors.js';
 
+const ITEMS_PER_BLOCK = 256;
 
-import { supportsConstruct } from "./utils.js";
+function assertSafeNonNegative(value, field) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field, value } });
+  }
+}
 
-import log from "loglevel";
-const logger = log.getLogger("meta-encryptor/SealedFileStream");
+async function readExactly(handle, buffer, offset, length, position, errorCode = 'ERR_UNEXPECTED_EOF') {
+  let total = 0;
+  while (total < length) {
+    const { bytesRead } = await handle.read(buffer, offset + total, length - total, position + total);
+    if (bytesRead === 0) {
+      throw new MetaEncryptorError(errorCode, {
+        detail: { expected: length, actual: total, position }
+      });
+    }
+    total += bytesRead;
+  }
+}
 
-export class SealedFileStream extends Readable{
-  constructor(filePath, options){
-    super(options);
+function sameSource(expected, actual) {
+  return expected &&
+    expected.fileSize === actual.fileSize &&
+    expected.headerFingerprint === actual.headerFingerprint &&
+    expected.contentSize === actual.contentSize &&
+    expected.itemNumber === actual.itemNumber &&
+    expected.blockNumber === actual.blockNumber;
+}
+
+export class SealedFileStream extends Readable {
+  constructor(filePath, options = {}) {
+    const {
+      start,
+      end,
+      expectedSource,
+      resumeOffset,
+      onMetadata,
+      ...streamOptions
+    } = options || {};
+    super(streamOptions);
     this.filePath = filePath;
+    this.start = start ?? 0;
+    this.end = end;
+    this.expectedSource = expectedSource;
+    this.resumeOffset = resumeOffset ?? this.start;
+    this.onMetadata = onMetadata;
+    this.headerOffset = 0;
+    this.readPosition = 0;
     this.isHeaderSent = false;
-    this.contentSize= 0;
-    this.start = options ? options.start || 0 : 0;
-    this.end = options ? options.end : undefined;
-    this.startReadPos = 0;
     this.initialized = false;
+    this.readInFlight = false;
+    this.contentSize = 0;
     this.streamSize = 0;
-    logger.debug("SealedFileStream: ", this)
-    if (!supportsConstruct()) {
-      logger.debug("no support construct");
-      this._construct((err) => {
-        if (err) {
-          this.emit("error", err);
-          return;
-        }
-      })
-    } else {
-      logger.debug("support construct");
+  }
+
+  async _scanItems(header) {
+    const lengthBuffer = Buffer.allocUnsafe(8);
+    let offset = 0;
+    let resumeOnBoundary = this.resumeOffset === 0;
+
+    for (let index = 0; index < header.item_number; index += 1) {
+      if (offset + 8 > this.contentSize) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+          detail: { field: 'itemLength', itemIndex: index, offset }
+        });
+      }
+      await readExactly(this.fileHandle, lengthBuffer, 0, 8, offset);
+      const itemLengthBig = lengthBuffer.readBigUInt64LE(0);
+      if (itemLengthBig > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+          detail: { field: 'itemLength', itemIndex: index }
+        });
+      }
+      const itemLength = Number(itemLengthBig);
+      const nextOffset = offset + 8 + itemLength;
+      if (!Number.isSafeInteger(nextOffset) || itemLength === 0 || nextOffset > this.contentSize) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+          detail: { field: 'itemLength', itemIndex: index, itemLength, remaining: this.contentSize - offset - 8 }
+        });
+      }
+      offset = nextOffset;
+      if (offset === this.resumeOffset) resumeOnBoundary = true;
+    }
+
+    if (offset !== this.contentSize) {
+      throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+        detail: { field: 'contentSize', expected: offset, actual: this.contentSize }
+      });
+    }
+    if (!resumeOnBoundary) {
+      throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+        detail: { field: 'readStart', value: this.resumeOffset }
+      });
     }
   }
 
   async _construct(callback) {
     try {
-      logger.debug("open file " + this.filePath)
       this.fileHandle = await fs.promises.open(this.filePath, 'r');
       const fileStats = await this.fileHandle.stat();
-      this.header = Buffer.alloc(HeaderSize);
-      logger.debug("to read, " + fileStats.size);
-      await new Promise((resolve, reject)=>{
-        this.fileHandle.read(this.header, 0, HeaderSize, fileStats.size - HeaderSize)
-        .then(({bytesRead}) =>{
-          if(bytesRead!= HeaderSize){
-            throw new MetaEncryptorError('ERR_FILE_TOO_SMALL_HEADER');
-          }
+      if (fileStats.size < HeaderSize) {
+        throw new MetaEncryptorError('ERR_FILE_TOO_SMALL_HEADER');
+      }
 
-          const header = buffer2header_t(this.header);
+      this.header = Buffer.allocUnsafe(HeaderSize);
+      await readExactly(
+        this.fileHandle,
+        this.header,
+        0,
+        HeaderSize,
+        fileStats.size - HeaderSize,
+        'ERR_FILE_TOO_SMALL_HEADER'
+      );
+      const header = buffer2header_t(this.header);
+      assertSafeNonNegative(header.version_number, 'versionNumber');
+      assertSafeNonNegative(header.block_number, 'blockNumber');
+      assertSafeNonNegative(header.item_number, 'itemNumber');
 
-          if (header.version_number != CurrentBlockFileVersion) {
-            throw new MetaEncryptorError('ERR_VERSION_MISMATCH', { detail: { expected: CurrentBlockFileVersion, actual: header.version_number } });
-          }
-          if(!header.magic_number.equals(MagicNum)){
-            throw new MetaEncryptorError('ERR_INVALID_MAGIC');
-          }
-          this.contentSize = fileStats.size - HeaderSize - BlockInfoSize * header.block_number;
-          if(this.contentSize <= 0){
-            throw new MetaEncryptorError('ERR_INVALID_FILE_SIZE');
-          }
-          let endPosition = this.end !== undefined ? this.end : this.contentSize;
-          this.end = Math.min(endPosition, this.contentSize);
-          this.streamSize = HeaderSize + this.end - this.start;
-          resolve();
-        }).catch(reject);
-      });
+      if (header.version_number !== CurrentBlockFileVersion) {
+        throw new MetaEncryptorError('ERR_VERSION_MISMATCH', {
+          detail: { expected: CurrentBlockFileVersion, actual: header.version_number }
+        });
+      }
+      if (!header.magic_number.equals(MagicNum)) {
+        throw new MetaEncryptorError('ERR_INVALID_MAGIC');
+      }
+      if (header.block_number > BlockNumLimit) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'blockNumber' } });
+      }
+
+      const expectedBlockNumber = header.item_number === 0
+        ? 0
+        : Math.ceil(header.item_number / ITEMS_PER_BLOCK);
+      if (header.block_number !== expectedBlockNumber) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+          detail: { field: 'blockNumber', expected: expectedBlockNumber, actual: header.block_number }
+        });
+      }
+
+      const metadataSize = HeaderSize + BlockInfoSize * header.block_number;
+      if (!Number.isSafeInteger(metadataSize) || metadataSize > fileStats.size) {
+        throw new MetaEncryptorError('ERR_INVALID_FILE_SIZE');
+      }
+      this.contentSize = fileStats.size - metadataSize;
+      if (header.item_number === 0 && this.contentSize !== 0) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'emptyContent' } });
+      }
+      if (header.item_number > 0 && this.contentSize === 0) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'contentSize' } });
+      }
+
+      assertSafeNonNegative(this.start, 'start');
+      if (this.end === undefined) this.end = this.contentSize;
+      assertSafeNonNegative(this.end, 'end');
+      if (this.start > this.end || this.end > this.contentSize) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+          detail: { field: 'range', start: this.start, end: this.end, contentSize: this.contentSize }
+        });
+      }
+      assertSafeNonNegative(this.resumeOffset, 'resumeOffset');
+      if (this.resumeOffset > this.contentSize) {
+        throw new MetaEncryptorError('ERR_CHECKPOINT_INVALID', {
+          detail: { field: 'readStart', value: this.resumeOffset }
+        });
+      }
+
+      await this._scanItems(header);
+
+      const metadata = {
+        fileSize: fileStats.size,
+        contentSize: this.contentSize,
+        itemNumber: header.item_number,
+        blockNumber: header.block_number,
+        headerFingerprint: Buffer.from(keccak256(this.header)).toString('hex')
+      };
+      if (this.expectedSource && !sameSource(this.expectedSource, metadata)) {
+        throw new MetaEncryptorError('ERR_SOURCE_CHANGED', {
+          detail: { expected: this.expectedSource, actual: metadata }
+        });
+      }
+      if (this.onMetadata) await this.onMetadata(metadata, header);
+
+      this.readPosition = this.start;
+      this.streamSize = HeaderSize + this.end - this.start;
       this.initialized = true;
       callback();
-      this.emit('ready');
-    } catch (err) {
-      logger.error("got err " + err)
-      callback(err);
+    } catch (error) {
+      callback(error);
     }
   }
 
   _read(size) {
-    logger.debug("_read initialized:", this.initialized);
-    if (!this.initialized && !supportsConstruct()) {
-      this.once('ready', () => this._read(size));
+    if (!this.initialized || this.readInFlight) return;
+
+    if (!this.isHeaderSent) {
+      const remainingHeader = HeaderSize - this.headerOffset;
+      const take = Math.min(Math.max(size, 1), remainingHeader);
+      const chunk = this.header.subarray(this.headerOffset, this.headerOffset + take);
+      this.headerOffset += take;
+      if (this.headerOffset === HeaderSize) this.isHeaderSent = true;
+      this.push(chunk);
+      if (this.isHeaderSent && this.readPosition === this.end) this.push(null);
       return;
     }
-    if(!this.isHeaderSent){
-      if(size < HeaderSize - this.startReadPos){
-        this.push(this.header.subarray(this.startReadPos, this.startReadPos + size));
-        this.startReadPos += size;
-        if(this.startReadPos == HeaderSize){
-          this.startReadPos = this.start;
-          this.isHeaderSent = true;
-        }
-      }else{
-        this.push(this.header);
-        this.startReadPos = this.start;
-        this.isHeaderSent = true;
-      }
-    }else{
-      const buffer = Buffer.alloc(size);
-      logger.debug("read file from ", this.startReadPos);
-      this.fileHandle.read(buffer, 0, size, this.startReadPos)
-        .then(({ bytesRead }) => {
-          if (bytesRead > 0) {
-            logger.debug("read data " + bytesRead + ", " + this.contentSize + ", " + this.startReadPos);
-            let reachEnd = false;
-            if(this.end - this.startReadPos <= bytesRead){
-              bytesRead = this.end - this.startReadPos;
-              reachEnd = true;
-              logger.debug("reach end");
-            }
 
-            logger.debug("push data " + bytesRead);
-            this.startReadPos += bytesRead;
-            this.push(buffer.subarray(0, bytesRead));
-            if(reachEnd){
-              logger.debug("reach end done");
-              this.push(null);
-            }
-        } else {
-          if(this.startReadPos != this.end){
-            throw new MetaEncryptorError('ERR_UNEXPECTED_EOF');
-          }
-          this.push(null);
-        }
-      })
-      .catch(err => {
-        logger.error("err: ", err)
-        this.destroy(err);
-      });
+    if (this.readPosition >= this.end) {
+      this.push(null);
+      return;
     }
+
+    const toRead = Math.min(Math.max(size, 1), this.end - this.readPosition);
+    const buffer = Buffer.allocUnsafe(toRead);
+    this.readInFlight = true;
+    this.fileHandle.read(buffer, 0, toRead, this.readPosition)
+      .then(({ bytesRead }) => {
+        this.readInFlight = false;
+        if (bytesRead === 0) {
+          this.destroy(new MetaEncryptorError('ERR_UNEXPECTED_EOF'));
+          return;
+        }
+        this.readPosition += bytesRead;
+        this.push(buffer.subarray(0, bytesRead));
+        if (this.readPosition === this.end) this.push(null);
+      })
+      .catch((error) => {
+        this.readInFlight = false;
+        this.destroy(error);
+      });
   }
 
-  _destroy(err, callback) {
-    log.debug('Entering _destroy with error:', err);
-    if (this.fileHandle) {
-      this.fileHandle.close()
-        .then(() => {
-          log.debug('File handle closed successfully.');
-          callback(err);
-        })
-        .catch(err => {
-          log.error('Error closing file handle:', err);
-          callback(err);
-        });
-    } else {
-      log.debug('No file handle to close.');
-      callback(err);
+  _destroy(error, callback) {
+    if (!this.fileHandle) {
+      callback(error);
+      return;
     }
+    const handle = this.fileHandle;
+    this.fileHandle = null;
+    handle.close().then(
+      () => callback(error),
+      (closeError) => callback(error || closeError)
+    );
   }
 }

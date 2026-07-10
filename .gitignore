@@ -18,8 +18,8 @@ bin-release/
 # should NOT be excluded as they contain compiler settings and other important
 # information for Eclipse / Flash Builder.
 node_modules
-*.lock
 build
+coverage/
 yarn-error.log
 test_tmp/
 
@@ -31,4 +31,5 @@ test/fixtures/browser-unsealer-*.file
 test/fixtures/browser-unsealer-*.file.sealed
 example/browser/plain.bin
 example/browser/sealed_full.bin
+
 package-lock.json

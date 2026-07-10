@@ -1,40 +1,56 @@
 {
     "name": "@yeez-tech/meta-encryptor",
-    "version": "5.0.5",
+    "version": "5.0.4",
     "description": "Data Seal/Unseal for Fidelius",
     "main": "build/commonjs/index.node.cjs",
     "module": "build/es/index.node.js",
-    "types": "index.d.ts",
+    "types": "index.node.d.ts",
     "exports": {
         ".": {
-            "types": "./index.d.ts",
             "browser": {
+                "types": "./index.browser.d.ts",
                 "import": "./build/es/index.browser.js"
             },
             "node": {
+                "types": "./index.node.d.ts",
                 "import": "./build/es/index.node.js",
                 "require": "./build/commonjs/index.node.cjs"
             },
+            "types": "./index.node.d.ts",
             "default": "./build/es/index.node.js"
+        },
+        "./browser": {
+            "types": "./index.browser.d.ts",
+            "import": "./build/es/index.browser.js"
+        },
+        "./node": {
+            "types": "./index.node.d.ts",
+            "import": "./build/es/index.node.js",
+            "require": "./build/commonjs/index.node.cjs"
         }
     },
     "type": "module",
     "files": [
         "build",
+        "*.d.ts",
         "README.md",
         "README.en.md",
         "LICENSE"
     ],
     "scripts": {
-        "build": "rm -rf build && rollup -c",
+        "build": "node scripts/clean-build.mjs && rollup -c",
         "test:clean": "node scripts/cleanup-test-artifacts.cjs",
         "test:node": "jest --config jest.config.node.cjs",
-        "test:browser": "npm run build && npm run gen:fixtures && node --experimental-vm-modules node_modules/.bin/jest --config jest.config.browser.mjs",
+        "test:browser": "npm run build && npm run gen:fixtures && node --experimental-vm-modules node_modules/jest/bin/jest.js --config jest.config.browser.mjs",
         "gen:fixtures": "node --experimental-vm-modules scripts/generate-fixtures.mjs && node --experimental-vm-modules scripts/generate-browser-unsealer-fixture.mjs",
         "test": "npm run test:node && npm run test:browser",
+        "test:stress": "jest --config jest.config.node.cjs --runInBand --testNamePattern=large",
+        "typecheck": "tsc --noEmit -p tsconfig.types.json",
+        "verify:pack": "node scripts/verify-package.mjs",
+        "security:audit": "npm audit --omit=dev --audit-level=moderate",
         "serve:example": "node example/http/static-server.js",
         "gen:sealed": "node example/http/gen-sealed-stream.js",
-        "version": "changeset version",
+        "version": "changeset version && npm install --package-lock-only --ignore-scripts",
         "release": "changeset publish"
     },
     "repository": {
@@ -66,6 +82,7 @@
     "author": "contact@yeez.tech",
     "license": "MIT",
     "dependencies": {
+        "@types/node": "^24.0.0",
         "aes-js": "4.0.0-beta.5",
         "buffer": "^6.0.3",
         "core-js": "^3.47.0",

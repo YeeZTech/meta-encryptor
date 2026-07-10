@@ -1,14 +1,13 @@
-
-
 import { HeaderSize, BlockInfoSize } from '../common/limits.js';
 import { validateHeader } from '../common/unsealer_core.js';
 import { MetaEncryptorError } from '../common/errors.js';
 import { blobDownloadAndDecrypt } from './blob_download.js';
 import { streamDownloadAndDecrypt } from './stream_download.js';
-import { fetchRange } from './fetchRange.js';
+import { fetchRange, resolvedFetchUrl } from './fetchRange.js';
 
 const MOBILE_LIMIT = 200 * 1024 * 1024;
 const DESKTOP_LIMIT = 1024 * 1024 * 1024;
+const noop = () => {};
 
 function isMobile() {
   if (typeof navigator === 'undefined') return false;
@@ -16,161 +15,188 @@ function isMobile() {
 }
 
 function makeLogger(onLog) {
-  return (msg) => {
-    const line = String(msg);
-    if (onLog) onLog(line);
-  };
+  return onLog ? (msg) => onLog(String(msg)) : noop;
 }
 
-export async function inspectSealed(url, log) {
+function exactContentLength(response) {
+  const raw = response.headers.get('Content-Length');
+  if (!/^\d+$/.test(raw || '')) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'missing or invalid Content-Length', value: raw }
+    });
+  }
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value)) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'unsafe Content-Length', value: raw }
+    });
+  }
+  return value;
+}
+
+export async function inspectSealed(url, log = noop, { fetch: fetchFn, signal } = {}) {
+  log = typeof log === 'function' ? log : noop;
+  const _fetch = fetchFn || globalThis.fetch;
+  if (typeof _fetch !== 'function') throw new MetaEncryptorError('ERR_FETCH_UNAVAILABLE');
+  if (!url) throw new MetaEncryptorError('ERR_MISSING_PARAMS', { detail: { url: 'empty' } });
+
   log('HEAD ' + url);
   let headResp;
   try {
-    headResp = await fetch(url, { method: 'HEAD', cache: 'no-store' });
-  } catch (e) {
-    throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: e.message }, cause: e });
+    headResp = await _fetch(url, { method: 'HEAD', cache: 'no-store', redirect: 'follow', signal });
+  } catch (cause) {
+    if (signal?.aborted) throw signal.reason || cause;
+    throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', {
+      detail: { status: cause?.message }, cause
+    });
   }
-  const headCl = headResp.headers.get('Content-Length');
-  const acceptRanges = headResp.headers.get('Accept-Ranges');
-  log(`HEAD status=${headResp.status} content-length=${headCl ?? '(none)'} accept-ranges=${acceptRanges ?? '(none)'}`);
-  if (!headResp.ok) throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } });
-
-  const totalSize = parseInt(headCl || '0', 10);
+  if (!headResp.ok) {
+    throw new MetaEncryptorError('ERR_HEAD_REQUEST_FAILED', { detail: { status: headResp.status } });
+  }
+  const totalSize = exactContentLength(headResp);
+  log(`HEAD status=${headResp.status} content-length=${totalSize}`);
   if (totalSize < HeaderSize) {
     throw new MetaEncryptorError('ERR_FILE_NOT_SEALED', { detail: { totalSize } });
   }
 
-  const fetchUrl = headResp.url || url;
-  if (fetchUrl !== url) {
-    log(`HEAD redirected to: ${fetchUrl}`);
-  }
-
+  const fetchUrl = resolvedFetchUrl(headResp, url);
+  const etag = headResp.headers.get('ETag');
+  const lastModified = headResp.headers.get('Last-Modified');
   const tailStart = totalSize - HeaderSize;
-  const rangeHeader = `bytes=${tailStart}-${totalSize - 1}`;
-  log(`Range ${rangeHeader} (tail ${HeaderSize} bytes of ${totalSize})`);
-
-  const { response: tailResp } = await fetchRange(fetchUrl, { start: tailStart, end: totalSize - 1 });
-
-  const tailCl = tailResp.headers.get('Content-Length');
-  const contentRange = tailResp.headers.get('Content-Range');
-  const contentType = tailResp.headers.get('Content-Type');
-  log(`Range status=${tailResp.status} content-length=${tailCl ?? '(none)'} content-range=${contentRange ?? '(none)'} content-type=${contentType ?? '(none)'}`);
-
+  const { response: tailResp } = await fetchRange(fetchUrl, {
+    start: tailStart,
+    end: totalSize - 1,
+    fetch: _fetch,
+    signal,
+    expectedUrl: fetchUrl,
+    etag,
+    lastModified,
+    totalSize,
+  });
   const headerBuf = new Uint8Array(await tailResp.arrayBuffer());
   if (headerBuf.length !== HeaderSize) {
     throw new MetaEncryptorError('ERR_HEADER_INCOMPLETE', {
-      detail: { expected: HeaderSize, actual: headerBuf.length, totalSize, rangeHeader, status: tailResp.status }
+      detail: { expected: HeaderSize, actual: headerBuf.length, totalSize }
     });
   }
 
   const { blockNumber, itemNumber } = validateHeader(headerBuf);
-  log('header ok: blockNumber=' + blockNumber + ' itemNumber=' + itemNumber);
-
   const sealedContentSize = totalSize - HeaderSize - blockNumber * BlockInfoSize;
-  if (sealedContentSize <= 0) throw new MetaEncryptorError('ERR_EMPTY_CONTENT');
+  if (!Number.isSafeInteger(sealedContentSize) || sealedContentSize < 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'block metadata exceeds file size', totalSize, blockNumber }
+    });
+  }
+  if (sealedContentSize === 0 && (blockNumber !== 0 || itemNumber !== 0)) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'non-empty header describes empty content', blockNumber, itemNumber }
+    });
+  }
+  if (sealedContentSize > 0 && itemNumber === 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { reason: 'zero items with trailing sealed content', sealedContentSize }
+    });
+  }
 
-  // Per-item overhead is at least 100 bytes (8 len prefix + 12 IV + 64 public
-  // key + 16 GCM tag), but each encrypted item also contains nt-package
-  // framing (12B per item + 20B per nt-input) that cannot be derived from the
-  // header alone. This value is therefore an OVER-estimate of the plaintext
-  // size — never use it as an exact Content-Length.
-  const plaintextSizeEstimate = sealedContentSize - itemNumber * 100;
-
+  // This is display/progress metadata only. Memory admission always uses the
+  // conservative sealed total size, never this attacker-controlled estimate.
+  const plaintextSizeEstimate = Math.max(0, sealedContentSize - itemNumber * 100);
+  log(`header ok: blockNumber=${blockNumber} itemNumber=${itemNumber}`);
   return {
     totalSize,
     blockNumber,
     itemNumber,
     sealedContentSize,
     plaintextSizeEstimate,
-    // legacy alias, kept for compatibility
     plaintextSize: plaintextSizeEstimate,
+    finalUrl: fetchUrl,
+    etag,
+    lastModified,
   };
 }
 
-
-
-/**
- * Download and decrypt a sealed file.
- * @param {Object} options
- * @param {string} options.url
- * @param {string} options.privateKey - hex-encoded private key
- * @param {string} options.filename
- * @param {Function} [options.onLog]
- * @param {Function} [options.onProgress] - (total, processed, readBytes, writeBytes) => {}
- * @param {Function} [options.onDownloadReady] - HTTP 流首个数据块进入管道时触发（可关蒙层）
- * @param {Function} [options.onSuccess]
- * @param {Function} [options.onError]
- * @param {number} [options.timeoutMs] - inactivity watchdog (ms); 0 disables
- * @returns {Promise<void>}
- */
-export async function downloadUnsealed({
-  url,
-  privateKey,
-  filename,
-  onLog,
-  onProgress,
-  onDownloadReady,
-  onSuccess,
-  onError,
-  timeoutMs
-}) {
-  const log = makeLogger(onLog);
-  const key = privateKey.trim()
-
+export async function downloadUnsealed(options = {}) {
+  const onError = options?.onError;
+  let log = noop;
   try {
+    const {
+      url,
+      privateKey,
+      filename,
+      onLog,
+      onProgress,
+      onByteProgress,
+      onDownloadReady,
+      onSuccess,
+      timeoutMs,
+      maxSealedItemSize,
+      streamSaver,
+      fetch: fetchFn,
+      signal,
+    } = options || {};
+    log = makeLogger(onLog);
+    const key = typeof privateKey === 'string' ? privateKey.trim() : '';
     if (!url || !key || !filename) {
       throw new MetaEncryptorError('ERR_MISSING_PARAMS', {
-        detail: { url: url ? 'set' : 'empty', key: key ? 'set' : 'empty', filename: filename || 'empty' }
+        detail: {
+          url: url ? 'set' : 'empty',
+          key: key ? 'set' : 'empty',
+          filename: filename || 'empty',
+        }
       });
     }
 
     log('Checking file url=' + url + ' filename=' + filename);
-    const meta = await inspectSealed(url, log);
-    log('inspect file succ');
-    log(`Plaintext size(est)=${meta.plaintextSizeEstimate} bytes, sealed=${meta.sealedContentSize} bytes, totalSize=${meta.totalSize}`);
-
-    const mobile = isMobile()
-    const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
-    const mode = mobile ? 'mobile' : 'desktop'
-    const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a';
-    log(`Detected ${mode} (ua=${ua}), limit ${(limit / 1024 / 1024).toFixed(0)} MB`);
-
-    if (meta.plaintextSizeEstimate > limit) {
-      throw new MetaEncryptorError('ERR_FILE_TOO_LARGE', {
-        detail: { size: (meta.plaintextSizeEstimate / 1024 / 1024).toFixed(0), mode, limit: (limit / 1024 / 1024).toFixed(0) }
-      })
-    }
+    const meta = await inspectSealed(url, log, { fetch: fetchFn, signal });
+    const mobile = isMobile();
+    const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT;
+    const downloadOptions = {
+      log,
+      onProgress,
+      onByteProgress,
+      size: meta.plaintextSizeEstimate,
+      sealedSize: meta.totalSize,
+      maxSize: limit,
+      onDownloadReady,
+      timeoutMs,
+      maxSealedItemSize,
+      fetch: fetchFn,
+      signal,
+      expectedEntity: {
+        finalUrl: meta.finalUrl,
+        totalSize: meta.totalSize,
+        etag: meta.etag,
+        lastModified: meta.lastModified,
+      },
+    };
 
     if (!mobile) {
       try {
-        log('Trying stream download...')
         await streamDownloadAndDecrypt(url, key, filename, {
-          log,
-          onProgress,
-          size: meta.plaintextSizeEstimate,
-          onDownloadReady,
-          timeoutMs,
-        })
-        if (onSuccess) onSuccess({ filename })
-        return
-      } catch (e) {
-        log('Stream failed: ' + e.message + ', falling back to Blob')
+          ...downloadOptions,
+          streamSaver,
+        });
+        onSuccess?.({ filename });
+        return;
+      } catch (error) {
+        // This error is raised before any HTTP body is read or output written.
+        // Every operational failure must remain terminal to prevent duplicate
+        // downloads and partially-written output.
+        if (error?.code !== 'ERR_NO_STREAM_WRITABLE') throw error;
+        log('No streaming writable available; using Blob download');
       }
     }
 
-    log('Using Blob download...')
-    await blobDownloadAndDecrypt(url, key, filename, {
-      log,
-      onProgress,
-      size: meta.plaintextSizeEstimate,
-      onDownloadReady,
-      timeoutMs,
-    })
-    if (onSuccess) onSuccess({ filename })
+    if (meta.totalSize > limit) {
+      throw new MetaEncryptorError('ERR_FILE_TOO_LARGE', {
+        detail: { size: meta.totalSize, limit, mode: mobile ? 'mobile blob' : 'desktop blob' }
+      });
+    }
+    await blobDownloadAndDecrypt(url, key, filename, downloadOptions);
+    onSuccess?.({ filename });
   } catch (error) {
-    log('Download failed: ' + error.message)
-    if (onError) onError(error)
-    else throw error
+    log('Download failed: ' + (error?.message || error));
+    if (typeof onError === 'function') onError(error);
+    else throw error;
   }
 }
-

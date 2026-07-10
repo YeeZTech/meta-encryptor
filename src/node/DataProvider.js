@@ -4,19 +4,19 @@ import {
   buffer2header_t,
   block_info_t2buffer,
   buffer2block_info_t,
-  ntpackage2batch,
   toNtInput,
-  fromNtInput,
-  batch2ntpackage
+  batch2ntpackage,
 } from "../common/header_util.js"
+import { hexToBytes, toUint8Array } from "../common/ypccrypto.common.js";
+import { validateSealedLayout } from "../common/unsealer_core.js";
 import { keccak_256 as keccak256} from '@noble/hashes/sha3';
 import { MetaEncryptorError } from '../common/errors.js';
 import YPCCryptoFun from "./ypccrypto.js";
-import YPCNtObjectFun from "../common/ypcntobject.js";
 import BlockFileFun from "./blockfile.js";
 const YPCCrypto = YPCCryptoFun();
 
-import {BlockNumLimit, MaxItemSize,
+import {BlockNumLimit, MaxItemSize, MaxItemNumber, MaxPlaintextChunkSize,
+  CryptoEnvelopeSize, NtPackageHeaderSize, NtPackageItemHeaderSize,
   HeaderSize, MagicNum,
   CurrentBlockFileVersion, BlockInfoSize} from "../common/limits.js";
 
@@ -45,10 +45,16 @@ const DataProvider = function(_key) {
   this.all_line_num = 0,
     this.now_line_num = 0;
   this.sealBatch = [];
-  this.sealBatchSize = 0;
+  this.sealBatchSize = NtPackageHeaderSize;
 }
 
 DataProvider.prototype.write_batch = function(batch, public_key, writable_stream) {
+  if (!Array.isArray(batch) || batch.length === 0) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'emptyBatch' } });
+  }
+  if (this.header.item_number >= MaxItemNumber) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', { detail: { field: 'itemNumberLimit' } });
+  }
   let pkg_bytes = batch2ntpackage(batch);
   // Ensure Node Buffer
   if(!Buffer.isBuffer(pkg_bytes)){
@@ -56,11 +62,16 @@ DataProvider.prototype.write_batch = function(batch, public_key, writable_stream
   }
   const ots = YPCCrypto.generatePrivateKey();
   let s = YPCCrypto._encryptMessage(
-    Buffer.from(public_key, "hex"),
+    Buffer.from(hexToBytes(public_key)),
     ots,
     pkg_bytes,
     0x2
   );
+  if (s.length > MaxItemSize) {
+    throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+      detail: { field: 'itemSize', itemSize: s.length, maximum: MaxItemSize }
+    });
+  }
   let all = BlockFile.append_item(s, this.header, this.block_meta_info);
   this.header = all[0];
   this.block_meta_info = all[1];
@@ -79,24 +90,43 @@ DataProvider.prototype.write_batch = function(batch, public_key, writable_stream
 DataProvider.prototype.sealData = function(input,
   writable_stream = null,
   is_end = false) {
-  let ntInput = null;
-  input && (ntInput = toNtInput(input));
-  if(ntInput){
-    const bufNt = Buffer.isBuffer(ntInput) ? ntInput : Buffer.from(ntInput);
-    this.sealBatch.push(bufNt);
-    this.sealBatchSize += bufNt.length;
+  if (input !== null && input !== undefined) {
+    let inputBytes;
+    if (typeof input === 'string') {
+      inputBytes = Buffer.from(input, 'utf8');
+    } else {
+      const bytes = toUint8Array(input);
+      inputBytes = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    }
+
+    for (let offset = 0; offset < inputBytes.length; offset += MaxPlaintextChunkSize) {
+      const plain = inputBytes.subarray(offset, Math.min(offset + MaxPlaintextChunkSize, inputBytes.length));
+      const rawNt = Buffer.from(toNtInput(plain));
+      const projectedPackageSize = this.sealBatchSize + NtPackageItemHeaderSize + rawNt.length;
+
+      if (this.sealBatch.length > 0 && projectedPackageSize + CryptoEnvelopeSize > MaxItemSize) {
+        this.write_batch(this.sealBatch, this.key_pair["public_key"], writable_stream);
+        this.sealBatch = [];
+        this.sealBatchSize = NtPackageHeaderSize;
+      }
+
+      const singleItemSize = this.sealBatchSize + NtPackageItemHeaderSize + rawNt.length + CryptoEnvelopeSize;
+      if (singleItemSize > MaxItemSize) {
+        throw new MetaEncryptorError('ERR_INVALID_FORMAT', {
+          detail: { field: 'itemSize', itemSize: singleItemSize, maximum: MaxItemSize }
+        });
+      }
+
+      this.sealBatch.push(rawNt);
+      this.sealBatchSize += NtPackageItemHeaderSize + rawNt.length;
+      this.data_hash = Buffer.from(keccak256(Buffer.concat([this.data_hash, rawNt])));
+    }
   }
 
-  if (this.sealBatchSize >= MaxItemSize || (is_end && this.sealBatchSize > 0)) {
+  if (is_end && this.sealBatch.length > 0) {
     this.write_batch(this.sealBatch, this.key_pair["public_key"], writable_stream);
     this.sealBatch = [];
-    this.sealBatchSize = 0;
-  }
-
-  if (ntInput) {
-    const rawNt = Buffer.isBuffer(ntInput) ? ntInput : Buffer.from(ntInput);
-    let k = Buffer.concat([Buffer.from(this.data_hash), rawNt]);
-    this.data_hash = Buffer.from(keccak256(k));
+    this.sealBatchSize = NtPackageHeaderSize;
   }
 
   if (!is_end) return null;
@@ -128,7 +158,7 @@ DataProvider.prototype.setHeaderAndMeta = function() {
     buf_bi.copy(fileMetaBuf, offset);
     offset += BlockInfoSize;
   }
-  let b_skey = Buffer.from(this.key_pair["private_key"], "hex");
+  let b_skey = Buffer.from(hexToBytes(this.key_pair["private_key"]));
   let hash_sig = YPCCrypto.signMessage(b_skey, Buffer.from(this.data_hash));
   let meta = {
     data_hash: Buffer.from(this.data_hash).toString("hex"),
@@ -147,7 +177,7 @@ DataProvider.prototype.setHeaderAndMeta = function() {
 };
 
 const headerAndBlockBufferFromBuffer = function(buf) {
-  if (buf.length <= HeaderSize) {
+  if (buf.length < HeaderSize) {
     return null;
   }
   const buffer = buf.subarray(buf.length - HeaderSize);
@@ -156,11 +186,13 @@ const headerAndBlockBufferFromBuffer = function(buf) {
     throw new MetaEncryptorError('ERR_VERSION_MISMATCH', { detail: { expected: CurrentBlockFileVersion, actual: header.version_number } });
   }
 
-  if (buf.length <= HeaderSize + BlockInfoSize * header.block_number) {
+  if (buf.length < HeaderSize + BlockInfoSize * header.block_number) {
     return null;
   }
 
   const blkBuffer = buf.subarray(buf.length - HeaderSize - BlockInfoSize * header.block_number, buf.length - HeaderSize);
+  const contentSize = buf.length - HeaderSize - blkBuffer.length;
+  validateSealedLayout(buffer, blkBuffer, contentSize, buf.length);
 
   return {
     header: buffer,

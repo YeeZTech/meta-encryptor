@@ -8,28 +8,28 @@
  * stream really completes.
  *
  * @param {number} plaintextSize - estimated total plaintext size in bytes
- * @param {Function} onProgress - progress callback (totalSize, receivedBytes)
+ * @param {Function} onByteProgress - byte progress callback (estimatedTotalBytes, receivedBytes)
  * @returns {TransformStream}
  */
-export function createProgressTransformer(plaintextSize, onProgress) {
+export function createProgressTransformer(plaintextSize, onByteProgress) {
   let received = 0
   const hasSize = typeof plaintextSize === 'number' && plaintextSize > 0
   return new TransformStream({
     transform(chunk, controller) {
       received += chunk.length
-      if (onProgress) {
+      if (onByteProgress) {
         if (hasSize) {
-          onProgress(plaintextSize, Math.min(received, Math.floor(plaintextSize * 0.99)))
+          onByteProgress(plaintextSize, Math.min(received, Math.floor(plaintextSize * 0.99)))
         } else {
-          onProgress(plaintextSize, received)
+          onByteProgress(plaintextSize, received)
         }
       }
       controller.enqueue(chunk)
     },
     flush() {
-      if (onProgress) {
+      if (onByteProgress) {
         const total = hasSize ? plaintextSize : received
-        onProgress(total, total)
+        onByteProgress(total, total)
       }
     }
   })

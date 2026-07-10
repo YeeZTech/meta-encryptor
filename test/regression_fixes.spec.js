@@ -150,7 +150,7 @@ describe('unsealer stream termination fixes', () => {
     expect(context.context.readItemCountReliable).toBe(true);
   }, 10000);
 
-  test('legacy resumed checkpoint stays lenient and marks item count unreliable', async () => {
+  test('legacy resumed state is never accepted through a lenient EOF path', async () => {
     const sealed = await sealBuffer(Buffer.from('l'.repeat(200 * 1024)), 64 * 1024);
     const { header, content } = unsealerInput(sealed);
     const committedBytes = firstSealedItemSize(content);
@@ -165,13 +165,7 @@ describe('unsealer stream termination fixes', () => {
         src.write(content.subarray(committedBytes));
         src.end();
       }, { context })
-    ).resolves.toBeInstanceOf(Buffer);
-    expect(context.context.readItemCountReliable).toBe(false);
-
-    // A relative count accumulated later must not upgrade a legacy checkpoint.
-    context.context.readItemCount = 1;
-    new Unsealer({ keyPair: key_pair, context });
-    expect(context.context.readItemCountReliable).toBe(false);
+    ).rejects.toMatchObject({ code: 'ERR_TRUNCATED_INPUT' });
   }, 10000);
 
   test('wrong key errors instead of silently skipping items', async () => {
@@ -191,18 +185,17 @@ describe('unsealer stream termination fixes', () => {
     ).rejects.toBeTruthy();
   }, 10000);
 
-  test('trailing bytes after the last item are tolerated (raw file piped in full)', async () => {
+  test('trailing block-info/header bytes are rejected when raw file is piped in full', async () => {
     const plain = Buffer.from('t'.repeat(4096));
     const sealed = await sealBuffer(plain);
     const { header } = unsealerInput(sealed);
 
     // header first, then the WHOLE raw file body incl. blockinfo bytes
-    const result = await collectUnsealed((src) => {
+    await expect(collectUnsealed((src) => {
       src.write(header);
       src.write(sealed);
       src.end();
-    });
-    expect(Buffer.compare(result, plain)).toBe(0);
+    })).rejects.toMatchObject({ code: 'ERR_INVALID_FORMAT' });
   });
 });
 

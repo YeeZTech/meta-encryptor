@@ -7,9 +7,15 @@ import { MetaEncryptorError } from './errors.js';
 import { sha256 } from '@noble/hashes/sha256';
 
 function hexToBytes(hex){
-  const clean = hex.startsWith('0x')? hex.slice(2): hex;
-  const arr = new Uint8Array(clean.length/2);
-  for(let i=0;i<arr.length;i++){ arr[i] = parseInt(hex.substr(i*2,2),16); }
+  if (typeof hex !== 'string') {
+    throw new MetaEncryptorError('ERR_INVALID_HEX', { detail: { type: typeof hex } });
+  }
+  const clean = hex.startsWith('0x') || hex.startsWith('0X') ? hex.slice(2) : hex;
+  if (clean.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(clean)) {
+    throw new MetaEncryptorError('ERR_INVALID_HEX', { detail: { length: clean.length } });
+  }
+  const arr = new Uint8Array(clean.length / 2);
+  for(let i=0;i<arr.length;i++){ arr[i] = Number.parseInt(clean.slice(i * 2, i * 2 + 2), 16); }
   return arr;
 }
 
@@ -92,18 +98,44 @@ derivation_buffer = Buffer.from(derivation_buffer);
 
 function toUint8Array(data) {
   if (data instanceof Uint8Array) return data;
-  if (typeof data === 'string') {
-    if (data.startsWith('0x')) data = data.slice(2);
-    const arr = new Uint8Array(data.length / 2);
-    for (let i = 0; i < arr.length; i++) {
-      arr[i] = parseInt(data.substr(i * 2, 2), 16);
+  if (typeof data === 'string') return hexToBytes(data);
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  // Preserve the exact view for legacy wrappers such as { buffer: Buffer }.
+  if (data && data.buffer !== undefined) {
+    const wrapped = data.buffer;
+    if (ArrayBuffer.isView(wrapped)) {
+      const relativeOffset = data.byteOffset ?? 0;
+      const byteLength = data.byteLength ?? (wrapped.byteLength - relativeOffset);
+      if (!Number.isInteger(relativeOffset) || relativeOffset < 0 ||
+          !Number.isInteger(byteLength) || byteLength < 0 ||
+          relativeOffset + byteLength > wrapped.byteLength) {
+        throw new MetaEncryptorError('ERR_INVALID_BINARY_INPUT');
+      }
+      return new Uint8Array(
+        wrapped.buffer,
+        wrapped.byteOffset + relativeOffset,
+        byteLength
+      );
     }
-    return arr;
+    if (wrapped instanceof ArrayBuffer) {
+      const byteOffset = data.byteOffset ?? 0;
+      const byteLength = data.byteLength ?? (wrapped.byteLength - byteOffset);
+      if (!Number.isInteger(byteOffset) || byteOffset < 0 ||
+          !Number.isInteger(byteLength) || byteLength < 0 ||
+          byteOffset + byteLength > wrapped.byteLength) {
+        throw new MetaEncryptorError('ERR_INVALID_BINARY_INPUT');
+      }
+      return new Uint8Array(wrapped, byteOffset, byteLength);
+    }
   }
-  if (data && data.buffer) {
-    return new Uint8Array(data.buffer, data.byteOffset || 0, data.byteLength || data.length);
+  try {
+    return new Uint8Array(data);
+  } catch (cause) {
+    throw new MetaEncryptorError('ERR_INVALID_BINARY_INPUT', { cause });
   }
-  return new Uint8Array(data);
 }
 
 function toHex(bytes) {
@@ -121,10 +153,18 @@ function generatePublicKeyFromPrivateKey(skey){
 }
 
 function generateAESKeyFrom(pkey, skey){
+  pkey = toUint8Array(pkey);
+  skey = toUint8Array(skey);
+  if (skey.length !== 32 || !secp256k1.privateKeyVerify(skey)) {
+    throw new MetaEncryptorError('ERR_INVALID_PRIVATE_KEY');
+  }
   if (pkey.length === 64) {
     const prefix = new Uint8Array([0x04]);
     pkey = new Uint8Array(pkey);
     pkey = Uint8Array.from([...prefix, ...pkey]);
+  }
+  if (!secp256k1.publicKeyVerify(pkey)) {
+    throw new MetaEncryptorError('ERR_INVALID_PUBLIC_KEY');
   }
   const shared_key = gen_ecdh_key_from(skey, pkey);
   const key_derive_key = aesCmac(cmac_key, shared_key);
@@ -146,6 +186,9 @@ function signMessage(skey, raw) {
 
   const msgBytes = toUint8Array(msg);
   const skeyBytes = toUint8Array(skey);
+  if (skeyBytes.length !== 32 || !secp256k1.privateKeyVerify(skeyBytes)) {
+    throw new MetaEncryptorError('ERR_INVALID_PRIVATE_KEY');
+  }
   const rsig = secp256k1.ecdsaSign(msgBytes, skeyBytes);
   const sig = new Uint8Array(65);
   sig.set(rsig.signature);
