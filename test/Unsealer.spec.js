@@ -132,17 +132,20 @@ test('test medium file', async () => {
     await sealAndUnsealFile(src);
 });
 
-test.skip('test large file', async () => {
+test('test large file', async () => {
     let src = testPath('Unsealerlarge.file');
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     await sealAndUnsealFile(src);
-    // try {
-    //     fs.unlinkSync(src);
-    // } catch (error) {}
-});
+    try {
+        fs.unlinkSync(src);
+    } catch (error) {}
+}, 600000);
 
-test.skip('test large file use RemoteSealedFileStream', async () => {
+// 依赖本地 TUS 服务：RUN_REMOTE_UNSEALER_TESTS=1 npm run test:node -- test/Unsealer.spec.js -t Remote
+const runRemoteUnsealer = process.env.RUN_REMOTE_UNSEALER_TESTS === '1' ? test : test.skip;
+
+runRemoteUnsealer('test large file use RemoteSealedFileStream', async () => {
     let src = testPath('test.remote.xUnsealerlarge.file');
     try {
         fs.unlinkSync(src);
@@ -150,7 +153,6 @@ test.skip('test large file use RemoteSealedFileStream', async () => {
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     await sealAndUnsealFile(src, true);
-    // await sealAndUnsealFile(src);
     fs.unlinkSync(src);
-});
+}, 600000);
 

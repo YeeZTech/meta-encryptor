@@ -58,6 +58,100 @@ async function compare(src, ret_src) {
     expect(m1).toStrictEqual(m2);
 }
 
+function unsealerRemainingBuffer(unsealer) {
+    const rem = unsealer._state.remaining;
+    if (!rem || rem.length === 0) return Buffer.alloc(0);
+    return Buffer.from(rem.buffer, rem.byteOffset, rem.byteLength);
+}
+
+function contextDataBuffer(context) {
+    const data = context.context?.data;
+    if (!data || data.length === 0) return Buffer.alloc(0);
+    return Buffer.isBuffer(data) ? data : Buffer.from(data);
+}
+
+/**
+ * Invariant: while Read→Unsealer runs (no RecoverableWriteStream), context.data must
+ * track Unsealer #core.remaining — not RecoverableReadStream's raw read-ahead append.
+ * RecoverableWriteStream checkpoints clear data before save, so pause/resume e2e
+ * tests do not exercise this; removing Unsealer's data sync breaks this contract.
+ */
+test('context.data mirrors unsealer remaining during file-mode decrypt', async () => {
+    const src = testPath('context_data_sync.file');
+    const contextPath = testPath('context_data_sync_context');
+    let dst;
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(contextPath);
+        fs.unlinkSync(dst);
+    } catch (error) {}
+
+    generateFileWithSize(src, 1024 * 1024 * 5);
+    dst = await sealFile(src);
+
+    const context = new PipelineContextInFile(contextPath);
+    await context.loadContext();
+
+    const rs = new RecoverableReadStream(dst, context);
+    const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+    const sink = new (require('stream').Writable)({
+        write(_chunk, _encoding, callback) {
+            callback();
+        },
+    });
+
+    let snapshot = null;
+
+    await new Promise((resolve, reject) => {
+        const onError = (err) => {
+            if (err && err.code === 'ERR_STREAM_PREMATURE_CLOSE') return;
+            reject(err);
+        };
+
+        bindPipelineErrors([rs, unsealer, sink], onError);
+
+        const poll = setInterval(() => {
+            if (context.context?.status !== 'file') return;
+
+            const remaining = unsealerRemainingBuffer(unsealer);
+            const data = contextDataBuffer(context);
+            const processedBytes = unsealer._state.processedBytes || 0;
+
+            // Mid-item: past header, unsealer has unconsumed tail, pipeline still running
+            if (processedBytes > 65536 && remaining.length > 0 && data.length > 0) {
+                snapshot = { data: Buffer.from(data), remaining: Buffer.from(remaining) };
+                clearInterval(poll);
+                rs.unpipe(unsealer);
+                unsealer.unpipe(sink);
+                rs.destroy();
+                unsealer.destroy();
+                sink.end(() => resolve());
+            }
+        }, 10);
+
+        rs.pipe(unsealer).pipe(sink);
+        sink.on('finish', () => {
+            clearInterval(poll);
+            resolve();
+        });
+
+        setTimeout(() => {
+            clearInterval(poll);
+            reject(new Error('timed out waiting for mid-item partial decrypt state'));
+        }, 30000);
+    });
+
+    expect(snapshot).not.toBeNull();
+    expect(snapshot.data.equals(snapshot.remaining)).toBe(true);
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(dst);
+        fs.unlinkSync(contextPath);
+    } catch (error) {}
+}, 60000);
+
 test('test pipeline context basic', async () => {
     //let src = "Unsealerlarge.file";
     //let src = './rollup.config.js'
@@ -471,8 +565,8 @@ test('test pipeline context with pause and resume on same file', async () => {
     } catch (error) {}
 }, 180000);
 
-// 500MB + 多轮 pause/resume，本地耗时过长，待修复 pause 阈值逻辑后再启用
-test.skip('test pipeline context with multiple random pause and resume on same file', async () => {
+// 同文件多轮 pause/resume（读 dst 密文，写回 src 明文路径）；100MB 覆盖 multipause 逻辑，避免 500MB CI 超时
+test('test pipeline context with multiple random pause and resume on same file', async () => {
     let src = testPath('multi_pause_resume_large.rand_same.file');
     let context_path = testPath('multi_pause_resume_large_context.rand_same');
     let dst;
@@ -480,164 +574,91 @@ test.skip('test pipeline context with multiple random pause and resume on same f
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
+        fs.unlinkSync(dst);
     } catch (error) {}
 
-    // 准备测试文件
-    const fileSize = 1024 * 1024 * 500; // 500MB
+    const fileSize = 1024 * 1024 * 100;
     generateFileWithSize(src, fileSize);
     dst = await sealFile(src);
     const originalMD5 = await calculateMD5(src);
-    // 保存原始文件内容用于后续验证
-    // const originalContent = fs.readFileSync(src);
 
-    // 生成更均匀的随机暂停点
-    const segmentSize = fileSize / 5; // 将文件分成5段
-    const pausePoints = [];
+    const generateRandomPausePoints = (fileSize, numberOfPauses) => {
+        const minGap = 1024 * 1024 * 2;
+        const pausePoints = new Set();
 
-    // 在每段中随机选择一个暂停点
-    for (let i = 1; i < 5; i++) {
-        const minPoint = i * segmentSize - segmentSize / 4;
-        const maxPoint = i * segmentSize + segmentSize / 4;
-        const point = Math.floor(minPoint + Math.random() * (maxPoint - minPoint));
-        pausePoints.push(point);
-    }
+        while (pausePoints.size < numberOfPauses) {
+            const point = Math.floor(minGap + Math.random() * (fileSize - minGap * 2));
+            pausePoints.add(point);
+        }
 
+        return Array.from(pausePoints).sort((a, b) => a - b);
+    };
+
+    const pausePoints = generateRandomPausePoints(fileSize, 4);
 
     let context = new PipelineContextInFile(context_path);
     await context.loadContext();
 
-    // 处理多个阶段
     for (let stage = 0; stage < pausePoints.length + 1; stage++) {
-
-        let pauseTriggered = false;
-        let totalBytesProcessed = 0;
         const currentPauseThreshold = pausePoints[stage];
 
-        class PauseController extends require('stream').Transform {
-            constructor(options = {}) {
-                super(options);
-                this.lastLoggedPosition = 0;
-            }
-
-            _transform(chunk, encoding, callback) {
-                totalBytesProcessed += chunk.length;
-                const absolutePosition = (context.context.readStart || 0) + totalBytesProcessed;
-
-                // 每处理50MB记录一次位置
-                if (absolutePosition - this.lastLoggedPosition >= 50 * 1024 * 1024) {
-                    this.lastLoggedPosition = absolutePosition;
-                }
-
-                this.push(chunk);
-
-                if (!pauseTriggered && currentPauseThreshold && absolutePosition >= currentPauseThreshold) {
+        await new Promise((resolve, reject) => {
+            let pauseTriggered = false;
+            const progressHandler = (totalItem, readItem, bytes, writeBytes) => {
+                if (
+                    stage < pausePoints.length &&
+                    !pauseTriggered &&
+                    writeBytes >= currentPauseThreshold
+                ) {
                     pauseTriggered = true;
                 }
-
-                callback();
-            }
-        }
-
-        // 处理当前阶段
-        await new Promise((resolve, reject) => {
-            const _progressHandler = (totalItem, readItem, bytes, writeBytes) => {
             };
 
             let rs = new RecoverableReadStream(dst, context);
-            let unsealer = new meta.Unsealer({
-                keyPair: key_pair,
-                processedItemCount: context.context.readItemCount || 0,
-                processedBytes: context.context.readStart || 0,
-                writeBytes: context.context.writeStart || 0,
-                progressHandler: _progressHandler,
-                context: context
-            });
-            let pauseController = stage < pausePoints.length ? new PauseController() : null;
+            let unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
             let ws = new RecoverableWriteStream(src, context);
 
-            // 监听进度和暂停
+            bindPipelineErrors([rs, unsealer, ws], reject);
+
             let checkInterval;
+            const tryPause = async () => {
+                if (checkInterval) clearInterval(checkInterval);
+                try {
+                    await pauseDecryptPipeline(rs, unsealer, ws);
+                    resolve();
+                } catch (e) {
+                    reject(e);
+                }
+            };
+
             if (stage < pausePoints.length) {
                 checkInterval = setInterval(() => {
-                    if (pauseTriggered) {
-                        clearInterval(checkInterval);
-
-                        rs.unpipe(unsealer);
-                        unsealer.unpipe(pauseController);
-                        pauseController.unpipe(ws);
-
-                        // 随机延迟暂停时间 (1-3秒)
-                        const randomDelay = 1000 + Math.random() * 2000;
-                        setTimeout(() => {
-                            rs.destroy();
-                            unsealer.destroy();
-                            pauseController.destroy();
-                            ws.end();
-                            resolve();
-                        }, randomDelay);
-                    }
+                    if (pauseTriggered) tryPause();
                 }, 100);
             }
 
-            // 连接管道
-            if (stage < pausePoints.length) {
-                rs.pipe(unsealer).pipe(pauseController).pipe(ws);
-            } else {
-                rs.pipe(unsealer).pipe(ws);
-            }
-
-            // 处理完成和错误
-            ws.on('finish', () => {
-                if (checkInterval) clearInterval(checkInterval);
-                resolve();
-            });
-            ws.on('error', (err) => {
-                if (checkInterval) clearInterval(checkInterval);
-                console.error(`Stage ${stage + 1} error:`, err);
-                reject(err);
-            });
+            rs.pipe(unsealer).pipe(ws);
+            ws.on('finish', resolve);
         });
 
-        // 打印当前阶段状态
         context = new PipelineContextInFile(context_path);
         await context.loadContext();
 
-        // 随机等待时间后继续 (2-5秒)
         if (stage < pausePoints.length) {
             const resumeDelay = 2000 + Math.random() * 3000;
-            await new Promise((resolve) => setTimeout(resolve, resumeDelay));
+            await new Promise((r) => setTimeout(r, resumeDelay));
         }
     }
 
-    // 解密文件进行验证
-    let finalContext = new PipelineContextInFile(testPath('final_verify_context'));
-    await finalContext.loadContext();
-
-    await new Promise((resolve, reject) => {
-        let rs = new RecoverableReadStream(dst, finalContext);
-        let unsealer = new meta.Unsealer({keyPair: key_pair, context: finalContext});
-        let ws = new RecoverableWriteStream(src, finalContext);
-
-        ws.on('finish', resolve);
-        ws.on('error', reject);
-
-        rs.pipe(unsealer).pipe(ws);
-    });
-
-    // const finalContent = fs.readFileSync(src);
-    // expect(Buffer.compare(originalContent, finalContent)).toBe(0);
     const finalMD5 = await calculateMD5(src);
     expect(originalMD5).toStrictEqual(finalMD5);
-    // 清理文件
+
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(dst);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(testPath('final_verify_context'));
-    } catch (error) {
-        console.warn('Cleanup error:', error.message);
-    }
-});
+    } catch (error) {}
+}, 600000);
 
 test('test truncate removes residual bytes after pause/resume', async () => {
     // This test verifies that _final always truncates to writeStart,

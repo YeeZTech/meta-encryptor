@@ -80,7 +80,7 @@ export class Unsealer extends Transform {
         this.push(null);
       }
 
-      // persist trailing unconsumed bytes for recoverable stream context
+      // Sync unconsumed cipher tail for recoverable Read replay (see Recoverable.spec.js)
       if (this._context && this._context.context && this._context.context["status"] === "file") {
         const remaining = this.#core.remaining;
         this._context.context["data"] = remaining.length > 0
