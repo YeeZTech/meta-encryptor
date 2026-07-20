@@ -1,5 +1,5 @@
-% 第 9 章：目录树明文格式（框架）
-% 规定目录（树）逻辑文件的明文布局、解析与校验；生成与整包还原见第 10 章。
+% 第 7 章：目录树明文格式（规范性）
+% 规定目录（树）逻辑文件的明文布局、解析与校验；生成与整包还原见附录 G。
 
 \section{目录树明文格式}\label{sec:directory-tree-chapter}
 
@@ -65,9 +65,13 @@
 \end{itemize}
 
 \noindent\textbf{参考约定参数（当前版本，暂定）：}\label{sec:tree-header-params}
-为保证目录明文互操作，当前约定 \ttf{version = 2}（\ttf{UINT64(LE)}，暂定；\ttf{file_entry} 为 72 字节且含 \ttf{restore_flag}）。
-\ttf{magic_number}（\ttf{UINT64(LE)}，8 字节，暂定）为：字符串形式 ASCII \texttt{YEEZTRID}（恰好 8 字节，\textbf{无}结尾 \texttt{0x00}）；十六进制（自目录明文偏移 \texttt{0} 起连续 8 字节）：\texttt{5945455a54495245}。
-树头.\ttf{version} 仅描述目录明文布局演进，与 \texttt{.aeff} Header.\ttf{version_number} \textbf{无}对应关系，二者 MAY 独立递增；读取器 MUST 在解析目录节前校验 \ttf{magic_number} 与 \ttf{version}；若后续调整树头布局或上述常量，树头.\ttf{version} MUST 递增并提供兼容说明，\textbf{不必}与 aeff 文件版本同步。
+\begin{itemize}
+  \item \ttf{version}：\ttf{UINT64(LE)}，当前约定值为 \texttt{2}（暂定）；对应 \ttf{file_entry} 固定 72 字节且含 \ttf{restore_flag}；
+  \item \ttf{magic_number}：\ttf{UINT64(LE)}，8 字节（暂定）；字符串形式为 ASCII \texttt{YEEZTRID}（恰好 8 字节，\textbf{无}结尾 \texttt{0x00}）；十六进制（自目录明文偏移 \texttt{0} 起连续 8 字节）为 \texttt{5945455a54495245}；
+  \item 树头.\ttf{version} 仅描述目录明文布局演进，与 \texttt{.aeff} Header.\ttf{version_number} \textbf{无}对应关系，二者 MAY 独立递增；
+  \item 读取器 MUST 在解析目录节前校验 \ttf{magic_number} 与 \ttf{version}；
+  \item 若后续调整树头布局或上述常量，树头.\ttf{version} MUST 递增并提供兼容说明，\textbf{不必}与 \texttt{.aeff} 文件版本同步。
+\end{itemize}
 
 \subsection{符号节}\label{sec:tree-string-section}
 

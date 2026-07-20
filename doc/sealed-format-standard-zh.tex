@@ -77,14 +77,14 @@
 本标准定义的文件格式全称为 \textbf{Analyzable Encrypted File Format}（\textbf{AEFF}，可分析加密文件格式），文件后缀为 \texttt{.aeff}。除元数据表、标题外，正文亦称 \textbf{AEFF 文件}或 \texttt{.aeff} 文件，二者同义。Meta-Encryptor 等实现 MAY 沿用历史工程命名，但对外互操作以 AEFF 与 \texttt{.aeff} 为准。
 
 \subsection{背景与动机}\label{sec:introduction-background}
-隐私计算与数据交付场景中，密文容器除机密性、完整性外，还须支持\textbf{随机访问}：在不解封整包的前提下，按块定位并读取、校验其中一段内容，以满足审计、抽样与\textbf{数据分析}等需求。若只能整包顺序解密，上述场景成本过高；若随机访问依赖与密文格式无关的外部索引，则难以在保持分段认证的前提下做范围读取，\textbf{数据分析}链路也难以稳定复用同一份 AEFF 产物。
+隐私计算与数据交付场景中，密文容器除机密性、完整性外，还须支持\textbf{随机访问}：在不解封整包的前提下，定位并读取、校验其中一段内容，以满足审计、抽样与\textbf{数据分析}等需求。若只能整包顺序解密，上述场景成本过高；若随机访问依赖与密文无关的外部索引，则索引与载体易脱节，且难以在保持分段认证的前提下做范围读取，\textbf{数据分析}链路也难以稳定复用同一份密文产物。
 
-\textbf{与常见密文形态对比。}业界与隐私计算链路中广泛使用的做法与本标准目标差异可概括如下（均为\textbf{已有}常见形态，非本标准所定义）：
+\textbf{与常见密文形态对比。}业界与隐私计算链路中广泛使用的做法与上述目标的差距可概括如下（均为\textbf{已有}常见形态）：
 \begin{itemize}
-  \item \textbf{整文件单一密文}（如 OpenSSL \texttt{enc}、国密算法对明文一次性对称加密等）：实现简单，但密文流\textbf{不含}与内容对齐的块级索引；\textbf{随机访问}往往只能做未与格式绑定的字节范围读取，或须从头解密，无法经济地完成分段认证与\textbf{数据分析}所需的局部校验。
+  \item \textbf{整文件单一密文}（如 OpenSSL \texttt{enc}、国密算法对明文一次性对称加密等）：实现简单，但密文流本身\textbf{不携带}可用于定位与分段校验的结构信息；\textbf{随机访问}往往只能做未与格式绑定的字节范围读取，或须从头解密，无法经济地完成分段认证与\textbf{数据分析}所需的局部校验。
   \item \textbf{先归档再整体加密}（如 \texttt{tar}/\texttt{zip} 归档后对整个归档流加密）：解密前无法从密文获知内部成员边界，\textbf{不支持}对单个成员的直接随机访问；\textbf{数据分析}通常须先完整解密并解压，无法只对归档内某一成员做认证级局部读取。
-  \item \textbf{单管线消息型密文}（如 OpenPGP 对称加密的单文件输出）：面向顺序传输与整消息认证，\textbf{通常不提供}与内容区块索引等价的内建\textbf{随机访问}语义；多文件语义须由外层协议另行约定。
-  \item \textbf{仅顺序解封的密封实现}（在加密之上未标准化块索引、尾部元数据与目录树时）：与整文件密文类似，外部系统若自建偏移表，易出现索引与密封载体脱节、版本不一致等问题。
+  \item \textbf{单管线消息型密文}（如 OpenPGP 对称加密的单文件输出）：面向顺序传输与整消息认证，\textbf{通常不提供}内建的\textbf{随机访问}语义；多文件语义须由外层协议另行约定。
+  \item \textbf{仅支持顺序解密的密封容器}：部分隐私计算或数据交付链路中的密封实现虽提供加密与完整性保护，但格式设计面向整包或顺序解封，\textbf{不}在密文内携带可供定位的结构信息。若由外部系统另行维护偏移表或索引，索引与密文载体分属不同产物，易出现脱节、版本不一致等问题，难以稳定支撑审计与\textbf{数据分析}。
 \end{itemize}
 
 相对而言，\textbf{AEFF}（\texttt{.aeff}）在\textbf{同一格式内}提供尾部 Header、Block 索引、分段认证加密的内容区及可选目录树明文：支撑\textbf{块级随机访问}（第~\ref{sec:access-capability} 节），使\textbf{数据分析}等场景可在不整包解封的前提下按块定位读取并校验；多逻辑文件关系由目录树描述，而非依赖解密后再解压归档（第~\ref{sec:directory-tree-chapter} 章、附录~\ref{sec:multi-file-chapter}）。本标准正文规定上述字节布局与可验证语义；封装、解封步骤与默认密码学套件以\textbf{附录}给出。
@@ -197,20 +197,13 @@
   \item \ttf{Header}：固定 80 字节，位于文件末尾，包含魔数、版本、计数、摘要及目录树 Item 定位字段，详见第~\ref{sec:header-region} 节；
 \end{itemize}
 该布局允许写入端在不知道最终计数的情况下先持续写入内容，再在结束时一次性写入索引和 Header。
-
-\subsection{读取模型}\label{sec:read-model}
-由于 Header 位于尾部，标准定义两种等价读取模型：
-\begin{itemize}
-  \item \textbf{尾读模型}：读取器先从文件末尾读取 80B Header（字段布局见第~\ref{sec:header-region} 节），再按 Header.\ttf{block_number} 读取 Block Infos 区，再读取内容区；
-  \item \textbf{逻辑前置模型}：中间层先尾读 Header，并在解封管道中将 Header 逻辑前置，再按顺序喂入内容区数据。
-\end{itemize}
-两种模型 MUST 产出一致的解析结果。
+因 Header 位于文件末尾，读取方 MUST 先从文件末尾取得 Header（字段布局见第~\ref{sec:header-region} 节），再据此定位 Block Infos 与 Content Region。
+实现 MAY 在解封管道中将 Header 逻辑前置后顺序喂入内容区；无论采用何种 I/O 呈现，解析结果 MUST 与按尾部 Header 直接解析一致。\label{sec:read-model}
 
 \subsection{区域长度计算}\label{sec:region-length}
 本小节使用的符号先定义如下：
 \begin{itemize}
-  \item \ttf{block_number}：\ttf{Header} 结构中的字段，表示 Block Info 条目数量（类型为 \ttf{UINT64(LE)}）；
-  \item \ttf{N}：\ttf{block_number} 的记号化表示，即 \ttf{N = block_number}；
+  \item \ttf{block_number}（下文亦记为 \ttf{N}）：\ttf{Header} 结构中的字段，表示 Block Info 条目数量（类型为 \ttf{UINT64(LE)}）；
   \item \ttf{file_size}：单个 \texttt{.aeff} 文件的总字节数；由打开文件、对象大小或传输层长度字段等在\textbf{读取 Header 之前}由实现获知，不得通过解析 Header 反推。
   \item \ttf{header_size}：Header 区总长度（单位：字节）；
   \item \ttf{block_infos_size}：Block Infos 区总长度（单位：字节）；
@@ -270,27 +263,34 @@ Header 记录占用 80 字节，字段布局如下：
 \end{itemize}
 
 \subsubsection{Header 识别与版本兼容规则}\label{sec:header-compat}
-本小节统一约束 \ttf{magic_number} 与 \ttf{version_number} 的识别、校验与版本演进策略：
+本小节约束 \ttf{magic_number} 与 \ttf{version_number} 的识别、校验与版本演进。约定取值见第~\ref{sec:header-current-values} 节。
+
+\textbf{概念定义：}
 \begin{itemize}
-  \item \textbf{文件}：指单个 \ttf{.aeff} 文件实例；
-  \item \textbf{实现}：指遵循本标准的读写器（Writer/Reader）；
-  \item \textbf{未来版本}：指 \ttf{version_number} 高于当前版本的格式版本。
-\end{itemize}
-\begin{itemize}
-  \item 每个 \ttf{.aeff} 文件 MUST 在 Header 中携带 \ttf{version_number}；
-  \item \textbf{文件识别}：\ttf{magic_number} MUST 等于约定魔数；
-  \item \textbf{版本识别}：\ttf{version_number} MUST 位于实现声明的支持范围内；
-  \item 读取实现 MUST 在进入内容解析前完成上述检查；
-  \item 任一检查失败时，读取器 MUST 拒绝继续解析。
-  \item 新版本在可行时 SHOULD 保持向后兼容；若无法兼容，MUST 提供迁移或拒绝策略说明。
+  \item \textbf{文件}：单个 \texttt{.aeff} 文件实例；
+  \item \textbf{实现}：遵循本标准的读写器（Writer / Reader）；
+  \item \textbf{当前版本}：本标准正文当前规定的 \ttf{version_number}（见第~\ref{sec:header-current-values} 节）；
+  \item \textbf{未来版本}：\ttf{version_number} 高于当前版本的格式版本；
+  \item \textbf{支持范围}：实现所声明的、可正确解析的 \ttf{version_number} 闭区间（最小版本与最大版本）。
 \end{itemize}
 
-\subsubsection{当前版本 Header 字段约定值}
-当前版本（\ttf{version_number = 2}）的 Header 字段约定值如下：
+\textbf{Header 规范：}
+\begin{itemize}
+  \item \textbf{写入}：写入端 MUST 将 \ttf{magic_number} 写为约定魔数，并将 \ttf{version_number} 写为其产出格式所对应的版本号；
+  \item \textbf{文件识别}：读取端校验时，\ttf{magic_number} MUST 等于约定魔数；
+  \item \textbf{版本识别}：读取端校验时，\ttf{version_number} MUST 落在该实现的支持范围内；
+  \item \textbf{校验时机}：读取端 MUST 在进入 Content Region 或 Block Infos 解析之前完成上述检查；
+  \item \textbf{失败语义}：任一检查失败时，读取端 MUST 拒绝继续解析；错误码 SHOULD 分别为附录 C 中的 \ttf{E_MAGIC_MISMATCH}、\ttf{E_VERSION_UNSUPPORTED}；
+  \item \textbf{未知或未来版本}：若 \ttf{version_number} 超出支持范围，读取端 MAY 拒绝处理；若仍处理，MUST 在实现文档中声明兼容边界与风险；
+  \item \textbf{版本演进}：新版本在可行时 SHOULD 保持对既有字段语义与位置的向后兼容；若无法兼容，MUST 递增 \ttf{version_number}，并提供迁移或拒绝策略说明；调整约定魔数、字段取值或字段语义时，同样 MUST 递增 \ttf{version_number} 并给出兼容说明。
+\end{itemize}
+
+\subsubsection{当前版本 Header 字段约定值}\label{sec:header-current-values}
+对当前版本，Header 中\textbf{仅}下列两字段取固定约定值；其余字段（\ttf{block_number}、\ttf{item_number}、\ttf{data_hash}、\ttf{tree_item_index}、\ttf{tree_item_number}）依具体文件实例填写，\textbf{不}在本节给出常量：
 \begin{itemize}
   \item \ttf{magic_number = 1fe2ef7f3ed18847}
+  \item \ttf{version_number = 2}
 \end{itemize}
-若后续版本调整上述字段取值或字段语义，\ttf{version_number} MUST 递增并提供兼容说明。
 
 \subsection{Block Infos 区}\label{sec:block-infos}
 Block Infos 区位于 Content Region 与尾部 Header 之间，总长度 \ttf{block_infos_size}
@@ -307,14 +307,14 @@ Block Infos 区位于 Content Region 与尾部 Header 之间，总长度 \ttf{bl
   \endhead
   \ttf{start_item_index} & 0  & 8  & 起始 Item 下标（含）           \\
   \ttf{end_item_index}   & 8  & 8  & 结束 Item 下标（不含）          \\
-  \ttf{start_file_pos}   & 16 & 8  & 内容区内起始字节偏移（非源明文文件偏移）    \\
-  \ttf{end_file_pos}     & 24 & 8  & 内容区内结束字节偏移（半开，非源明文文件偏移） \\
+  \ttf{start_file_pos}   & 16 & 8  & 内容区内起始字节偏移（含）    \\
+  \ttf{end_file_pos}     & 24 & 8  & 内容区内结束字节偏移（不含） \\
   \bottomrule
 \end{longtable}
 \textbf{字段语义：}
 \begin{itemize}
-  \item \ttf{start_item_index}、\ttf{end_item_index}：该 Block 内 Item 的下标半开区间 \ttf{[start, end)}，下标从 0 起计；
-  \item \ttf{start_file_pos}、\ttf{end_file_pos}：本 Block 在 \texttt{.aeff} 文件 Content Region 内占据的字节半开区间 \ttf{[start, end)}，偏移以内容区首字节为 \texttt{0}；\textbf{不}表示业务侧源文件内偏移（见第~\ref{sec:block-meta-fields} 节）。
+  \item \ttf{start_item_index}、\ttf{end_item_index}：该 Block 覆盖 Item 的下标区间 \ttf{[start, end)}（起始下标\textbf{含}、结束下标\textbf{不含}），下标从 0 起计；
+  \item \ttf{start_file_pos}、\ttf{end_file_pos}：本 Block 在 \texttt{.aeff} 文件 Content Region 内占据的字节区间 \ttf{[start, end)}（起始偏移\textbf{含}、结束偏移\textbf{不含}），偏移以内容区首字节为 \texttt{0}；\textbf{不}表示业务侧源文件内偏移（见第~\ref{sec:block-meta-fields} 节）。
 \end{itemize}
 全体 Block Info 共同构成 Content Region 的块级索引：
 \begin{itemize}
@@ -410,36 +410,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
   \item \textbf{版本校验}：未知版本 MAY 拒绝处理；若处理 MUST 在实现文档中声明兼容边界。
 \end{itemize}
 
-% 第 6 章：密码学边界（规范性）
-
-\section{密码学边界}\label{sec:crypto-chapter}
-
-\subsection{算法无关原则}
-\begin{itemize}
-  \item 本标准对 \ttf{cipher_payload} 规定\textbf{容器布局}（第~\ref{sec:cipher-payload-layout} 节）：变长密文体与固定或约定长度的尾字段槽位；\textbf{不}将具体椭圆曲线、AEAD、KDF 或长期密钥编码写死为全文 MUST 条件。
-  \item 封装侧 MUST 对每条 Item 产出满足布局的 \ttf{cipher_payload}；解封侧 MUST 在认证成功后得到与本条 Item 对应的 \ttf{item_payload}。接收方长期公钥/私钥由应用层提供，\textbf{不}写入 \texttt{.aeff} 文件。
-  \item \ttf{version_number = 2} 的默认互操作套件见附录~\ref{app:crypto-suite-v2}；实现 MAY 拒绝无法按所识别套件解密的文件。
-\end{itemize}
-
-\subsection{密码学套件标识}\label{sec:crypto-suite-id}
-\begin{itemize}
-  \item 当前版本（\ttf{version_number = 2}，Header 80 字节）\textbf{未}单列套件字段；对该版本文件，读取器 SHOULD 按附录~\ref{app:crypto-suite-v2} 解释 \ttf{cipher_payload} 各槽位长度与语义。
-  \item 未来版本 MAY 在 Header 增加 \ttf{crypto_suite_id}（\ttf{UINT32(LE)}）及/或变长 \ttf{crypto_descriptor}（实现注册表或 UTF-8 描述串）；未知 \ttf{crypto_suite_id} 时读取器 MAY 拒绝，\textbf{不}影响本标准对容器布局的规范性。
-\end{itemize}
-
-\subsection{随机性要求}\label{sec:randomness}
-\begin{itemize}
-  \item 每条 Item 用于 AEAD 的 Nonce（\ttf{iv}）MUST 由密码学安全随机源生成，且在相同会话密钥下 MUST NOT 重用；
-  \item 每条 Item 的临时密钥材料 MUST 由密码学安全随机源生成，并满足所用套件对密钥有效性的要求（附录~\ref{app:crypto-suite-v2} 对 v2 套件的具体要求）；
-  \item 随机源不可用或生成失败时，封装流程 MUST 中止，MUST NOT 以固定值或可预测值替代。
-\end{itemize}
-
-\subsection{认证失败语义}\label{sec:auth-failure}
-\begin{itemize}
-  \item AEAD 认证标签校验失败、密文长度与 \ttf{cipher_payload} 布局不一致或密钥派生输入非法时，解封器 MUST 将该 Item 视为无效；
-  \item 上述失败后，解封器 MUST 停止继续输出本条 Item 及后续 Item 的明文（除非实现文档明确声明并验证的其他恢复语义）；
-  \item 实现 SHOULD 返回可区分错误码（如附录 C 中 \ttf{E_AEAD_AUTH_FAILED}），便于审计与告警。
-\end{itemize}
+\input{sealed-crypto-normative}
 
 \input{sealed-directory-tree}
 
@@ -503,20 +474,20 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
 
 
 \appendix
-\section{附录 A：字段偏移总表}
-\subsection{A.1 文件级布局}
+\section{字段偏移总表}
+\subsection{文件级布局}
 \begin{longtable}{>{\raggedright\arraybackslash}p{3.0cm} >{\raggedright\arraybackslash}p{2.8cm} >{\raggedright\arraybackslash}p{2.2cm} >{\raggedright\arraybackslash}p{5.8cm}}
   \toprule
   区域                   & 长度                      & 是否固定 & 说明                   \\
   \midrule
   \endhead
-  \ttf{Content Region} & 变长                      & 否    & 由若干 Item 顺序构成        \\
-  \ttf{Block Infos}    & \ttf{32 * block_number} & 否    & 每条 Block Info 固定 32B \\
-  \ttf{Header}         & 80B                     & 是    & 位于文件末尾               \\
+  \ttf{Content Region} & 变长 & 否 & 由若干 Item 顺序构成 \\
+  \ttf{Block Infos}    & \ttf{32*block_number} & 否 & 每条 Block Info 固定 32B \\
+  \ttf{Header}         & 80B & 是 & 位于文件末尾 \\
   \bottomrule
 \end{longtable}
 
-\subsection{A.2 Header 字段总表}
+\subsection{Header 字段总表}
 {\small
   \begin{longtable}{>{\raggedright\arraybackslash}p{3.0cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{2.6cm} >{\raggedright\arraybackslash}p{5.0cm}}
     \toprule
@@ -534,22 +505,22 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
   \end{longtable}
 }
 
-\subsection{A.3 Block Info 字段总表}
+\subsection{Block Info 字段总表}
 {\small
   \begin{longtable}{>{\raggedright\arraybackslash}p{3.6cm} >{\raggedright\arraybackslash}p{1.0cm} >{\raggedright\arraybackslash}p{1.0cm} >{\raggedright\arraybackslash}p{2.4cm} >{\raggedright\arraybackslash}p{5.0cm}}
     \toprule
     字段名                    & 偏移 & 长度 & 类型               & 约束                                            \\
     \midrule
     \endhead
-    \ttf{start_item_index} & 0  & 8  & \ttf{UINT64(LE)} & 与 \ttf{end_item_index} 组成半开区间                 \\
-    \ttf{end_item_index}   & 8  & 8  & \ttf{UINT64(LE)} & MUST 大于或等于起始下标                                \\
-    \ttf{start_file_pos}   & 16 & 8  & \ttf{UINT64(LE)} & 内容区内起始偏移；见第~\ref{sec:block-meta-fields} 节     \\
+    \ttf{start_item_index} & 0  & 8  & \ttf{UINT64(LE)} & 起始 Item 下标（含）                 \\
+    \ttf{end_item_index}   & 8  & 8  & \ttf{UINT64(LE)} & 结束 Item 下标（不含）                                \\
+    \ttf{start_file_pos}   & 16 & 8  & \ttf{UINT64(LE)} & 内容区内起始偏移（含）；见第~\ref{sec:block-meta-fields} 节     \\
     \ttf{end_file_pos}     & 24 & 8  & \ttf{UINT64(LE)} & 内容区内结束偏移（不含）；见第~\ref{sec:block-meta-fields} 节 \\
     \bottomrule
   \end{longtable}
 }
 
-\subsection{A.4 Item 与密文载荷字段总表}
+\subsection{Item 与密文载荷字段总表}
 {\small
   \begin{longtable}{>{\raggedright\arraybackslash}p{3.8cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{2.6cm} >{\raggedright\arraybackslash}p{4.8cm}}
     \toprule
@@ -565,8 +536,8 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
   \end{longtable}
 }
 
-\section{附录 B：伪代码与格式语法}
-\subsection{B.1 封装伪代码（规范性参考）}
+\section{伪代码与格式语法}
+\subsection{封装伪代码（规范性参考）}
 下列伪代码采用参考实现中的函数名书写，符号与本标准表述的对照见附录~\ref{app:ref-impl-symbols}；规范性语义以附录~\ref{sec:seal-chapter} 与第~\ref{sec:format-chapter} 章为准。
 \begin{verbatim}
 input: item_payload_stream, receiver_public_key
@@ -588,7 +559,7 @@ write_block_infos(block_infos)
 write_header_80B(header)
 \end{verbatim}
 
-\subsection{B.2 解封伪代码（规范性参考）}
+\subsection{解封伪代码（规范性参考）}
 \begin{verbatim}
 input: aeff_stream, private_key
 state:
@@ -609,7 +580,7 @@ if H != header.data_hash:
   error(INTEGRITY_MISMATCH)
 \end{verbatim}
 
-\subsection{B.3 ABNF 风格语法（信息性）}
+\subsection{ABNF 风格语法（信息性）}
 \begin{verbatim}
 aeff-file        = content-region block-infos header
 content-region   = *item-record
@@ -636,8 +607,8 @@ tree-item-index  = uint64-le
 tree-item-number = uint64-le
 \end{verbatim}
 
-\section{附录 C：错误码}
-\subsection{C.1 标准错误码定义}
+\section{错误码}
+\subsection{标准错误码定义}
 {\small
   \begin{longtable}{>{\raggedright\arraybackslash}p{4.2cm} >{\raggedright\arraybackslash}p{2.0cm} >{\raggedright\arraybackslash}p{5.4cm}}
     \toprule
@@ -666,7 +637,7 @@ tree-item-number = uint64-le
 \subsection{目录树解析相关错误码}\label{sec:directory-tree-errors}
 第~\ref{sec:directory-tree-parse} 节校验失败时，实现 SHOULD 使用上表中以 \texttt{E\_TREE\_} 为前缀的错误码，以便与 Item 级及 Header 级错误区分。
 
-\subsection{C.2 错误处理要求}
+\subsection{错误处理要求}
 \begin{itemize}
   \item 发生 \ttf{E_AEAD_AUTH_FAILED} 或 \ttf{E_INTEGRITY_MISMATCH} 时，解封器 MUST 停止输出后续明文；
   \item 发生格式错误时，读取器 MUST 报错并拒绝继续解析；
@@ -674,8 +645,8 @@ tree-item-number = uint64-le
   \item 断点恢复路径发生 \ttf{E_RESUME_STATE_INVALID} 时，SHOULD 提供“从头重试”建议。
 \end{itemize}
 
-\section{附录 D：参考实现映射}
-\subsection{D.1 标准条款到模块映射}
+\section{参考实现映射}
+\subsection{标准条款到模块映射}
 \begin{longtable}{>{\raggedright\arraybackslash}p{4.0cm} >{\raggedright\arraybackslash}p{7.8cm}}
   \toprule
   标准条款域                   & 参考实现模块                                                \\
@@ -691,7 +662,7 @@ tree-item-number = uint64-le
   \bottomrule
 \end{longtable}
 
-\subsection{D.2 封装流程表述与源码符号对照（信息性）}\label{app:ref-impl-symbols}
+\subsection{封装流程表述与源码符号对照（信息性）}\label{app:ref-impl-symbols}
 本附录条目\textbf{不}构成规范性 API；仅便于阅读 Meta-Encryptor Node 参考实现（\ttf{src/header_util.js} 等）。实现者 MAY 使用不同命名，但产生的字节布局 MUST 与附录~\ref{sec:seal-chapter} 一致。
 {\small
 \begin{longtable}{>{\raggedright\arraybackslash}p{4.2cm} >{\raggedright\arraybackslash}p{3.6cm} >{\raggedright\arraybackslash}p{4.6cm}}

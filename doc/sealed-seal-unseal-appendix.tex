@@ -1,4 +1,4 @@
-\section{附录 H：封装与解封流程（参考）}\label{app:seal-unseal-reference}
+\section{封装与解封流程（参考）}\label{app:seal-unseal-reference}
 
 \subsection{封装流程（参考）}\label{sec:seal-chapter}
 
@@ -184,7 +184,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \begin{itemize}
   \item 含义：本 Block 在 \texttt{.aeff} 文件 \textbf{Content Region} 内占据的字节半开区间 \texttt{[start\_file\_pos, end\_file\_pos)}。偏移以内容区首字节为 \texttt{0}（内容区在文件最前，故从该文件物理偏移 \texttt{0} 起算）。\textbf{不包含} Block Infos 区与 Header 区（见第~\ref{sec:region-length} 节）。
   \item \ttf{start_file_pos}：该 Block 第一条 Item 的 \texttt{item\_size} 前缀起始处（\textbf{含}）；
-  \item \ttf{end_file_pos}：该 Block 末字节的内容区偏移加 \texttt{1}（半开区间右端，\textbf{不含}）；Block 在内容区占用 \texttt{end\_file\_pos - start\_file\_pos} 字节。
+  \item \ttf{end_file_pos}：该 Block 末字节的内容区偏移加 \texttt{1}（\textbf{不含}）；Block 在内容区占用 \texttt{end\_file\_pos - start\_file\_pos} 字节。
   \item \textbf{不是}：被封装前原始明文文件（或任意宿主路径下文件）内的字节偏移。字段名 \texttt{file} 指本 \texttt{.aeff} 输出文件的内容区（与参考实现 \texttt{block\_info\_t.start\_file\_pos} 一致），勿与「源文件偏移」混读。
 \end{itemize}
 
@@ -337,12 +337,12 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 上述步骤的\textbf{组合调度}见第~\ref{sec:unseal-total-algorithm} 节；全局一致性见第~\ref{sec:unseal-consistency} 节；失败语义见第~\ref{sec:unseal-errors} 节。
 
 \subsection{Header 获取与校验}\label{sec:unseal-header-model}
-从 \texttt{.aeff} 文件尾部取得 Header 记录，校验识别字段并计算三区长度（读取顺序见第~\ref{sec:read-model} 节）。
+从 \texttt{.aeff} 文件尾部取得 Header 记录，校验识别字段并计算三区长度（见第~\ref{sec:read-model} 节）。
 
 \textbf{输入：}
 \begin{itemize}
   \item 已打开的 \texttt{.aeff} 文件及 \ttf{file_size}（见第~\ref{sec:region-length} 节）；
-  \item \ttf{magic_number}、\ttf{version_number} 的约定取值（见第~\ref{sec:header-compat} 节）。
+  \item \ttf{magic_number}、\ttf{version_number} 的约定取值（见第~\ref{sec:header-current-values} 节）。
 \end{itemize}
 
 \textbf{输出：}
