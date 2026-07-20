@@ -1,0 +1,30 @@
+% 第 6 章：密码学边界（规范性）
+
+\section{密码学边界}\label{sec:crypto-chapter}
+
+\subsection{算法无关原则}
+\begin{itemize}
+  \item 本标准对 \ttf{cipher_payload} 规定\textbf{容器布局}（第~\ref{sec:cipher-payload-layout} 节）：变长密文体与固定或约定长度的尾字段槽位；\textbf{不}将具体椭圆曲线、AEAD、KDF 或长期密钥编码写死为全文 MUST 条件。
+  \item 封装侧 MUST 对每条 Item 产出满足布局的 \ttf{cipher_payload}；解封侧 MUST 在认证成功后得到与本条 Item 对应的 \ttf{item_payload}。接收方长期公钥/私钥由应用层提供，\textbf{不}写入 \texttt{.aeff} 文件。
+  \item \ttf{version_number = 2} 的默认互操作套件见附录~\ref{app:crypto-suite-v2}；实现 MAY 拒绝无法按所识别套件解密的文件。
+\end{itemize}
+
+\subsection{密码学套件标识}\label{sec:crypto-suite-id}
+\begin{itemize}
+  \item 当前版本（\ttf{version_number = 2}，Header 80 字节）\textbf{未}单列套件字段；对该版本文件，读取器 SHOULD 按附录~\ref{app:crypto-suite-v2} 解释 \ttf{cipher_payload} 各槽位长度与语义。
+  \item 未来版本 MAY 在 Header 增加 \ttf{crypto_suite_id}（\ttf{UINT32(LE)}）及/或变长 \ttf{crypto_descriptor}（实现注册表或 UTF-8 描述串）；未知 \ttf{crypto_suite_id} 时读取器 MAY 拒绝，\textbf{不}影响本标准对容器布局的规范性。
+\end{itemize}
+
+\subsection{随机性要求}\label{sec:randomness}
+\begin{itemize}
+  \item 每条 Item 用于 AEAD 的 Nonce（\ttf{iv}）MUST 由密码学安全随机源生成，且在相同会话密钥下 MUST NOT 重用；
+  \item 每条 Item 的临时密钥材料 MUST 由密码学安全随机源生成，并满足所用套件对密钥有效性的要求（附录~\ref{app:crypto-suite-v2} 对 v2 套件的具体要求）；
+  \item 随机源不可用或生成失败时，封装流程 MUST 中止，MUST NOT 以固定值或可预测值替代。
+\end{itemize}
+
+\subsection{认证失败语义}\label{sec:auth-failure}
+\begin{itemize}
+  \item AEAD 认证标签校验失败、密文长度与 \ttf{cipher_payload} 布局不一致或密钥派生输入非法时，解封器 MUST 将该 Item 视为无效；
+  \item 上述失败后，解封器 MUST 停止继续输出本条 Item 及后续 Item 的明文（除非实现文档明确声明并验证的其他恢复语义）；
+  \item 实现 SHOULD 返回可区分错误码（如附录 C 中 \ttf{E_AEAD_AUTH_FAILED}），便于审计与告警。
+\end{itemize}

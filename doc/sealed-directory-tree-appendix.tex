@@ -1,0 +1,30 @@
+\section{\texttt{child.type} 与 POSIX 文件类型}\label{app:child-type-table}
+
+本节给出第~\ref{sec:tree-child} 节 \ttf{child} 低 4 位 \ttf{type} 的取值表。
+
+\ttf{type} 与 POSIX.1 \texttt{<sys/stat.h>}（及 Linux \texttt{uapi/linux/stat.h}）中 \texttt{st\_mode} 的文件类型位域一致：
+\[
+  \texttt{type} = (\texttt{st\_mode} \mathbin{\&} \texttt{S\_IFMT}) \mathbin{\gg} 12
+\]
+即 \texttt{S\_IFMT} 右移 12 位后的 4 位值，与 \texttt{lstat()}（或等价接口）所得 \texttt{st\_mode} 一致。封装侧 SHOULD 直接自宿主 \texttt{st\_mode} 导出 \ttf{type}。
+
+\begin{center}
+  \small
+  \begin{tabular}{>{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{1.4cm} >{\raggedright\arraybackslash}p{2.2cm} >{\raggedright\arraybackslash}p{2.4cm} >{\raggedright\arraybackslash}p{5.2cm}}
+    \toprule
+    \ttf{type} & 十六进制 & 宏（POSIX/Linux） & \ttf{offset} 指向 & 说明 \\
+    \midrule
+    1 & \texttt{0x1} & \texttt{S\_IFIFO} & — & FIFO/管道；当前版本\textbf{不得}作为 \ttf{child} 出现 \\
+    2 & \texttt{0x2} & \texttt{S\_IFCHR} & — & 字符设备；当前版本\textbf{不得}出现 \\
+    4 & \texttt{0x4} & \texttt{S\_IFDIR} & \ttf{dir_item} & 子目录 \\
+    6 & \texttt{0x6} & \texttt{S\_IFBLK} & — & 块设备；当前版本\textbf{不得}出现 \\
+    8 & \texttt{0x8} & \texttt{S\_IFREG} & \ttf{file_entry} & 普通文件（逻辑文件） \\
+    10 & \texttt{0xA} & \texttt{S\_IFLNK} & \ttf{file_entry} & 符号链接；\textbf{无}单独链接节；\ttf{file_entry} 字段齐全，链接目标编码见第~\ref{sec:multi-file-symlink} 节 \\
+    12 & \texttt{0xC} & \texttt{S\_IFSOCK} & — & 套接字；当前版本\textbf{不得}出现 \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+
+\texttt{0} 与其它未列出的 \ttf{type} 值为保留；解析器 MUST 判为格式错误。
+
+第~\ref{sec:tree-child} 节对 \ttf{offset} 的 MUST 约束以本表「\ttf{offset} 指向」列及该节补充说明为准。

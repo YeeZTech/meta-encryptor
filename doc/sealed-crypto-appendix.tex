@@ -1,0 +1,188 @@
+\section{参考密码学套件（Meta-Encryptor v2）}\label{app:crypto-suite-v2}
+本节为 \ttf{version_number = 2} 的\textbf{参考}密码学套件，供 Meta-Encryptor 生态互操作；正文 MUST 条件以第~\ref{sec:crypto-chapter} 章及第~\ref{sec:cipher-payload-layout} 节为准。
+第~\ref{sec:key-derivation}、\ref{sec:aes-gcm}、\ref{sec:content-encryption} 节按\textbf{模块}给出输入与输出；其余小节为概念、常量或约束说明。
+符号 \ttf{item_payload} 含义见第 2 章；与 GCM 的编码边界见第~\ref{sec:item-payload-boundary} 节。
+
+\subsection{曲线与密钥}\label{sec:curve-keys}
+本小节规定逐条 Item 协商对称密钥所需的曲线型号与密钥材料。
+
+Item 的 \ttf{encrypted_data} 由第~\ref{sec:aes-gcm} 节规定的 \texttt{AES-128-GCM}
+保护。对称密钥不由接收方长期公钥直接充当，而是经临时密钥对与 ECDH 得到共享秘密，再经第~\ref{sec:key-derivation} 节派生
+\ttf{session_key}。
+
+\begin{itemize}
+  \item \textbf{椭圆曲线}：\texttt{secp256k1}；
+  \item \textbf{临时密钥对}：封装每条 Item 时 MUST 新生成（公钥写入 \ttf{ephemeral_public_key}）；不同 Item MUST 彼此独立；
+  \item \textbf{ECDH}：封装侧以「本条 Item 临时私钥 + 接收方长期公钥」运算；解封侧以「接收方长期私钥 + \ttf{ephemeral_public_key}」运算；双方在曲线与格式一致时得到同一曲线点，再经第~\ref{sec:key-derivation} 节派生 \ttf{session_key}；
+  \item \textbf{下游}：\ttf{session_key} 在第~\ref{sec:content-encryption}、\ref{sec:decrypt-crypto} 节\textbf{模块内部}使用，不对外作为独立调用接口。
+\end{itemize}
+
+\textbf{长期密钥与临时公钥格式：}
+\begin{itemize}
+  \item \textbf{长期公钥、长期私钥}：\texttt{.aeff} 文件内 \textbf{不} 保存接收方的长期公钥或私钥。封装时，写入端 MUST 在应用层向加密模块提供接收方长期公钥；解封时，读取端 MUST 在应用层提供对应的长期私钥。当前参考实现中，二者均以十六进制字符串传入：私钥 32 字节（64 个十六进制字符），公钥 64 字节 \texttt{x||y}（128 个十六进制字符，未压缩公钥去掉首字节 \texttt{0x04}）；模块内部再解码为曲线点参与 ECDH。
+  \item \ttf{ephemeral_public_key}：\textbf{写入} \texttt{.aeff} 文件，为每条 Item 的临时公钥；64 字节 \texttt{x||y}，格式与长期公钥相同；参与 ECDH 时 MUST 在首部补回 \texttt{0x04}。
+\end{itemize}
+
+\subsection{密钥派生}\label{sec:key-derivation}
+本小节规定\textbf{密钥派生}模块：将 ECDH 共享秘密转换为本条 Item 的 GCM 会话密钥 \ttf{session_key}。
+
+\textbf{输入（来源）：}
+\begin{itemize}
+  \item \textbf{ECDH 所用密钥对}（运算规则见第~\ref{sec:curve-keys} 节）：封装侧为「本条 Item 临时私钥 + 接收方长期公钥」；解封侧为「接收方长期私钥 + \ttf{cipher_payload} 中的 \ttf{ephemeral_public_key}」；
+  \item \ttf{cmac_key}、\ttf{derivation_buffer} 布局常量：见第~\ref{sec:ref-derive-params} 节。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item \ttf{session_key}：16 字节，供第~\ref{sec:aes-gcm}、\ref{sec:content-encryption}、\ref{sec:decrypt-crypto} 节使用。
+\end{itemize}
+
+\subsubsection{ECDH 共享秘密}\label{sec:ecdh-shared-secret}
+ECDH（Elliptic Curve Diffie-Hellman）是一类椭圆曲线密钥协商方法，可参照 SEC 1 的 ECDH 原语或 NIST SP
+800-56A 中的 ECC CDH 密钥协商术语理解：一方使用自己的私钥与对方公钥运算，双方在参数一致时得到同一曲线点。当前版本的 ECDH 在
+\texttt{secp256k1} 上完成，并将该曲线点按下述规则转换为 32 字节共享秘密 \ttf{shared_key}（与参考实现一致）：
+\begin{itemize}
+  \item 设 ECDH 结果为曲线点坐标 \texttt{(x, y)}，各 32 字节；
+  \item 构造 33 字节缓冲区：首字节为 \texttt{0x02}（\texttt{y} 最低位为 0）或 \texttt{0x03}（\texttt{y} 最低位为 1），后接 \texttt{x}；
+  \item \ttf{shared_key = SHA256(上述 33 字节)}。
+\end{itemize}
+
+\subsubsection{CMAC 派生会话密钥}\label{sec:cmac-session-key}
+CMAC（Cipher-based Message Authentication Code）是一类基于分组密码的消息认证码，可参照 NIST SP
+800-38B 中的 CMAC 模式理解；AES-CMAC 的具体算法也可参照 RFC 4493。国密算法体系中可类比以 SM4 等分组密码为底层算法的
+CMAC 类用法，但当前版本固定使用 AES-CMAC，不引入 SM4 参数。
+
+本标准将 \ttf{AES_CMAC(K, M)} 视为确定性函数：输入 16 字节密钥 \ttf{K} 与变长消息 \ttf{M}，输出 16 字节认证标签。当前版本不直接使用该标签做外部认证，而是将 AES-CMAC 用作密钥派生步骤。会话密钥由两步 AES-CMAC（128 位密钥、128 位标签）派生：
+\begin{enumerate}
+  \item \ttf{key_derive_key = AES_CMAC(cmac_key, shared_key)}，输出 16 字节；
+  \item \ttf{session_key = AES_CMAC(key_derive_key, derivation_buffer)}，输出 16 字节，即本条 Item 的 \texttt{AES-128-GCM} 会话密钥。
+\end{enumerate}
+
+\textbf{\ttf{derivation_buffer} 布局（当前版本，共 25 字节）：}
+\begin{center}
+  \small
+  \begin{tabular}{>{\raggedright\arraybackslash}p{1.8cm} >{\raggedright\arraybackslash}p{1.2cm} >{\raggedright\arraybackslash}p{8.8cm}}
+    \toprule
+    偏移 & 长度 & 内容                                           \\
+    \midrule
+    0  & 1  & 固定值 \texttt{0x01}                            \\
+    1  & 21 & 域分离字符串 \texttt{tech.yeez.key.manager}（UTF-8） \\
+    22 & 1  & 固定值 \texttt{0x00}                            \\
+    23 & 1  & 固定值 \texttt{0x80}                            \\
+    24 & 1  & 固定值 \texttt{0x00}                            \\
+    \bottomrule
+  \end{tabular}
+\end{center}
+
+\subsection{参考派生参数（当前版本）}\label{sec:ref-derive-params}
+为保证互操作，当前版本 (\ttf{version_number = 2}) 采用下列固定参数（字符串均为 UTF-8，\textbf{无}换行符、\textbf{无} BOM）：
+\begin{itemize}
+  \item \ttf{cmac_key}（16 字节）：
+        \begin{itemize}
+          \item 字符串形式：\texttt{yeez.tech.stbox} 后接 1 字节 \texttt{0x00}（共 16 字节，\textbf{不}含额外换行或第二处 NUL）；
+          \item 十六进制：\texttt{7965657a2e746563682e7374626f7800}。
+        \end{itemize}
+  \item 域分离字符串（21 字节）：
+        \begin{itemize}
+          \item 字符串形式：\texttt{tech.yeez.key.manager}（恰好 21 个 UTF-8 字节，\textbf{无}结尾 \texttt{0x00}、\textbf{无}换行）；
+          \item 十六进制：\texttt{746563682e7965657a2e6b65792e6d616e61676572}。
+        \end{itemize}
+  \item 该字符串用于第~\ref{sec:cmac-session-key} 节 \ttf{derivation_buffer}（偏移 1 起 21 字节）及下文 GCM \ttf{AAD}（偏移 0 起 21 字节）；
+  \item Item 载荷加密前缀字节：\texttt{0x02}（写入 AAD 偏移 24 处）；
+  \item GCM \ttf{AAD} 容器长度：64 字节。
+\end{itemize}
+
+\ttf{AAD}（Additional Authenticated Data，附加认证数据）是不加密但参与认证的上下文字节串。GCM 会把 AAD 纳入认证标签计算，解封时必须提供完全相同的 AAD 才能通过认证；AAD 本身不是加密输出，也不作为独立字段写入 \texttt{.aeff} 文件。
+
+\textbf{AAD 布局（64 字节，\ttf{BYTESTRING[64]}）：}
+实现 MUST 分配 64 字节缓冲区并初始化为全 \texttt{0x00}，再按下述规则写入（与参考实现 \texttt{tad.set(aad); tad[24]=prefix} 一致）：
+\begin{itemize}
+  \item 偏移 0--20：域分离字符串的 21 字节 UTF-8 原样拷贝（与上列十六进制一致）；
+  \item 偏移 21--23：保持 \texttt{0x00}（字符串未占用，\textbf{不}写入 NUL 或换行）；
+  \item 偏移 24：前缀字节（Item 载荷加密为 \texttt{0x02}）；
+  \item 偏移 25--63：保持 \texttt{0x00}。
+\end{itemize}
+换言之，当前版本 Item 载荷加密使用的 AAD 为：
+\begin{center}
+  \small
+  \ttf{746563682e7965657a2e6b65792e6d616e61676572 || 000000 || 02 || 00 * 39}
+\end{center}
+（共 64 字节；\texttt{00 * 39} 表示 39 个零字节，非 ASCII 字符 \texttt{'0'}。）
+若后续版本调整上述常量或布局，\ttf{version_number} MUST 递增并提供兼容说明。
+
+\subsection{AES-128-GCM 运算}\label{sec:aes-gcm}
+本小节规定\textbf{AES-128-GCM 运算}模块：在已知 \ttf{session_key} 的前提下，对变长数据提供认证加解密抽象接口（算法可参照 FIPS 197 与 NIST SP 800-38D；本标准不展开内部轮函数）。
+
+\textbf{输入（来源）：}
+\begin{itemize}
+  \item \textbf{封装（\texttt{GCM\_Encrypt}）}：\ttf{K}（16 字节，即 \ttf{session_key}）、\ttf{IV}（12 字节 Nonce）、\ttf{P}（明文）、\ttf{A}（64 字节 AAD，布局见第~\ref{sec:ref-derive-params} 节）；
+  \item \textbf{解封（\texttt{GCM\_Decrypt}）}：\ttf{K}、\ttf{IV}、\ttf{C}（密文）、\ttf{A}、\ttf{T}（16 字节认证标签）。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item \textbf{封装}：\ttf{C}（\ttf{|C| = |P|}）、\ttf{T}（16 字节）；
+  \item \textbf{解封}：认证成功时 \ttf{P}（\ttf{|P| = |C|}）；认证失败时 MUST NOT 输出 \ttf{P}（见第~\ref{sec:auth-failure} 节）。
+\end{itemize}
+
+\ttf{A} 不参与加密，仅参与认证标签计算。
+
+\textbf{封装接口：}
+\begin{center}
+  \texttt{GCM\_Encrypt(K, IV, P, A) $\rightarrow$ (C, T)}
+\end{center}
+\ttf{P} 为明文（变长）；\ttf{C} 为密文且 \ttf{|C| = |P|}；\ttf{T} 为认证标签，当前版本固定 16 字节。
+
+\textbf{解封接口：}
+\begin{center}
+  \texttt{GCM\_Decrypt(K, IV, C, A, T) $\rightarrow$ P \quad 或 \quad 认证失败}
+\end{center}
+
+\subsection{内容加密}\label{sec:content-encryption}
+本小节规定封装侧\textbf{内容加密}模块：输入本条 Item 的 \ttf{item_payload} 与接收方长期公钥，输出 \ttf{item_size} 与 \ttf{cipher_payload}（字段布局见第~\ref{sec:cipher-payload-layout} 节）。
+封装流程（第~\ref{sec:seal-chapter} 章）\textbf{仅}通过本模块接口调用，\textbf{不}展开模块内部的密钥协商、编码与 GCM 步骤。
+
+\textbf{输入：}
+\begin{itemize}
+  \item \ttf{item_payload}：本条 Item 载荷（\texttt{VARBYTES}，见第~\ref{sec:item-payload-norms} 节）；
+  \item 接收方长期公钥：应用层提供（格式见第~\ref{sec:curve-keys} 节）。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item \ttf{item_size}：\ttf{cipher_payload} 总字节数（见第~\ref{sec:item-record} 节）；
+  \item \ttf{cipher_payload}：含解封所需全部字段（布局见第~\ref{sec:cipher-payload-layout} 节）。
+\end{itemize}
+
+\textbf{模块实施步骤：}\label{sec:seal-item-crypto}
+封装侧对本条 Item MUST 在本节内依次完成下列步骤（不对外暴露中间量接口）。\ttf{item_payload} 须已满足第~\ref{sec:item-payload-norms} 节；字段布局见第~\ref{sec:cipher-payload-layout} 节；向内容区追加 \texttt{item\_size} 前缀见第~\ref{sec:item-generation} 节。
+\begin{enumerate}
+  \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节协商 \ttf{session_key}，生成 \ttf{iv} 与 \ttf{ephemeral_public_key}（随机性见第~\ref{sec:randomness} 节）；
+  \item 以 \ttf{K = session_key}、\ttf{IV = iv}、\ttf{P = item_payload}、\ttf{A = AAD}（64 字节，布局见第~\ref{sec:ref-derive-params} 节）为输入，调用第~\ref{sec:aes-gcm} 节 \texttt{GCM\_Encrypt}，得到密文 \ttf{C} 与认证标签 \ttf{T}（16 字节）；
+  \item 组装 \ttf{cipher_payload}：\ttf{encrypted_data = C}；按第~\ref{sec:cipher-payload-layout} 节顺序写入 \ttf{iv}、\ttf{ephemeral_public_key}、\ttf{gcm_tag}；\ttf{AAD} 不写入文件，由版本常量与前缀规则重建；\ttf{item_size} $=$ \ttf{cipher_payload} 总字节数。
+\end{enumerate}
+
+\subsection{解封侧密码学操作}\label{sec:decrypt-crypto}
+本小节规定解封侧\textbf{内容解密还原}模块：输入 \ttf{cipher_payload} 与接收方长期私钥，输出 \ttf{item_payload}（为第~\ref{sec:content-encryption} 节的逆运算）。
+解封流程（第~\ref{sec:unseal-chapter} 章）\textbf{仅}通过本模块接口调用，\textbf{不}展开模块内部步骤。
+
+\textbf{输入：}
+\begin{itemize}
+  \item \ttf{cipher_payload}：本条 Item 密文载荷（布局见第~\ref{sec:cipher-payload-layout} 节）；
+  \item 接收方长期私钥：应用层提供（格式见第~\ref{sec:curve-keys} 节）。
+\end{itemize}
+
+\textbf{输出：}
+\begin{itemize}
+  \item \ttf{item_payload}（\texttt{VARBYTES}，认证成功后；类型见第~\ref{sec:item-payload-norms} 节）。
+\end{itemize}
+
+\textbf{模块实施步骤：}
+\begin{enumerate}
+  \item 按第~\ref{sec:cipher-payload-layout} 节从输入 \ttf{cipher_payload} 切分 \ttf{encrypted_data}、\ttf{iv}、\ttf{ephemeral_public_key}、\ttf{gcm_tag}；长度或布局非法时 MUST 判为格式错误；
+  \item 按第~\ref{sec:curve-keys} 与第~\ref{sec:key-derivation} 节派生 \ttf{session_key}；
+  \item 以 \ttf{K = session_key}、\ttf{IV = iv}、\ttf{C = encrypted_data}、\ttf{T = gcm_tag}、\ttf{A = AAD}（64 字节，布局见第~\ref{sec:ref-derive-params} 节）为输入，调用第~\ref{sec:aes-gcm} 节 \texttt{GCM\_Decrypt}，得到明文 \ttf{P}；若认证失败（第~\ref{sec:auth-failure} 节），MUST NOT 输出 \ttf{item_payload}；
+  \item 认证成功时，以 \ttf{P} 作为本条 \ttf{item_payload} 输出（\texttt{VARBYTES}，见第~\ref{sec:item-payload-norms} 节），与上文\textbf{输出}接口一致。
+\end{enumerate}
+
+\textbf{随机性（本套件）：}\ttf{iv} 与临时私钥 MUST 满足第~\ref{sec:randomness} 节；私钥 MUST 满足 \texttt{secp256k1} 有效性要求。
