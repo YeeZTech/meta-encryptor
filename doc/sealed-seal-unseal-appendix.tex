@@ -122,7 +122,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \begin{enumerate}
   \item 用本条 \ttf{item_payload} 按第~\ref{sec:rolling-hash} 节更新滚动摘要 $H$（更新时机亦可在主循环中单独调度，见第~\ref{sec:seal-total-algorithm} 节）；
   \item 对 \ttf{item_payload} 与接收方长期公钥调用第~\ref{sec:content-encryption} 节，得到 \ttf{item_size} 与 \ttf{cipher_payload}；
-  \item 按第~\ref{sec:item-record} 节向内容区追加 \texttt{UINT64(LE) item\_size} 与 \ttf{cipher_payload}。
+  \item 按第~\ref{sec:item-record} 节向内容区（自文件偏移 \ttf{content_offset} 起）追加 \texttt{UINT64(LE) item\_size} 与 \ttf{cipher_payload}。
 \end{enumerate}
 
 \textbf{说明：}
@@ -182,10 +182,10 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \textbf{内容区字节偏移：\ttf{start_file_pos}、\ttf{end_file_pos}。}
 \begin{itemize}
-  \item 含义：本 Block 在 \texttt{.aeff} 文件 \textbf{Content Region} 内占据的字节半开区间 \texttt{[start\_file\_pos, end\_file\_pos)}。偏移以内容区首字节为 \texttt{0}（内容区在文件最前，故从该文件物理偏移 \texttt{0} 起算）。\textbf{不包含} Block Infos 区与 Header 区（见第~\ref{sec:region-length} 节）。
+  \item 含义：本 Block 在 \texttt{.aeff} 文件 \textbf{Content Region} 内占据的字节半开区间 \texttt{[start\_file\_pos, end\_file\_pos)}。偏移以内容区首字节为 \texttt{0}（内容区在文件内起始于 \ttf{content_offset} $=$ \ttf{header_size}，见第~\ref{sec:region-length} 节）。\textbf{不包含} Header 区与 Block Infos 区。
   \item \ttf{start_file_pos}：该 Block 第一条 Item 的 \texttt{item\_size} 前缀起始处（\textbf{含}）；
   \item \ttf{end_file_pos}：该 Block 末字节的内容区偏移加 \texttt{1}（\textbf{不含}）；Block 在内容区占用 \texttt{end\_file\_pos - start\_file\_pos} 字节。
-  \item \textbf{不是}：被封装前原始明文文件（或任意宿主路径下文件）内的字节偏移。字段名 \texttt{file} 指本 \texttt{.aeff} 输出文件的内容区（与参考实现 \texttt{block\_info\_t.start\_file\_pos} 一致），勿与「源文件偏移」混读。
+  \item \textbf{不是}：被封装前原始明文文件（或任意宿主路径下文件）内的字节偏移。字段名 \texttt{file} 指本 \texttt{.aeff} 输出文件的内容区（与参考实现 \texttt{block\_info\_t.start\_file\_pos} 一致），勿与「源文件偏移」混读；内容区内偏移 \texttt{0} 对应文件物理偏移 \ttf{content_offset}。
 \end{itemize}
 
 \textbf{两对字段的对应关系。}
@@ -245,7 +245,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 情形 2、3 与第~\ref{sec:block-split} 节「划分规则」及 Item 数上限一致；情形 1 对应首条 Item 开启第 0 个 Block。
 
 \subsection{收尾落盘}\label{sec:seal-finalize}
-内容区全部 Item 写出后，将 Block Infos 区与 Header 区追加到文件尾部，完成 \texttt{.aeff} 物理布局。
+内容区全部 Item 写出后，按物理布局 \texttt{[Header][Content Region][Block Infos]} 完成收尾：回写 Header 至文件首部，并将 Block Infos 区写入文件末尾。
 
 \textbf{输入：}
 \begin{itemize}
@@ -259,17 +259,18 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \end{itemize}
 
 \textbf{相关格式：}
-三区长度见第~\ref{sec:region-length} 节；Block Info、Header 布局见第~\ref{sec:block-infos}、\ref{sec:header-region} 节。
-物理写入顺序 MUST 为：内容区 $\rightarrow$ Block Infos 区 $\rightarrow$ Header（第~\ref{sec:seal-consistency} 节）。
+三区长度与偏移见第~\ref{sec:region-length} 节；Block Info、Header 布局见第~\ref{sec:block-infos}、\ref{sec:header-region} 节。
+最终物理布局 MUST 为：Header（偏移 \texttt{0}）$\rightarrow$ Content Region（偏移 \ttf{content_offset}）$\rightarrow$ Block Infos（偏移 \ttf{block_infos_offset}）（第~\ref{sec:seal-consistency} 节）。
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item \textbf{写出 Block Infos 区：}记 \ttf{N = block_number}，自偏移 \ttf{content_size} 起顺序写入 \ttf{N} 条 Block Info（各 32 字节，取值见第~\ref{sec:block-meta} 节）；\ttf{block_infos_size} $= 32 \times N$；
-  \item \textbf{写出 Header 区：}紧接其后按第~\ref{sec:header-region} 节写入 80 字节 Header；\ttf{magic_number}、\ttf{version_number}、\ttf{tree_item_index}、\ttf{tree_item_number} 取自封装上下文；\ttf{item_number}、\ttf{block_number} 取自 Item 管道；Header.\ttf{data_hash} MUST 取 $H_n$（\textbf{不得}以 Item 密文另行摘要替代）。
+  \item \textbf{写出 Block Infos 区：}记 \ttf{N = block_number}，自偏移 \ttf{block_infos_offset}（$=$ \ttf{header_size} $+$ \ttf{content_size}）起顺序写入 \ttf{N} 条 Block Info（各 32 字节，取值见第~\ref{sec:block-meta} 节）；\ttf{block_infos_size} $= 32 \times N$；
+  \item \textbf{写出 Header 区：}在偏移 \texttt{0} 处按第~\ref{sec:header-region} 节写入 80 字节 Header；\ttf{magic_number}、\ttf{version_number}、\ttf{tree_item_index}、\ttf{tree_item_number} 取自封装上下文；\ttf{item_number}、\ttf{block_number} 取自 Item 管道；Header.\ttf{data_hash} MUST 取 $H_n$（\textbf{不得}以 Item 密文另行摘要替代）。
 \end{enumerate}
-完成后 \ttf{file_size} $=$ \ttf{content_size} $+$ \ttf{block_infos_size} $+$ \texttt{80}。
+完成后 \ttf{file_size} $=$ \ttf{header_size} $+$ \ttf{content_size} $+$ \ttf{block_infos_size}。
 
 \textbf{说明：}
+Item 管道主循环 MAY 自偏移 \ttf{content_offset} 起顺序写出 Content Region；实现 MAY 预留首部 80 字节、使用临时缓冲或在收尾阶段组装，只要最终布局与本节一致。
 进入本节前须已满足：内容区已全部写完；Block Info 与 \rollhash 终值 $H_n$ 已就绪；封装上下文中的 \ttf{tree_*} 已与内容区 Item 布局一致（见第~\ref{sec:seal-total-algorithm}、\ref{sec:multi-file-chapter} 章）。
 不在 Header 内存储的应用层伴随元数据（如签名）不在本标准字段约束范围内。
 
@@ -308,7 +309,8 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 
 \subsection{封装一致性要求}\label{sec:seal-consistency}
 \begin{itemize}
-  \item 物理写入顺序 MUST 为：内容区 $\rightarrow$ Block Infos 区 $\rightarrow$ Header；
+  \item 最终物理布局 MUST 为：Header（偏移 \texttt{0}）$\rightarrow$ Content Region（偏移 \ttf{content_offset}）$\rightarrow$ Block Infos（偏移 \ttf{block_infos_offset}）；
+  \item Content Region MUST 起始于偏移 \ttf{header_size}，Block Infos 区 MUST 起始于偏移 \ttf{header_size} $+$ \ttf{content_size}；
   \item \ttf{item_number} MUST 等于内容区实际 Item 条数；
   \item \ttf{block_number} MUST 等于 Block Infos 区条目数；
   \item 任意 Block Info 的 \ttf{end_file_pos} MUST 不超过 \ttf{content_size}，且相邻 Block 的偏移 SHOULD 首尾相接；
@@ -337,7 +339,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 上述步骤的\textbf{组合调度}见第~\ref{sec:unseal-total-algorithm} 节；全局一致性见第~\ref{sec:unseal-consistency} 节；失败语义见第~\ref{sec:unseal-errors} 节。
 
 \subsection{Header 获取与校验}\label{sec:unseal-header-model}
-从 \texttt{.aeff} 文件尾部取得 Header 记录，校验识别字段并计算三区长度（见第~\ref{sec:read-model} 节）。
+从 \texttt{.aeff} 文件首部（偏移 \texttt{0}）取得 Header 记录，校验识别字段并计算三区长度与偏移（见第~\ref{sec:read-model} 节）。
 
 \textbf{输入：}
 \begin{itemize}
@@ -349,7 +351,7 @@ Header.\ttf{data_hash} 字段定义见第~\ref{sec:header-region} 节；累计�
 \begin{itemize}
   \item \ttf{block_number}、\ttf{item_number}、\ttf{data_hash}；
   \item \ttf{tree_item_index}、\ttf{tree_item_number}（自 Header 解析；Item 级主循环\textbf{不}依赖二者，整包解封见第~\ref{sec:multi-file-chapter} 章）；
-  \item \ttf{content_size}、\ttf{block_infos_size}（由 \ttf{file_size} 与 \ttf{block_number} 按第~\ref{sec:region-length} 节算出）。
+  \item \ttf{content_size}、\ttf{block_infos_size}、\ttf{content_offset}、\ttf{block_infos_offset}（由 \ttf{file_size} 与 \ttf{block_number} 按第~\ref{sec:region-length} 节算出）。
 \end{itemize}
 
 \textbf{相关格式：}
@@ -357,9 +359,9 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 
 \textbf{实施步骤：}
 \begin{enumerate}
-  \item 读取文件末尾 80 字节，按第~\ref{sec:header-region} 节解析，得到各 Header 字段；
+  \item 读取文件首部 80 字节（偏移 \texttt{0}），按第~\ref{sec:header-region} 节解析，得到各 Header 字段；
   \item 将解析得到的 \ttf{magic_number}、\ttf{version_number} 与\textbf{输入}中的约定取值比对；不符时 MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_MAGIC_MISMATCH} 或 \ttf{E_VERSION_UNSUPPORTED}；
-  \item 令 \ttf{N} $=$ \ttf{block_number}，按第~\ref{sec:region-length} 节计算 \ttf{block_infos_size} 与 \ttf{content_size}；若 \ttf{content_size} 不大于 \texttt{0}，MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_FORMAT_TOO_SMALL}（或等价格式错误码）。
+  \item 令 \ttf{N} $=$ \ttf{block_number}，按第~\ref{sec:region-length} 节计算 \ttf{content_offset}、\ttf{block_infos_offset}、\ttf{block_infos_size} 与 \ttf{content_size}；若 \ttf{content_size} 不大于 \texttt{0}，MUST 终止解封，错误码 SHOULD 为附录 C 中的 \ttf{E_FORMAT_TOO_SMALL}（或等价格式错误码）。
 \end{enumerate}
 
 \textbf{说明：}
@@ -370,7 +372,7 @@ Header 记录布局见第~\ref{sec:header-region} 节；\ttf{data_hash} 字段�
 
 \textbf{输入：}
 \begin{itemize}
-  \item \ttf{content_size}、\ttf{item_number}（由第~\ref{sec:unseal-header-model} 节得到）。
+  \item \ttf{content_offset}、\ttf{content_size}、\ttf{item_number}（由第~\ref{sec:unseal-header-model} 节得到）。
 \end{itemize}
 
 \textbf{维护的状态：}

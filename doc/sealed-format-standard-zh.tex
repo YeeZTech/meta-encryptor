@@ -64,7 +64,7 @@
   \midrule
   \endhead
   \ttf{v0.1.0} & ---  & 首个公开草案：定义文件结构、密码学规范、封装/解封流程、错误码与附录。 \\
-  \ttf{v0.2.0} & \today & Header 80 字节；以 Item 为最小单元；目录树明文格式；密码学/封装/多文件流程迁入附录；正文强化动机与算法无关边界；采用 AEFF 全称与 \texttt{.aeff} 后缀。 \\
+  \ttf{v0.2.0} & \today & Header 80 字节、\ttf{version_number = 2}；物理布局 \texttt{[Header][Content Region][Block Infos]}（Header 位于文件首部）；以 Item 为最小单元；目录树明文格式；密码学/封装/多文件流程迁入附录；采用 AEFF 全称与 \texttt{.aeff} 后缀。 \\
   \bottomrule
 \end{longtable}
 
@@ -87,7 +87,7 @@
   \item \textbf{仅支持顺序解密的密封容器}：部分隐私计算或数据交付链路中的密封实现虽提供加密与完整性保护，但格式设计面向整包或顺序解封，\textbf{不}在密文内携带可供定位的结构信息。若由外部系统另行维护偏移表或索引，索引与密文载体分属不同产物，易出现脱节、版本不一致等问题，难以稳定支撑审计与\textbf{数据分析}。
 \end{itemize}
 
-相对而言，\textbf{AEFF}（\texttt{.aeff}）在\textbf{同一格式内}提供尾部 Header、Block 索引、分段认证加密的内容区及可选目录树明文：支撑\textbf{块级随机访问}（第~\ref{sec:access-capability} 节），使\textbf{数据分析}等场景可在不整包解封的前提下按块定位读取并校验；多逻辑文件关系由目录树描述，而非依赖解密后再解压归档（第~\ref{sec:directory-tree-chapter} 章、附录~\ref{sec:multi-file-chapter}）。本标准正文规定上述字节布局与可验证语义；封装、解封步骤与默认密码学套件以\textbf{附录}给出。
+相对而言，\textbf{AEFF}（\texttt{.aeff}）在\textbf{同一格式内}提供首部 Header、Block 索引、分段认证加密的内容区及可选目录树明文：支撑\textbf{块级随机访问}（第~\ref{sec:access-capability} 节），使\textbf{数据分析}等场景可在不整包解封的前提下按块定位读取并校验；多逻辑文件关系由目录树描述，而非依赖解密后再解压归档（第~\ref{sec:directory-tree-chapter} 章、附录~\ref{sec:multi-file-chapter}）。本标准正文规定上述字节布局与可验证语义；封装、解封步骤与默认密码学套件以\textbf{附录}给出。
 
 \subsection{目的}
 本标准用于定义 \texttt{.aeff} 文件格式的二进制结构、密码学边界、兼容性规则与一致性要求，确保不同实现之间的互操作性与可验证性。
@@ -122,7 +122,7 @@
   \item \textbf{AEFF}：Analyzable Encrypted File Format；本标准定义的\textbf{可分析加密文件格式}，文件后缀 \texttt{.aeff}（见第~\ref{sec:format-name} 节）；
   \item \textbf{Item}：\texttt{.aeff} 内容区中\textbf{最小不可分}单元；每条 Item 对应一段由集成层定义的 \textbf{Item 载荷}（\ttf{item_payload}），经加密后写入内容区（见第~\ref{sec:content-region}、\ref{sec:item-payload-norms} 节）；
   \item \textbf{Block}：由若干 Item 组成的逻辑分组，并在元信息区有对应索引项；
-  \item \textbf{Header}：文件尾部固定 80 字节头结构（含目录树 Item 定位字段，见第~\ref{sec:header-region} 节）；
+  \item \textbf{Header}：文件首部固定 80 字节头结构（含目录树 Item 定位字段，见第~\ref{sec:header-region} 节）；
   \item \textbf{Item 载荷流}：封装侧按序提交、解封侧按序还原的 \ttf{item_payload} 序列；每个逻辑文件（含目录树文件）经集成层映射为一条或多条 Item 载荷后，走附录~\ref{app:seal-unseal-reference} 同一管道；
   \item \textbf{Block Info}：描述单个 Block 的 32 字节索引结构；\textbf{Block Infos 区}为由若干条 Block Info 顺序拼接而成的索引区域；
   \item \textbf{Data Hash}：Header 字段 \ttf{data_hash} 所承载的摘要；对全部 Item 的 \ttf{item_payload} 按 Item 全局顺序滚动计算，见第~\ref{sec:rolling-hash} 节；
@@ -187,18 +187,17 @@
 
 \section{文件格式总览}
 \subsection{高层布局}
-\texttt{.aeff} 文件采用“数据在前、元信息在后”的尾部头设计。文件按字节从前到后布局如下：
+\texttt{.aeff} 文件采用 Header 置首的三区布局。文件按字节从前到后布局如下：
 \begin{center}
-  \texttt{[Content Region][Block Infos][Header(80B)]}
+  \texttt{[Header(80B)][Content Region][Block Infos]}
 \end{center}
 \begin{itemize}
-  \item \ttf{Content Region}：密文内容区，由若干 Item 顺序拼接组成；各 Item（含目录树对应 Item）的加密形态一致。内容区按块组织，详见第~\ref{sec:content-region} 节；
-  \item \ttf{Block Infos}：块索引区，由若干 Block Info 顺序拼接而成；每条 Block Info 固定 32 字节，条数由 Header 给出，详见第~\ref{sec:block-infos} 节；
-  \item \ttf{Header}：固定 80 字节，位于文件末尾，包含魔数、版本、计数、摘要及目录树 Item 定位字段，详见第~\ref{sec:header-region} 节；
+  \item \ttf{Header}：固定 80 字节，位于文件首部（偏移 \texttt{0}），包含魔数、版本、计数、摘要及目录树 Item 定位字段，详见第~\ref{sec:header-region} 节；
+  \item \ttf{Content Region}：密文内容区，紧接 Header 之后，由若干 Item 顺序拼接组成；各 Item（含目录树对应 Item）的加密形态一致。内容区按块组织，详见第~\ref{sec:content-region} 节；
+  \item \ttf{Block Infos}：块索引区，位于文件末尾，由若干 Block Info 顺序拼接而成；每条 Block Info 固定 32 字节，条数由 Header 给出，详见第~\ref{sec:block-infos} 节。
 \end{itemize}
-该布局允许写入端在不知道最终计数的情况下先持续写入内容，再在结束时一次性写入索引和 Header。
-因 Header 位于文件末尾，读取方 MUST 先从文件末尾取得 Header（字段布局见第~\ref{sec:header-region} 节），再据此定位 Block Infos 与 Content Region。
-实现 MAY 在解封管道中将 Header 逻辑前置后顺序喂入内容区；无论采用何种 I/O 呈现，解析结果 MUST 与按尾部 Header 直接解析一致。\label{sec:read-model}
+读取方 MUST 从文件首部（偏移 \texttt{0}）读取 Header（字段布局见第~\ref{sec:header-region} 节），再据此定位 Content Region 与 Block Infos 区。\label{sec:read-model}
+封装侧 MAY 在 Item 管道中先顺序写出 Content Region（自偏移 \ttf{header_size} 起），再在收尾阶段写出 Block Infos 并回写 Header；实现 MAY 采用预留 Header 槽位、临时缓冲或组装等方式，只要最终物理布局与本节一致。
 
 \subsection{区域长度计算}\label{sec:region-length}
 本小节使用的符号先定义如下：
@@ -207,13 +206,19 @@
   \item \ttf{file_size}：单个 \texttt{.aeff} 文件的总字节数；由打开文件、对象大小或传输层长度字段等在\textbf{读取 Header 之前}由实现获知，不得通过解析 Header 反推。
   \item \ttf{header_size}：Header 区总长度（单位：字节）；
   \item \ttf{block_infos_size}：Block Infos 区总长度（单位：字节）；
-  \item \ttf{content_size}：Content Region 区总长度（单位：字节）。
+  \item \ttf{content_size}：Content Region 区总长度（单位：字节）；
+  \item \ttf{header_offset}：Header 区在文件内的起始偏移，恒为 \texttt{0}；
+  \item \ttf{content_offset}：Content Region 在文件内的起始偏移，恒为 \ttf{header_size}；
+  \item \ttf{block_infos_offset}：Block Infos 区在文件内的起始偏移，等于 \ttf{header_size} $+$ \ttf{content_size}。
 \end{itemize}
 
 给定文件总长度 \ttf{file_size}，则：
 \begin{itemize}
   \item \ttf{header_size = 80}
+  \item \ttf{header_offset = 0}
+  \item \ttf{content_offset = header_size}
   \item \ttf{block_infos_size = 32 * N}
+  \item \ttf{block_infos_offset = header_size + content_size}
   \item \ttf{content_size} $=$ \ttf{file_size} $-$ \ttf{header_size} $-$ \ttf{block_infos_size}
 \end{itemize}
 实现 MUST 校验 \ttf{content_size > 0}。若不满足，MUST 视为格式错误。
@@ -228,7 +233,7 @@
 \end{itemize}
 
 \subsection{Header 区}\label{sec:header-region}
-Header 区位于文件末尾，长度固定为 80 字节。本区由单个 Header 记录构成，保存格式识别、版本、块与 Item 计数、数据摘要，以及目录树 Item 在内容区中的定位信息。
+Header 区位于文件首部，长度固定为 80 字节，文件内偏移恒为 \texttt{0}。本区由单个 Header 记录构成，保存格式识别、版本、块与 Item 计数、数据摘要，以及目录树 Item 在内容区中的定位信息。
 
 \textbf{说明：} 目录（树）文件与其它逻辑文件在 Content Region 中均为普通 Item，差异仅体现在明文语义及 Header 对目录树 Item 下标的标注；目录明文布局见第~\ref{sec:directory-tree-chapter} 章，多文件封装与整包解封见附录~\ref{sec:multi-file-chapter}。
 
@@ -293,8 +298,7 @@ Header 记录占用 80 字节，字段布局如下：
 \end{itemize}
 
 \subsection{Block Infos 区}\label{sec:block-infos}
-Block Infos 区位于 Content Region 与尾部 Header 之间，总长度 \ttf{block_infos_size}
-及其在文件中的起止位置由第~\ref{sec:region-length} 节给出。
+Block Infos 区位于文件末尾，总长度 \ttf{block_infos_size}，文件内起始偏移 \ttf{block_infos_offset}，均由第~\ref{sec:region-length} 节给出。
 
 本区由 \ttf{block_number} 条 Block Info 顺序拼接而成。本文所称单条 \textbf{Block Info}，即长度为 32 字节的索引记录；\textbf{Block Infos 区}即上述全部 Block Info 按序拼接形成的区域。本区总长度为 \ttf{32 * block_number}。第 \ttf{i} 条 Block Info（\ttf{i} 自 0 起）在本区内的字节偏移为 \ttf{32 * i}。
 
@@ -324,8 +328,7 @@ Block Infos 区位于 Content Region 与尾部 Header 之间，总长度 \ttf{bl
 \end{itemize}
 
 \subsection{Content Region 区}\label{sec:content-region}
-Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之前；总长度 \ttf{content_size}
-及其在文件中的起止位置由第~\ref{sec:region-length} 节给出。
+Content Region 区紧接 Header 之后，文件内起始偏移 \ttf{content_offset}（$=$ \ttf{header_size}），总长度 \ttf{content_size}，均由第~\ref{sec:region-length} 节给出。
 
 本区由 \ttf{item_number} 条 Item 顺序拼接而成。本文所称单条 \textbf{Item}，即内容区\textbf{最小不可分}单元，对应一条 \ttf{item_payload}（见第~\ref{sec:item-payload-norms} 节）；\textbf{Content Region 区}即上述全部 Item 按序拼接形成的区域。内容区按块组织，每块由若干连续的 Item 组成。各条 Item 长度随密文载荷变化，Item 之间无固定步长。
 
@@ -391,9 +394,9 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 \subsection{规范性解析流程}
 实现方在读取 \texttt{.aeff} 时 MUST 按以下顺序执行：
 \begin{enumerate}
-  \item 从文件末尾读取 80 字节 Header；
+  \item 从文件首部（偏移 \texttt{0}）读取 80 字节 Header；
   \item 校验 \ttf{magic_number} 和 \ttf{version_number}；
-  \item 基于 \ttf{block_number} 计算并定位 Block Infos 区；
+  \item 基于 \ttf{block_number} 计算 \ttf{content_offset}、\ttf{block_infos_offset} 并定位 Block Infos 区与 Content Region 区；
   \item 校验 \ttf{content_size} 为正且区域不重叠；
   \item 顺序解析内容区 Item：先读 \ttf{item_size}，再读 \ttf{cipher_payload}；
   \item 每个 Item 执行长度合法性检查和密码学认证检查；
@@ -435,7 +438,7 @@ Content Region 区位于文件最前部，在 Block Infos 区与 Header 区之�
 
 \subsection{向后兼容}
 新版本字段扩展 SHOULD 不破坏既有字段语义与位置约束。
-文档版本 \ttf{v0.1.0} 草案曾规定 64 字节 Header（无 \ttf{tree_item_index}、\ttf{tree_item_number}）；自 \ttf{v0.2.0} 起 Header 固定为 80 字节（第~\ref{sec:header-region} 节）。读取实现 MUST 按 \ttf{version_number} 与实现声明的支持范围选择布局；互操作细则待补。
+文档版本 \ttf{v0.1.0} 草案曾规定 64 字节 Header（无 \ttf{tree_item_index}、\ttf{tree_item_number}）。自 \ttf{v0.2.0} 起 Header 固定 80 字节、\ttf{version_number = 2}，物理布局为 \texttt{[Header][Content Region][Block Infos]}（第~\ref{sec:header-region}、\ref{sec:region-length} 节）。读取实现 MUST 按 \ttf{version_number} 与实现声明的支持范围选择布局；互操作细则待补。
 
 \subsection{向前兼容}
 读取器遇到未知扩展字段时 MAY 忽略，但 MUST 保持已知字段解析稳定。
@@ -481,9 +484,9 @@ Nonce 重复将破坏 GCM 安全性，必须通过实现约束与审计机制防
   区域                   & 长度                      & 是否固定 & 说明                   \\
   \midrule
   \endhead
-  \ttf{Content Region} & 变长 & 否 & 由若干 Item 顺序构成 \\
-  \ttf{Block Infos}    & \ttf{32*block_number} & 否 & 每条 Block Info 固定 32B \\
-  \ttf{Header}         & 80B & 是 & 位于文件末尾 \\
+  \ttf{Header}         & 80B & 是 & 位于文件首部（偏移 \texttt{0}） \\
+  \ttf{Content Region} & 变长 & 否 & 紧接 Header 之后；由若干 Item 顺序构成 \\
+  \ttf{Block Infos}    & \ttf{32*block_number} & 否 & 位于文件末尾；每条 Block Info 固定 32B \\
   \bottomrule
 \end{longtable}
 
@@ -550,23 +553,25 @@ state:
 for each item_payload from item_payload_stream:
   H = keccak256(H || item_payload)
   cipher_payload = encrypt_item(item_payload, receiver_public_key, prefix=0x02)
-  write_uint64_le(len(cipher_payload))
+  write_uint64_le(len(cipher_payload))   // at content_offset + pos
   write_bytes(cipher_payload)
   update_block_infos_and_header_counter()
 
 header.data_hash = H
-write_block_infos(block_infos)
-write_header_80B(header)
+write_block_infos(block_infos)             // at block_infos_offset
+write_header_80B(header)                 // at offset 0
 \end{verbatim}
 
 \subsection{解封伪代码（规范性参考）}
 \begin{verbatim}
 input: aeff_stream, private_key
 state:
-  read header first
+  read header at offset 0
   validate(magic, version)
+  compute content_offset, block_infos_offset, content_size
   H = keccak256("Fidelius")
   read_item_count = 0
+  seek(content_offset)
 
 while read_item_count < header.item_number:
   item_size = read_uint64_le()
@@ -582,7 +587,7 @@ if H != header.data_hash:
 
 \subsection{ABNF 风格语法（信息性）}
 \begin{verbatim}
-aeff-file        = content-region block-infos header
+aeff-file        = header content-region block-infos
 content-region   = *item-record
 item-record      = item-size cipher-payload
 item-size        = uint64-le
@@ -656,7 +661,7 @@ tree-item-number = uint64-le
   封装主流程                   & \ttf{src/DataProvider.js}, \ttf{src/Sealer.js}        \\
   解封主流程                   & \ttf{src/Unsealer.js}                                 \\
   密码算法与密钥派生               & \ttf{src/ypccrypto.js}                                \\
-  文件流 Header 前置读取         & \ttf{src/SealedFileStream.js}                         \\
+  文件流读取（首部 Header）      & \ttf{src/SealedFileStream.js}（参考实现待与当前布局对齐） \\
   文件识别与版本读取               & \ttf{src/SealedFileUtil.js}                           \\
   断点续传上下文                 & \ttf{src/Recoverable.js}, \ttf{src/PipelineConext.js} \\
   \bottomrule

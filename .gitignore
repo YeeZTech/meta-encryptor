@@ -21,3 +21,9 @@ node_modules
 *.lock
 build
 yarn-error.log
+
+# doc/: only track LaTeX (.tex) sources
+doc/**
+!doc/
+!doc/**/
+!doc/**/*.tex

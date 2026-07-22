@@ -170,7 +170,7 @@
   \item \textbf{填写封装上下文}（第~\ref{sec:seal-context} 节）：写入 \ttf{magic_number}、\ttf{version_number}、\ttf{tree_item_index}、\ttf{tree_item_number} 及接收方公钥；
   \item \textbf{组装写出队列}：按全局下标顺序排列全部 \ttf{item_payload}（数据文件在前、目录树在后，若采用推荐分配）；
   \item \textbf{调用附录~\ref{app:seal-unseal-reference}主循环}（第~\ref{sec:seal-total-algorithm} 节）：逐条提交 \ttf{item_payload}，更新滚动摘要与 Block 元信息；
-  \item \textbf{收尾落盘}（第~\ref{sec:seal-finalize} 节）：写出 Block Infos 区与 Header（\ttf{tree_item_index}、\ttf{tree_item_number} 取自封装上下文）。
+  \item \textbf{收尾落盘}（第~\ref{sec:seal-finalize} 节）：回写 Header 至文件首部并写出 Block Infos 区（\ttf{tree_item_index}、\ttf{tree_item_number} 取自封装上下文）。
 \end{enumerate}
 
 \textbf{说明：}
