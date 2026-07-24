@@ -33,11 +33,20 @@ const STALE_ROOT_NAMES = new Set([
   'final_verify_context',
   'truncate_residual_test.file',
   'truncate_residual_context',
+  'interrupt_decrypt_graceful.file',
+  'interrupt_decrypt_graceful_context',
+  'interrupt_decrypt_kill.file',
+  'interrupt_decrypt_kill_context',
+  'interrupt_decrypt_sigterm.file',
+  'interrupt_decrypt_sigterm_context',
+  'dsft_style_plain.file',
+  'dsft_style_out.dat',
 ]);
 
 const STALE_ROOT_PREFIXES = [
   'pause_resume_large.',
   'multi_pause_resume_large.',
+  'interrupt_decrypt_',
 ];
 
 function rmSafe(target) {
@@ -67,6 +76,10 @@ function registerDerivedTemps(basePath) {
     '.util.sealed',
     '.browser.unsealed',
     '.copy',
+    '.tmp',
+    '.decrypting',
+    '.progress',
+    '.progress.tmp',
   ]) {
     registerTemp(path.join(dir, base + suffix));
   }

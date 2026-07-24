@@ -897,3 +897,463 @@ test('test context file disappears after pause - same file', async () => {
         console.warn('Cleanup error:', error.message);
     }
 }, 30000);
+
+// =============================================================================
+ // 跨进程 / 中断续解：优雅（pause+ws.end）与非优雅（SIGKILL）
+ // 对齐 dianshu-file-transfer 解密中断场景；失败用例保留以便跟踪 ME progress 耐久性。
+ // =============================================================================
+
+const { spawn } = require('child_process');
+
+function sleep(ms) {
+    return new Promise((r) => setTimeout(r, ms));
+}
+
+function parseWorkerEvents(buf, events) {
+    for (const line of buf.toString('utf8').split('\n')) {
+        const idx = line.indexOf('WORKER_JSON:');
+        if (idx < 0) continue;
+        try {
+            events.push(JSON.parse(line.slice(idx + 'WORKER_JSON:'.length)));
+        } catch (_) {
+            /* ignore */
+        }
+    }
+}
+
+function waitForWorkerEvent(events, name, timeoutMs) {
+    return new Promise((resolve, reject) => {
+        const t0 = Date.now();
+        const tick = () => {
+            const hit = events.find((e) => e.event === name);
+            if (hit) return resolve(hit);
+            if (Date.now() - t0 > timeoutMs) {
+                reject(
+                    new Error(
+                        `timeout waiting for worker event "${name}"; got ${JSON.stringify(events)}`
+                    )
+                );
+                return;
+            }
+            setTimeout(tick, 30);
+        };
+        tick();
+    });
+}
+
+/**
+ * 优雅中断：解密中段按 README 标准 pause（unpipe + destroy + ws.end），
+ * 再 new PipelineContextInFile + loadContext 后续解。应通过。
+ */
+test('interrupt decrypt graceful (pause + ws.end) then resume', async () => {
+    const src = testPath('interrupt_decrypt_graceful.file');
+    const contextPath = testPath('interrupt_decrypt_graceful_context');
+    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(contextPath);
+        fs.unlinkSync(contextPath + '.tmp');
+        fs.unlinkSync(retSrc);
+    } catch (_) {}
+
+    generateFileWithSize(src, 1024 * 1024 * 16);
+    const sealed = await sealFile(src);
+    const plainMd5 = await calculateMD5(src);
+
+    let context = new PipelineContextInFile(contextPath);
+    await context.loadContext();
+
+    const midThreshold = 256 * 1024;
+    let pauseTriggered = false;
+
+    await new Promise((resolve, reject) => {
+        const progressHandler = (_t, _r, _b, writeBytes) => {
+            if (!pauseTriggered && writeBytes >= midThreshold) {
+                pauseTriggered = true;
+            }
+        };
+
+        const rs = new RecoverableReadStream(sealed, context);
+        const unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
+        const ws = new RecoverableWriteStream(retSrc, context);
+        bindPipelineErrors([rs, unsealer, ws], reject);
+
+        const checkInterval = setInterval(async () => {
+            if (!pauseTriggered) return;
+            clearInterval(checkInterval);
+            try {
+                await pauseDecryptPipeline(rs, unsealer, ws);
+                resolve();
+            } catch (e) {
+                reject(e);
+            }
+        }, 50);
+
+        rs.pipe(unsealer).pipe(ws);
+    });
+
+    expect(fs.existsSync(retSrc)).toBe(true);
+    const sizeAtPause = fs.statSync(retSrc).size;
+    expect(sizeAtPause).toBeGreaterThanOrEqual(midThreshold);
+    expect(sizeAtPause).toBeLessThan(fs.statSync(src).size);
+
+    // 模拟进程退出后重启：重新 load context
+    context = new PipelineContextInFile(contextPath);
+    await context.loadContext();
+
+    await new Promise((resolve, reject) => {
+        const rs = new RecoverableReadStream(sealed, context);
+        const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+        const ws = new RecoverableWriteStream(retSrc, context);
+        bindPipelineErrors([rs, unsealer, ws], reject);
+        rs.pipe(unsealer).pipe(ws);
+        ws.on('finish', resolve);
+    });
+
+    expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(sealed);
+        fs.unlinkSync(contextPath);
+        fs.unlinkSync(contextPath + '.tmp');
+        fs.unlinkSync(retSrc);
+    } catch (_) {}
+}, 180000);
+
+/**
+ * 非优雅中断：子进程解密中段 SIGKILL，父进程同路径 loadContext 后续解。
+ * 当前 ME progress 原子写在强杀后续传上可能失败；失败保留以便跟踪修复。
+ */
+test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () => {
+    const buildEntry = path.resolve(__dirname, '../build/commonjs/index.node.cjs');
+    if (!fs.existsSync(buildEntry)) {
+        throw new Error(
+            'build/commonjs/index.node.cjs missing; run `npm run build` before this test'
+        );
+    }
+
+    const src = testPath('interrupt_decrypt_kill.file');
+    const contextPath = testPath('interrupt_decrypt_kill_context');
+    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    const configPath = testPath('interrupt_decrypt_kill_worker.json');
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(contextPath);
+        fs.unlinkSync(contextPath + '.tmp');
+        fs.unlinkSync(retSrc);
+    } catch (_) {}
+
+    generateFileWithSize(src, 1024 * 1024 * 16);
+    const sealed = await sealFile(src);
+    const plainMd5 = await calculateMD5(src);
+    const midPlainBytes = 256 * 1024;
+
+    fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+            sealedPath: sealed,
+            outPath: retSrc,
+            contextPath,
+            mode: 'kill',
+            midPlainBytes,
+            privateKey: key_pair.private_key,
+            publicKey: key_pair.public_key,
+        })
+    );
+
+    const workerScript = path.resolve(__dirname, 'workers/interrupt-decrypt-worker.cjs');
+    let child = spawn(process.execPath, [workerScript, configPath], {
+        cwd: path.resolve(__dirname, '..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, FORCE_COLOR: '0' },
+    });
+
+    const events = [];
+    child.stdout.on('data', (b) => parseWorkerEvents(b, events));
+    child.stderr.on('data', (b) => {
+        if (b.toString().includes('WORKER_JSON:')) parseWorkerEvents(b, events);
+    });
+
+    try {
+        await waitForWorkerEvent(events, 'ready', 60_000);
+        await waitForWorkerEvent(events, 'started', 60_000);
+        const mid = await waitForWorkerEvent(events, 'mid-decrypt', 120_000);
+        expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
+
+        await sleep(800);
+        child.kill('SIGKILL');
+        await new Promise((resolve) => {
+            const t = setTimeout(resolve, 5000);
+            child.once('exit', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+        child = null;
+
+        expect(fs.existsSync(retSrc)).toBe(true);
+        const sizeAtKill = fs.statSync(retSrc).size;
+        expect(sizeAtKill).toBeGreaterThanOrEqual(midPlainBytes);
+
+        // 父进程模拟重启后续解
+        const context = new PipelineContextInFile(contextPath);
+        await context.loadContext();
+
+        await new Promise((resolve, reject) => {
+            const rs = new RecoverableReadStream(sealed, context);
+            const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+            const ws = new RecoverableWriteStream(retSrc, context);
+            bindPipelineErrors([rs, unsealer, ws], reject);
+            rs.pipe(unsealer).pipe(ws);
+            ws.on('finish', resolve);
+        });
+
+        expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+    } finally {
+        if (child && !child.killed) {
+            try {
+                child.kill('SIGKILL');
+            } catch (_) {}
+        }
+        try {
+            fs.unlinkSync(src);
+            fs.unlinkSync(sealed);
+            fs.unlinkSync(contextPath);
+            fs.unlinkSync(contextPath + '.tmp');
+            fs.unlinkSync(retSrc);
+            fs.unlinkSync(configPath);
+        } catch (_) {}
+    }
+}, 180000);
+
+/**
+ * 跨进程优雅退出：子进程收到 SIGTERM 后 pause+ws.end，父进程再 resume。
+ * 应用层「优雅退出」在 ME 层的对应物。
+ */
+test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume', async () => {
+    const buildEntry = path.resolve(__dirname, '../build/commonjs/index.node.cjs');
+    if (!fs.existsSync(buildEntry)) {
+        throw new Error(
+            'build/commonjs/index.node.cjs missing; run `npm run build` before this test'
+        );
+    }
+
+    const src = testPath('interrupt_decrypt_sigterm.file');
+    const contextPath = testPath('interrupt_decrypt_sigterm_context');
+    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    const configPath = testPath('interrupt_decrypt_sigterm_worker.json');
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(contextPath);
+        fs.unlinkSync(contextPath + '.tmp');
+        fs.unlinkSync(retSrc);
+    } catch (_) {}
+
+    generateFileWithSize(src, 1024 * 1024 * 16);
+    const sealed = await sealFile(src);
+    const plainMd5 = await calculateMD5(src);
+    const midPlainBytes = 256 * 1024;
+
+    fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+            sealedPath: sealed,
+            outPath: retSrc,
+            contextPath,
+            mode: 'graceful',
+            midPlainBytes,
+            privateKey: key_pair.private_key,
+            publicKey: key_pair.public_key,
+        })
+    );
+
+    const workerScript = path.resolve(__dirname, 'workers/interrupt-decrypt-worker.cjs');
+    let child = spawn(process.execPath, [workerScript, configPath], {
+        cwd: path.resolve(__dirname, '..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, FORCE_COLOR: '0' },
+    });
+
+    const events = [];
+    child.stdout.on('data', (b) => parseWorkerEvents(b, events));
+    child.stderr.on('data', (b) => {
+        if (b.toString().includes('WORKER_JSON:')) parseWorkerEvents(b, events);
+    });
+
+    try {
+        await waitForWorkerEvent(events, 'ready', 60_000);
+        await waitForWorkerEvent(events, 'started', 60_000);
+        const mid = await waitForWorkerEvent(events, 'mid-decrypt', 120_000);
+        expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
+
+        await sleep(200);
+        child.kill('SIGTERM');
+        await waitForWorkerEvent(events, 'graceful-exit', 60_000);
+        await new Promise((resolve) => {
+            const t = setTimeout(resolve, 5000);
+            child.once('exit', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+        child = null;
+
+        const context = new PipelineContextInFile(contextPath);
+        await context.loadContext();
+
+        await new Promise((resolve, reject) => {
+            const rs = new RecoverableReadStream(sealed, context);
+            const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+            const ws = new RecoverableWriteStream(retSrc, context);
+            bindPipelineErrors([rs, unsealer, ws], reject);
+            rs.pipe(unsealer).pipe(ws);
+            ws.on('finish', resolve);
+        });
+
+        expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+    } finally {
+        if (child && !child.killed) {
+            try {
+                child.kill('SIGKILL');
+            } catch (_) {}
+        }
+        try {
+            fs.unlinkSync(src);
+            fs.unlinkSync(sealed);
+            fs.unlinkSync(contextPath);
+            fs.unlinkSync(contextPath + '.tmp');
+            fs.unlinkSync(retSrc);
+            fs.unlinkSync(configPath);
+        } catch (_) {}
+    }
+}, 180000);
+
+/**
+ * 模仿 dianshu-file-transfer DecryptAction 的路径与调用顺序：
+ *   sealed  = localFilePath + ".decrypting"
+ *   output  = localFilePath
+ *   progress= localFilePath + ".progress"
+ * 以及 doDecrypt：先 await loadContext，再 RecoverableRead/Unsealer/RecoverableWrite 建管。
+ * 中断方式：跨进程 SIGKILL（对齐 dsft FileDownloader.recovery mid-decrypt kill）。
+ * 失败保留，用于跟踪固定 *.progress.tmp 原子写问题。
+ */
+test('interrupt decrypt dsft-style paths (SIGKILL) then resume like DecryptAction', async () => {
+    const buildEntry = path.resolve(__dirname, '../build/commonjs/index.node.cjs');
+    if (!fs.existsSync(buildEntry)) {
+        throw new Error(
+            'build/commonjs/index.node.cjs missing; run `npm run build` before this test'
+        );
+    }
+
+    // 对齐 dsft：localFilePath 为最终明文；密封在旁路 .decrypting；断点在 .progress
+    const localFilePath = testPath('dsft_style_out.dat');
+    const decryptingPath = localFilePath + '.decrypting';
+    const progressPath = localFilePath + '.progress';
+    const src = testPath('dsft_style_plain.file');
+    const configPath = testPath('dsft_style_kill_worker.json');
+
+    const cleanupDsftPaths = () => {
+        for (const p of [
+            src,
+            localFilePath,
+            decryptingPath,
+            progressPath,
+            progressPath + '.tmp',
+            configPath,
+            src + '.sealed',
+        ]) {
+            try {
+                fs.unlinkSync(p);
+            } catch (_) {}
+        }
+    };
+    cleanupDsftPaths();
+
+    generateFileWithSize(src, 1024 * 1024 * 20);
+    const sealedTmp = await sealFile(src);
+    // dsft：下载完成后 .crdownload → .decrypting；此处直接落到 .decrypting
+    fs.renameSync(sealedTmp, decryptingPath);
+    const plainMd5 = await calculateMD5(src);
+    const midPlainBytes = 256 * 1024;
+
+    /** 与 DecryptAction.doDecrypt 相同：loadContext 完成后再建流 */
+    async function dsftStyleDecrypt(sealedPath, outputPath, progressFilePath) {
+        const context = new PipelineContextInFile(progressFilePath);
+        await context.loadContext();
+        await new Promise((resolve, reject) => {
+            const rs = new RecoverableReadStream(sealedPath, context);
+            const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+            const ws = new RecoverableWriteStream(outputPath, context);
+            bindPipelineErrors([rs, unsealer, ws], reject);
+            rs.pipe(unsealer).pipe(ws);
+            ws.on('finish', resolve);
+        });
+    }
+
+    fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+            sealedPath: decryptingPath,
+            outPath: localFilePath,
+            contextPath: progressPath,
+            mode: 'kill',
+            midPlainBytes,
+            privateKey: key_pair.private_key,
+            publicKey: key_pair.public_key,
+        })
+    );
+
+    const workerScript = path.resolve(__dirname, 'workers/interrupt-decrypt-worker.cjs');
+    let child = spawn(process.execPath, [workerScript, configPath], {
+        cwd: path.resolve(__dirname, '..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, FORCE_COLOR: '0' },
+    });
+
+    const events = [];
+    child.stdout.on('data', (b) => parseWorkerEvents(b, events));
+    child.stderr.on('data', (b) => {
+        if (b.toString().includes('WORKER_JSON:')) parseWorkerEvents(b, events);
+    });
+
+    try {
+        await waitForWorkerEvent(events, 'ready', 60_000);
+        await waitForWorkerEvent(events, 'started', 60_000);
+        const mid = await waitForWorkerEvent(events, 'mid-decrypt', 120_000);
+        expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
+
+        // 缩短等待，更易撞上 in-flight saveContext（贴近 dsft 强杀时序）
+        await sleep(100);
+        child.kill('SIGKILL');
+        await new Promise((resolve) => {
+            const t = setTimeout(resolve, 5000);
+            child.once('exit', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+        child = null;
+
+        expect(fs.existsSync(localFilePath)).toBe(true);
+        expect(fs.existsSync(decryptingPath)).toBe(true);
+        const sizeAtKill = fs.statSync(localFilePath).size;
+        expect(sizeAtKill).toBeGreaterThanOrEqual(midPlainBytes);
+        expect(sizeAtKill).toBeLessThan(fs.statSync(src).size);
+
+        // 对齐 DecryptAction.resume → execute → doDecrypt
+        await dsftStyleDecrypt(decryptingPath, localFilePath, progressPath);
+
+        expect(await calculateMD5(localFilePath)).toStrictEqual(plainMd5);
+    } finally {
+        if (child && !child.killed) {
+            try {
+                child.kill('SIGKILL');
+            } catch (_) {}
+        }
+        cleanupDsftPaths();
+    }
+}, 180000);
