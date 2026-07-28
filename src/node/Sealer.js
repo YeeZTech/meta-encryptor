@@ -39,7 +39,7 @@ export class CSVSealer extends Transform {
   constructor(options) {
     super(options);
     this.keyPair = options.keyPair;
-    this.DP = new DataProvider(this.keyPair);
+    this.DP = new DataProvider(this.keyPair, { hashProvider: options.hashProvider });
   }
 
   _transform(chunk, encoding, callback) {
@@ -58,12 +58,18 @@ export class CSVSealer extends Transform {
 }
 
 export class Sealer extends Transform {
+  /**
+   * @param {Object} options
+   * @param {any} options.keyPair
+   * @param {{ keccak256: (data: Uint8Array) => Uint8Array }} [options.hashProvider]
+   *   覆盖默认 keccak（Node 默认原生优先）；浏览器构建无此入口。
+   */
   constructor(options) {
     super(options);
     this.accumulatedBuffer = Buffer.alloc(0);
     this.threshold = 64 * 1024;
     this.keyPair = options.keyPair;
-    this.DP = new DataProvider(this.keyPair);
+    this.DP = new DataProvider(this.keyPair, { hashProvider: options.hashProvider });
   }
 
   _transform(chunk, encoding, callback) {

@@ -1,4 +1,4 @@
-import { keccak_256 as keccak256} from '@noble/hashes/sha3';
+import { createRollingHasher, resolveKeccak256 } from './keccak256.js';
 import { Transform } from "stream";
 import log from "loglevel";
 
@@ -20,8 +20,8 @@ export class Unsealer extends Transform {
     const context = options ? options.context : undefined;
     const ctx = context && context.context ? context.context : {};
 
-    // Node-specific rolling keccak256 hash
-    let dataHash = Buffer.from(keccak256(Buffer.from("Fidelius", "utf-8")));
+    // Node-specific rolling keccak256 hash（原生优先，每个 item 都要过一遍，是解密的主要成本）
+    const hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
 
     this.#core = new UnsealerCore({
       decrypt: (cipher) =>
@@ -29,11 +29,7 @@ export class Unsealer extends Transform {
       onPlain: (b) => this.push(b),
       onProgress: progressHandler,
       onBatchItem: (rawBatch) => {
-        const k = Buffer.from(
-          dataHash.toString("hex") + Buffer.from(rawBatch).toString("hex"),
-          "hex"
-        );
-        dataHash = Buffer.from(keccak256(k));
+        this._dataHash = hasher.update(rawBatch);
       },
       onItemDone: ({ consumedBytes, plainSize }) => {
         // update recoverable-stream context
@@ -66,7 +62,8 @@ export class Unsealer extends Transform {
     this._keyPair = keyPair;
     this._progressHandler = progressHandler;
     this._context = context;
-    this._dataHash = dataHash;
+    /** 滚动哈希当前值；随每个 item 更新（此前只停留在种子值） */
+    this._dataHash = hasher.value;
     this._state = this.#core; // backwards-compat shorthand
 
     logger.debug("Unsealer : ", this);

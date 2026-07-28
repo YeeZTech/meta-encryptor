@@ -7,8 +7,11 @@ import fs from 'fs';
 import path from 'path';
 
 const packageJson = JSON.parse(fs.readFileSync(path.resolve('./package.json'), 'utf-8'));
+// optionalDependencies 也必须 external：keccak 是原生 addon，一旦被内联进 bundle，
+// 它内部 node-gyp-build 的 __dirname 就指向 bundle 目录，找不到 .node 而静默退回纯 JS。
 const externalDeps = [
   ...Object.keys(packageJson.dependencies || {}),
+  ...Object.keys(packageJson.optionalDependencies || {}),
   ...Object.keys(packageJson.peerDependencies || {})
 ];
 

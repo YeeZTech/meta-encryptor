@@ -21,10 +21,27 @@ function toBinaryChunk(value) {
     return null;
 }
 
+const DEFAULT_SAVE_FREQUENCY = 32;
+const DEFAULT_STRONG_CONSISTENCY = false;
+
+function normalizePipelineContextOptions(options) {
+    const opts = options || {};
+    const saveFrequency = Number.isInteger(opts.saveFrequency) && opts.saveFrequency > 0
+        ? opts.saveFrequency
+        : DEFAULT_SAVE_FREQUENCY;
+    return {
+        ...opts,
+        saveFrequency,
+        strongConsistency: opts.strongConsistency === true
+            ? true
+            : DEFAULT_STRONG_CONSISTENCY,
+    };
+}
+
 export class PipelineContext {
     constructor(options) {
         this.context = {};
-        this.options = options || {};
+        this.options = normalizePipelineContextOptions(options);
         this.runtime = {
             rawCommitted: 0,
             plainCommitted: 0,
@@ -102,7 +119,10 @@ export class PipelineContextInFile extends PipelineContext {
         const fd = await open(tmpPath, 'w');
         try {
             await promisify(fs.write)(fd, fileBuffer, 0, fileBuffer.length, 0);
-            await fsync(fd);
+            // strongConsistency=false（默认）：省略 fsync，降低落盘开销
+            if (this.options.strongConsistency) {
+                await fsync(fd);
+            }
         } finally {
             await close(fd);
         }

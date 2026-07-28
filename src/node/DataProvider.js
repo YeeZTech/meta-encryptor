@@ -9,7 +9,7 @@ import {
   fromNtInput,
   batch2ntpackage
 } from "../common/header_util.js"
-import { keccak_256 as keccak256} from '@noble/hashes/sha3';
+import { createRollingHasher, resolveKeccak256 } from './keccak256.js';
 import { MetaEncryptorError } from '../common/errors.js';
 import YPCCryptoFun from "./ypccrypto.js";
 import YPCNtObjectFun from "../common/ypcntobject.js";
@@ -25,7 +25,12 @@ const BlockFile = BlockFileFun(
   BlockNumLimit,
   256
 );
-const DataProvider = function(_key) {
+/**
+ * @param {any} _key
+ * @param {{ hashProvider?: { keccak256: (data: Uint8Array) => Uint8Array } }} [options]
+ *   省略 hashProvider 时用 Node 默认（原生优先，见 ./keccak256.js）
+ */
+const DataProvider = function(_key, options = {}) {
   if (new.target === undefined) {
     throw new MetaEncryptorError('ERR_MUST_USE_NEW', { detail: { name: 'DataProvider' } });
   }
@@ -37,7 +42,9 @@ const DataProvider = function(_key) {
   this.counter = 0;
 
   this.key_pair = _key;
-  this.data_hash = Buffer.from(keccak256(Buffer.from("Fidelius", "utf-8")));
+  // 滚动哈希：每个 item 都要过一遍 keccak（原生优先），是加密的主要成本
+  this._hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
+  this.data_hash = this._hasher.value;
   this.all_line_num = 0,
     this.now_line_num = 0;
   this.sealBatch = [];
@@ -91,8 +98,7 @@ DataProvider.prototype.sealData = function(input,
 
   if (ntInput) {
     const rawNt = Buffer.isBuffer(ntInput) ? ntInput : Buffer.from(ntInput);
-    let k = Buffer.concat([Buffer.from(this.data_hash), rawNt]);
-    this.data_hash = Buffer.from(keccak256(k));
+    this.data_hash = this._hasher.update(rawNt);
   }
 
   if (!is_end) return null;

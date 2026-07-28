@@ -1130,6 +1130,118 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
 }, 180000);
 
 /**
+ * 断电式中断 + 落盘频率=1：每提交 1 个 item 即 saveContext，子进程 SIGKILL，
+ * 父进程 loadContext 后从最近存档点续解。读写分离下应总能解出正确明文。
+ */
+test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', async () => {
+    const buildEntry = path.resolve(__dirname, '../build/commonjs/index.node.cjs');
+    if (!fs.existsSync(buildEntry)) {
+        throw new Error(
+            'build/commonjs/index.node.cjs missing; run `npm run build` before this test'
+        );
+    }
+
+    const src = testPath('interrupt_decrypt_kill_freq1.file');
+    const contextPath = testPath('interrupt_decrypt_kill_freq1_context');
+    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    const configPath = testPath('interrupt_decrypt_kill_freq1_worker.json');
+    const contextOptions = { saveFrequency: 1, strongConsistency: false };
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(contextPath);
+        fs.unlinkSync(contextPath + '.tmp');
+        fs.unlinkSync(retSrc);
+    } catch (_) {}
+
+    generateFileWithSize(src, 1024 * 1024 * 128);
+    const sealed = await sealFile(src);
+    const plainMd5 = await calculateMD5(src);
+    const midPlainBytes = 1024 * 1024;
+
+    fs.writeFileSync(
+        configPath,
+        JSON.stringify({
+            sealedPath: sealed,
+            outPath: retSrc,
+            contextPath,
+            mode: 'kill',
+            midPlainBytes,
+            contextOptions,
+            privateKey: key_pair.private_key,
+            publicKey: key_pair.public_key,
+        })
+    );
+
+    const workerScript = path.resolve(__dirname, 'workers/interrupt-decrypt-worker.cjs');
+    let child = spawn(process.execPath, [workerScript, configPath], {
+        cwd: path.resolve(__dirname, '..'),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, FORCE_COLOR: '0' },
+    });
+
+    const events = [];
+    child.stdout.on('data', (b) => parseWorkerEvents(b, events));
+    child.stderr.on('data', (b) => {
+        if (b.toString().includes('WORKER_JSON:')) parseWorkerEvents(b, events);
+    });
+
+    try {
+        await waitForWorkerEvent(events, 'ready', 60_000);
+        await waitForWorkerEvent(events, 'started', 60_000);
+        const mid = await waitForWorkerEvent(events, 'mid-decrypt', 120_000);
+        expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
+
+        await sleep(800);
+        child.kill('SIGKILL');
+        await new Promise((resolve) => {
+            const t = setTimeout(resolve, 5000);
+            child.once('exit', () => {
+                clearTimeout(t);
+                resolve();
+            });
+        });
+        child = null;
+
+        expect(fs.existsSync(retSrc)).toBe(true);
+        const sizeAtKill = fs.statSync(retSrc).size;
+        expect(sizeAtKill).toBeGreaterThanOrEqual(midPlainBytes);
+        expect(sizeAtKill).toBeLessThan(fs.statSync(src).size);
+
+        // 父进程模拟断电重启：loadContext 后从存档点续解
+        const context = new PipelineContextInFile(contextPath, contextOptions);
+        await context.loadContext();
+        // saveFrequency=1 时应已有进度落盘（允许极小概率杀在首次 save 前，则 writeStart 为 0）
+        expect(context.context.writeStart || 0).toBeGreaterThan(0);
+
+        await new Promise((resolve, reject) => {
+            const rs = new RecoverableReadStream(sealed, context);
+            const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+            const ws = new RecoverableWriteStream(retSrc, context);
+            bindPipelineErrors([rs, unsealer, ws], reject);
+            rs.pipe(unsealer).pipe(ws);
+            ws.on('finish', resolve);
+        });
+
+        expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+    } finally {
+        if (child && !child.killed) {
+            try {
+                child.kill('SIGKILL');
+            } catch (_) {}
+        }
+        try {
+            fs.unlinkSync(src);
+            fs.unlinkSync(sealed);
+            fs.unlinkSync(contextPath);
+            fs.unlinkSync(contextPath + '.tmp');
+            fs.unlinkSync(retSrc);
+            fs.unlinkSync(configPath);
+        } catch (_) {}
+    }
+}, 600000);
+
+/**
  * 跨进程优雅退出：子进程收到 SIGTERM 后 pause+ws.end，父进程再 resume。
  * 应用层「优雅退出」在 ME 层的对应物。
  */
@@ -1153,7 +1265,9 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
         fs.unlinkSync(retSrc);
     } catch (_) {}
 
-    generateFileWithSize(src, 1024 * 1024 * 16);
+    // 默认 saveFrequency=32 且无 fsync 后吞吐更高；16MB 会在 mid→SIGTERM(200ms) 窗口内跑完。
+    // 加大到 128MB，保证 mid 后仍有足够剩余密文可被 pause 打断。
+    generateFileWithSize(src, 1024 * 1024 * 128);
     const sealed = await sealFile(src);
     const plainMd5 = await calculateMD5(src);
     const midPlainBytes = 256 * 1024;
@@ -1230,7 +1344,7 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
             fs.unlinkSync(configPath);
         } catch (_) {}
     }
-}, 180000);
+}, 600000);
 
 /**
  * 模仿 dianshu-file-transfer DecryptAction 的路径与调用顺序：

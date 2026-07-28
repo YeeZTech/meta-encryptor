@@ -13,6 +13,7 @@
  *   sealedPath, outPath, contextPath,
  *   mode: "kill" | "graceful",
  *   midPlainBytes?: number,   // default 256KiB
+ *   contextOptions?: { saveFrequency?, strongConsistency? },
  *   privateKey, publicKey
  * }
  *
@@ -63,7 +64,7 @@ async function main() {
     }
   }
 
-  const context = new PipelineContextInFile(cfg.contextPath);
+  const context = new PipelineContextInFile(cfg.contextPath, cfg.contextOptions || {});
   await context.loadContext();
 
   let rs = new RecoverableReadStream(cfg.sealedPath, context);
