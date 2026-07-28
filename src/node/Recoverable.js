@@ -168,12 +168,19 @@ export class RecoverableWriteStream extends Writable {
             logger.debug(`File not exist.Created new file ${filePath} for writing`);
         }
         this.writeStream = new WriteStream(filePath, streamOptions);
+        // 自上次 saveContext 以来已提交但尚未落盘的 item 数；默认每 32 个落盘一次
+        this._unsavedItemCount = 0;
 
         this.writeStream.on('error', (err) => {
             this.emit('error', err);
         });
         this.writeStream.on('close', () => {
         });
+    }
+
+    _getSaveFrequency() {
+        const freq = this.context && this.context.options && this.context.options.saveFrequency;
+        return Number.isInteger(freq) && freq > 0 ? freq : 32;
     }
 
     _getWriteStartInContext() {
@@ -255,6 +262,15 @@ export class RecoverableWriteStream extends Writable {
             logger.debug("After writing, updated readStart to:", this.context.context['readStart'],
                          " writeStart to:", this.context.context['writeStart'],
                          " readItemCount to:", this.context.context['readItemCount']);
+
+            this._unsavedItemCount += committedItems;
+            const saveFrequency = this._getSaveFrequency();
+            if (this._unsavedItemCount < saveFrequency) {
+                logger.debug("Deferring saveContext; unsaved items:", this._unsavedItemCount,
+                             " frequency:", saveFrequency);
+                return Promise.resolve();
+            }
+            this._unsavedItemCount = 0;
             return this.context.saveContext();
         }
         return Promise.resolve();
@@ -282,6 +298,7 @@ export class RecoverableWriteStream extends Writable {
                 }
                 logger.debug("File truncated successfully to length:", writeStart);
                 if (this.context && typeof this.context.saveContext === 'function') {
+                    this._unsavedItemCount = 0;
                     Promise.resolve(this.context.saveContext())
                         .then(() => callback())
                         .catch((err) => callback(err));

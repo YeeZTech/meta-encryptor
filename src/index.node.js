@@ -20,8 +20,14 @@ export {
   dataHashOfSealedFile,
   signedDataHash,
   forwardSkey,
-  calculateSealedHash
 } from "./node/SealedFileUtil.js";
+
+export {
+  calculateSealedHash,
+  calculateSealedHashAsync
+} from "./node/SealedHash.js";
+
+export { getKeccakImplementation } from "./node/keccak256.js";
 
 export const { DataProvider, checkSealedData, unsealData } = Provider;
 

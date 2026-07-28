@@ -8,6 +8,7 @@
   "ERR_FILE_TOO_SMALL_HEADER": "无法读取文件头，文件太小",
   "ERR_INVALID_FILE_SIZE": "无效的文件大小",
   "ERR_UNEXPECTED_EOF": "意外到达文件末尾",
+  "ERR_SEALED_HASH_ABORTED": "封装文件哈希计算已取消",
   "ERR_HEAD_REQUEST_FAILED": "HEAD 请求失败：HTTP {status}",
   "ERR_FILE_NOT_SEALED": "文件太小，不是有效的封装文件：content-length={totalSize}",
   "ERR_CANNOT_READ_TAIL": "无法读取文件尾部：HTTP {status}",

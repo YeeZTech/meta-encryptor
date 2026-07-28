@@ -8,6 +8,7 @@
   "ERR_FILE_TOO_SMALL_HEADER": "Cannot read header. File too small",
   "ERR_INVALID_FILE_SIZE": "Invalid file size",
   "ERR_UNEXPECTED_EOF": "Reached end of file unexpectedly",
+  "ERR_SEALED_HASH_ABORTED": "Sealed hash calculation was aborted",
   "ERR_HEAD_REQUEST_FAILED": "HEAD request failed: HTTP {status}",
   "ERR_FILE_NOT_SEALED": "File too small, not a valid sealed file: content-length={totalSize}",
   "ERR_CANNOT_READ_TAIL": "Cannot read file tail: HTTP {status}, range={rangeHeader}",
