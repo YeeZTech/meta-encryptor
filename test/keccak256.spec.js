@@ -56,18 +56,21 @@ function unsealToFile(sealedPath, outPath, keyPair, hashProvider) {
   });
 }
 
-test('getKeccakImplementation returns native or js', () => {
+test('uses native keccak when optionalDependency keccak is installed', () => {
   const impl = getKeccakImplementation();
   expect(impl === 'native' || impl === 'js').toBe(true);
-  // 本机装了 keccak 且没强制关掉时，应能拿到原生
-  if (process.env.META_ENCRYPTOR_DISABLE_NATIVE_KECCAK !== '1') {
-    try {
-      require('keccak');
-      expect(impl).toBe('native');
-    } catch {
-      expect(impl).toBe('js');
-    }
+  // 本机装了 keccak 且没强制关掉时，必须走原生（5.0.7 起的默认行为）
+  if (process.env.META_ENCRYPTOR_DISABLE_NATIVE_KECCAK === '1') {
+    expect(impl).toBe('js');
+    return;
   }
+  try {
+    require('keccak');
+  } catch {
+    expect(impl).toBe('js');
+    return;
+  }
+  expect(impl).toBe('native');
 });
 
 test('Sealer/Unsealer with injected hashProvider round-trips and matches calculateSealedHash', async () => {
