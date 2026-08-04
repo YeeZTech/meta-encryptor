@@ -253,14 +253,19 @@ await crypto.decryptMessage(...)
 import { downloadUnsealed } from "@yeez-tech/meta-encryptor";
 
 await downloadUnsealed({
-  url: "https://example.com/encrypted file",
-  privateKeyHex: "YOUR_PRIVATE_KEY_HEX",
+  url: "https://example.com/encrypted-file",
+  privateKey: "YOUR_PRIVATE_KEY_HEX",
   filename: "decrypted-file.txt",
-  progressHandler: (totalItems, processedItems, readBytes, writeBytes) => {
-    console.log(`Progress: ${processedItems}/${totalItems}`);
+  onProgress: (total, processed, readBytes, writeBytes) => {
+    console.log(`Progress: ${processed}/${total}`);
   },
+  // 可选：覆盖明文大小上限（字节）；默认桌面 1 GiB、移动端 200 MiB
+  // desktopLimit: 2 * 1024 * 1024 * 1024,
+  // mobileLimit: 500 * 1024 * 1024,
 });
 ```
+
+更完整的参数说明见 [`src/browser/README.md`](./src/browser/README.md)。
 
 ##### sealedFileVersion
 
