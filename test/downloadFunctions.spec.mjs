@@ -62,7 +62,7 @@ describe('blobDownloadAndDecrypt', () => {
       );
 
       expect(result).toEqual({ ok: true });
-      expect(logs.some(m => m.includes('下载完成'))).toBe(true);
+      expect(logs.some(m => m.includes('Download complete'))).toBe(true);
       expect(blobContent).not.toBeNull();
     } finally {
       URL.createObjectURL = origCOU;
@@ -80,7 +80,7 @@ describe('blobDownloadAndDecrypt', () => {
     await expect(
       blobDownloadAndDecrypt('http://mock/file', 'a'.repeat(64), 'out.bin', { log: (m) => logs.push(m) })
     ).rejects.toThrow('fetch fail');
-    expect(logs.some(m => m.includes('失败'))).toBe(true);
+    expect(logs.some(m => /failed/i.test(m))).toBe(true);
   });
 });
 
@@ -98,16 +98,30 @@ describe('streamDownloadAndDecrypt', () => {
     );
 
     expect(result).toEqual({ ok: true });
-    expect(logs.some(m => m.includes('下载完成'))).toBe(true);
+    expect(logs.some(m => m.includes('Download complete'))).toBe(true);
     expect(chunks.length).toBe(1);
     expect(new TextDecoder().decode(chunks[0])).toBe('hello from mock');
   });
 
   test('throws when no writable and no StreamSaver', async () => {
+    // jsdom does not load external <script> tags; force onerror so we do not hang.
+    const appendChild = document.head.appendChild.bind(document.head);
+    document.head.appendChild = (node) => {
+      if (node?.tagName === 'SCRIPT') {
+        queueMicrotask(() => node.onerror?.(new Event('error')));
+        return node;
+      }
+      return appendChild(node);
+    };
+
     const logs = [];
-    await expect(
-      streamDownloadAndDecrypt('http://mock/file', 'a'.repeat(64), 'out.bin', { log: (m) => logs.push(m) })
-    ).rejects.toThrow('StreamSaver');
-    expect(logs.some(m => m.includes('失败'))).toBe(true);
+    try {
+      await expect(
+        streamDownloadAndDecrypt('http://mock/file', 'a'.repeat(64), 'out.bin', { log: (m) => logs.push(m) })
+      ).rejects.toMatchObject({ code: 'ERR_NO_STREAM_WRITABLE' });
+      expect(logs.some(m => /failed/i.test(m))).toBe(true);
+    } finally {
+      document.head.appendChild = appendChild;
+    }
   });
 });

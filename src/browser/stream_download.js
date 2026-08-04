@@ -3,6 +3,8 @@ import { HttpSealedFileStream } from './HttpSealedFileStream.js'
 import { MetaEncryptorError } from '../common/errors.js';
 import { createProgressTransformer, createDownloadReadyTransformer } from '../common/progress.js';
 
+const STREAMSAVER_LOAD_TIMEOUT_MS = 8000;
+
 async function ensureStreamSaver(log) {
   if (typeof window === 'undefined') return null;
   if (window.streamSaver?.createWriteStream) return window.streamSaver;
@@ -12,8 +14,9 @@ async function ensureStreamSaver(log) {
     await new Promise((resolve, reject) => {
       const s = document.createElement('script');
       s.src = 'https://cdn.jsdelivr.net/npm/streamsaver@2.0.3/StreamSaver.min.js';
-      s.onload = resolve;
-      s.onerror = reject;
+      const timer = setTimeout(() => reject(new Error('StreamSaver load timeout')), STREAMSAVER_LOAD_TIMEOUT_MS);
+      s.onload = () => { clearTimeout(timer); resolve(); };
+      s.onerror = (err) => { clearTimeout(timer); reject(err); };
       document.head.appendChild(s);
     });
     if (window.streamSaver?.createWriteStream) {

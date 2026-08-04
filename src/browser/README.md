@@ -50,6 +50,10 @@ npm install @yeez-tech/meta-encryptor
 | `onDownloadReady` | function | ❌ | 下载就绪回调：HTTP 流首个数据块进入管道时触发（HEAD+tail 完成后），可用于关闭准备蒙层 |
 | `onSuccess`  | function | ❌   | 成功回调 `(data: { filename }) => void`                      |
 | `onError`    | function | ❌   | 错误回调 `(error: Error) => void`                            |
+| `desktopLimit` | number | ❌ | 桌面端明文大小上限（字节），默认 `1 GiB`（`1024 * 1024 * 1024`） |
+| `mobileLimit`  | number | ❌ | 移动端明文大小上限（字节），默认 `200 MiB`（`200 * 1024 * 1024`） |
+
+超过对应上限时抛出 `MetaEncryptorError`（`code: ERR_FILE_TOO_LARGE`）。不传或非法值时回退到平台默认值。
 
 #### 返回值
 
@@ -87,6 +91,19 @@ try {
 - **浏览器环境**：此 API 只能在浏览器环境中使用，不支持 Node.js 或 SSR 服务端渲染
 
 ## 使用示例
+
+### 自定义大小上限
+
+```javascript
+await downloadUnsealed({
+  url,
+  privateKey,
+  filename,
+  // 可选：覆盖默认上限（字节）
+  desktopLimit: 2 * 1024 * 1024 * 1024, // 桌面 2 GiB
+  mobileLimit: 500 * 1024 * 1024,       // 移动端 500 MiB
+});
+```
 
 ### 示例 1：基本使用
 
