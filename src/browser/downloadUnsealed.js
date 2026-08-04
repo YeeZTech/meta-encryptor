@@ -88,6 +88,8 @@ async function inspectSealed(url, log) {
  * @param {Function} [options.onDownloadReady] - HTTP 流首个数据块进入管道时触发（可关蒙层）
  * @param {Function} [options.onSuccess]
  * @param {Function} [options.onError]
+ * @param {number} [options.desktopLimit] - desktop plaintext size limit in bytes (default 1 GiB)
+ * @param {number} [options.mobileLimit] - mobile plaintext size limit in bytes (default 200 MiB)
  * @returns {Promise<void>}
  */
 export async function downloadUnsealed({
@@ -98,7 +100,11 @@ export async function downloadUnsealed({
   onProgress,
   onDownloadReady,
   onSuccess,
-  onError
+  onError,
+  /** Override desktop plaintext size limit (bytes). Default 1 GiB. */
+  desktopLimit,
+  /** Override mobile plaintext size limit (bytes). Default 200 MiB. */
+  mobileLimit,
 }) {
   const log = makeLogger(onLog);
   const key = privateKey.trim()
@@ -116,7 +122,10 @@ export async function downloadUnsealed({
     log(`Plaintext size=${meta.plaintextSize} bytes, sealed=${meta.sealedContentSize} bytes, totalSize=${meta.totalSize}`);
 
     const mobile = isMobile()
-    const limit = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
+    const configured = mobile ? mobileLimit : desktopLimit
+    const platformDefault = mobile ? MOBILE_LIMIT : DESKTOP_LIMIT
+    const limit =
+      typeof configured === 'number' && configured > 0 ? configured : platformDefault
     const mode = mobile ? 'mobile' : 'desktop'
     const ua = typeof navigator !== 'undefined' ? navigator.userAgent : 'n/a';
     log(`Detected ${mode} (ua=${ua}), limit ${(limit / 1024 / 1024).toFixed(0)} MB`);
