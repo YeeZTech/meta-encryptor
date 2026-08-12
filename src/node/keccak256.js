@@ -38,40 +38,81 @@ const SELF_TEST_EXPECTED =
 let implementation;
 let nativeHash = null;
 
+const PACKAGE_NAME = '@yeez-tech/meta-encryptor';
+
 /**
- * 从本包（或宿主）解析 optionalDependency。
- * - 安装态：resolve 到 @yeez-tech/meta-encryptor 入口，上溯找到其 package.json
- * - 开发态（在本仓库跑测试）：退回 process.cwd()/package.json
- * 不用 import.meta.url，也不读被 exports 挡住的 ./package.json subpath。
+ * 从 startDir 向上找 ME 的 package.json，返回锚定在该包的 require。
+ * @param {string} startDir
+ * @returns {NodeRequire | null}
+ */
+function findMetaEncryptorRequire(startDir) {
+  let dir = startDir;
+  while (dir !== path.dirname(dir)) {
+    const pkgPath = path.join(dir, 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      try {
+        const name = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).name;
+        if (name === PACKAGE_NAME) {
+          return createRequire(pkgPath);
+        }
+      } catch {
+        /* keep walking */
+      }
+    }
+    dir = path.dirname(dir);
+  }
+  return null;
+}
+
+/**
+ * 从本包安装目录解析 optionalDependency（不依赖 process.cwd()）。
+ * - Electron 打包态：process.resourcesPath/app.asar.unpacked/node_modules/@yeez-tech/meta-encryptor
+ * - 常规安装态：从 cwd 能 resolve 到 @yeez-tech/meta-encryptor 时上溯 package.json
+ * - 本仓库开发态：退回 process.cwd()/package.json
  */
 function createPackageRequire() {
+  const candidates = [];
+
+  if (process.resourcesPath) {
+    candidates.push(
+      path.join(
+        process.resourcesPath,
+        'app.asar.unpacked',
+        'node_modules',
+        PACKAGE_NAME,
+      ),
+    );
+  }
+
   const fromCwd = createRequire(path.join(process.cwd(), 'package.json'));
   try {
-    const main = fromCwd.resolve('@yeez-tech/meta-encryptor');
-    let dir = path.dirname(main);
-    while (dir !== path.dirname(dir)) {
-      const pkgPath = path.join(dir, 'package.json');
-      if (fs.existsSync(pkgPath)) {
-        try {
-          const name = JSON.parse(fs.readFileSync(pkgPath, 'utf8')).name;
-          if (name === '@yeez-tech/meta-encryptor') {
-            return createRequire(pkgPath);
-          }
-        } catch {
-          /* keep walking */
-        }
-      }
-      dir = path.dirname(dir);
-    }
+    candidates.push(path.dirname(fromCwd.resolve(PACKAGE_NAME)));
   } catch {
-    /* developing inside this repo */
+    /* packaged .app 的 cwd 往往不在 node_modules 旁 */
   }
+
+  for (const start of candidates) {
+    const req = findMetaEncryptorRequire(start);
+    if (req) return req;
+  }
+
   return fromCwd;
+}
+
+/** @param {string} reason @param {Record<string, unknown>} [extra] */
+function warnJsKeccakFallback(reason, extra = {}) {
+  logger.warn('keccak using pure JS fallback (encrypt/decrypt throughput will be degraded)', {
+    reason,
+    implementation: 'js',
+    cwd: process.cwd(),
+    resourcesPath: process.resourcesPath || null,
+    ...extra,
+  });
 }
 
 function loadNative() {
   if (process.env.META_ENCRYPTOR_DISABLE_NATIVE_KECCAK === '1') {
-    logger.info('native keccak disabled by META_ENCRYPTOR_DISABLE_NATIVE_KECCAK');
+    warnJsKeccakFallback('META_ENCRYPTOR_DISABLE_NATIVE_KECCAK');
     return null;
   }
 
@@ -82,7 +123,7 @@ function loadNative() {
     createKeccak = nodeRequire('keccak');
     jsFallbackPrototype = Object.getPrototypeOf(nodeRequire('keccak/js')('keccak256'));
   } catch (e) {
-    logger.info('native keccak unavailable, using bundled JS implementation', {
+    warnJsKeccakFallback('native_keccak_unavailable', {
       error: e && e.message ? e.message : String(e),
     });
     return null;
@@ -91,10 +132,9 @@ function loadNative() {
   // 被打包器内联时，keccak 内部的 node-gyp-build 找不到 .node，keccak 自己会退回纯 JS。
   // 这种情况摘要仍然正确，只有原型能区分 —— 别让它冒充原生，否则日志会骗人。
   if (Object.getPrototypeOf(createKeccak('keccak256')) === jsFallbackPrototype) {
-    logger.warn(
-      'keccak resolved to its JS fallback (native addon not loadable, often caused by bundling); ' +
-        'keep @yeez-tech/meta-encryptor (and keccak) external to get the native speed',
-    );
+    warnJsKeccakFallback('keccak_js_fallback_prototype', {
+      hint: 'keep @yeez-tech/meta-encryptor (and keccak) external in Electron main webpack',
+    });
     return null;
   }
 
@@ -103,7 +143,7 @@ function loadNative() {
 
   const actual = hash(Buffer.from(SELF_TEST_INPUT, 'utf-8')).toString('hex');
   if (actual !== SELF_TEST_EXPECTED) {
-    logger.warn('native keccak self-test mismatch, falling back to JS', {
+    warnJsKeccakFallback('native_keccak_self_test_mismatch', {
       expected: SELF_TEST_EXPECTED,
       actual,
     });
