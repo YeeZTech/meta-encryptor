@@ -8,8 +8,55 @@ import { MetaEncryptorError } from '../common/errors.js';
 const open = promisify(fs.open);
 const close = promisify(fs.close);
 const fsync = promisify(fs.fsync);
-const rename = promisify(fs.rename);
 const logger = log.getLogger("meta-encryptor/PipelineContext");
+
+/** Windows / sync clients may briefly lock the target during atomic replace. */
+const RENAME_TRANSIENT_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_MAX_ATTEMPTS = 5;
+const RENAME_RETRY_BASE_MS = 50;
+
+function delay(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function errnoCode(err) {
+    return err && typeof err === 'object' ? err.code : undefined;
+}
+
+/**
+ * Replace target with tmp via rename; retry transient locks, then copy+unlink fallback.
+ * Throws the last error when all attempts fail (hosts may report to Sentry).
+ */
+async function replaceFileAtomic(tmpPath, targetPath) {
+    let lastError;
+    for (let attempt = 0; attempt < RENAME_MAX_ATTEMPTS; attempt++) {
+        try {
+            await fs.promises.rename(tmpPath, targetPath);
+            return;
+        } catch (err) {
+            lastError = err;
+            const code = errnoCode(err);
+            if (RENAME_TRANSIENT_CODES.has(code) && attempt < RENAME_MAX_ATTEMPTS - 1) {
+                await delay(RENAME_RETRY_BASE_MS * (attempt + 1));
+                continue;
+            }
+            break;
+        }
+    }
+
+    const code = errnoCode(lastError);
+    if (RENAME_TRANSIENT_CODES.has(code) || code === 'EXDEV') {
+        try {
+            await fs.promises.copyFile(tmpPath, targetPath);
+            await fs.promises.unlink(tmpPath);
+            return;
+        } catch (copyErr) {
+            throw copyErr;
+        }
+    }
+
+    throw lastError;
+}
 
 function toBinaryChunk(value) {
     if (Buffer.isBuffer(value)) {
@@ -127,7 +174,7 @@ export class PipelineContextInFile extends PipelineContext {
             await close(fd);
         }
 
-        await rename(tmpPath, this.filePath);
+        await replaceFileAtomic(tmpPath, this.filePath);
     }
 
     async _flushAll() {
