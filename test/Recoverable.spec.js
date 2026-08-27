@@ -565,7 +565,7 @@ test('test pipeline context with pause and resume on same file', async () => {
     } catch (error) {}
 }, 180000);
 
-// 同文件多轮 pause/resume（读 dst 密文，写回 src 明文路径）；100MB 覆盖 multipause 逻辑，避免 500MB CI 超时
+// 同文件多轮 pause/resume（inplace：读 dst 密文并把明文写回 dst 本身）；100MB 覆盖 multipause 逻辑
 test('test pipeline context with multiple random pause and resume on same file', async () => {
     let src = testPath('multi_pause_resume_large.rand_same.file');
     let context_path = testPath('multi_pause_resume_large_context.rand_same');
@@ -616,7 +616,7 @@ test('test pipeline context with multiple random pause and resume on same file',
 
             let rs = new RecoverableReadStream(dst, context);
             let unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
-            let ws = new RecoverableWriteStream(src, context);
+            let ws = new RecoverableWriteStream(dst, context); // ★ inplace：明文写回密文文件本身
 
             bindPipelineErrors([rs, unsealer, ws], reject);
 
@@ -650,7 +650,7 @@ test('test pipeline context with multiple random pause and resume on same file',
         }
     }
 
-    const finalMD5 = await calculateMD5(src);
+    const finalMD5 = await calculateMD5(dst);
     expect(originalMD5).toStrictEqual(finalMD5);
 
     try {
