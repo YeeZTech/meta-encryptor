@@ -1,0 +1,19 @@
+%% 解封主循环（第 8.5 节 解封流程总览）
+%% npx @mermaid-js/mermaid-cli -i unseal-main-flow.mmd -o unseal-main-flow.png -b white -w 1200
+flowchart TD
+    start([开始]) --> A["读 Header 并校验<br/>magic / version"]
+    A --> B["计算 content_size<br/>初始化 H = H0，n = 0"]
+    B --> C{"n 小于 item_number?"}
+
+    C -->|否| D{"H 等于 data_hash?"}
+    D -->|是| endnode([成功结束])
+    D -->|否| err1([完整性错误])
+
+    C -->|是| E["读 item_size 与 cipher_payload"]
+    E --> F["认证解密得批包 B"]
+    F --> G["拆分 B 得输入单元"]
+    G --> H["逐条输出 payload<br/>并用输入单元更新 H"]
+    H --> C
+
+    F -.->|失败| err2([认证或格式错误])
+    G -.->|失败| err2
