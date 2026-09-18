@@ -137,15 +137,43 @@ export class RecoverableReadStream extends Readable {
     }
 }
 
+/**
+ * Structured fields for fs / write-stream failures (Sentry / electron-log).
+ * Prefer this over logging the raw Error alone — Windows often surfaces only
+ * UNKNOWN/-4094 without a useful message unless code/errno/syscall/path are kept.
+ */
+function formatWriteFsError(err, op, extra = {}) {
+    const out = {
+        op,
+        message: err && err.message,
+        name: err && err.name,
+        code: err && err.code,
+        errno: err && err.errno,
+        syscall: err && err.syscall,
+        path: (err && err.path) || extra.path,
+        ...extra,
+    };
+    return out;
+}
+
+/** Path-truncate attempts after close when ftruncate(fd) is unavailable/failed. */
+const PATH_TRUNCATE_RETRY_DELAYS_MS = [50, 150];
+
 export class RecoverableWriteStream extends Writable {
     constructor(filePath, context, options) {
         super(options);
         this.options = options;
         this.context = context;
         this.filePath = filePath;
+        /** Prevent overlapping _final work. */
+        this._finalizeStarted = false;
 
         const writeStart = this._getWriteStartInContext();
         const fileExists = fs.existsSync(filePath);
+        // Keep default autoClose: true. On 'finish', ftruncateSync(fd) runs
+        // synchronously while the write fd is still open; autoClose then
+        // releases it. Avoid path fs.truncate() in that window (Windows
+        // UNKNOWN/-4094 when AV / cloud sync races a re-open).
         let streamOptions = {};
         if (fileExists) {
             this.fileSize = fs.statSync(filePath).size;
@@ -188,8 +216,68 @@ export class RecoverableWriteStream extends Writable {
         this.writeStream.on('error', (err) => {
             this.emit('error', err);
         });
-        this.writeStream.on('close', () => {
+    }
+
+    /**
+     * Path truncate after the write fd is closed (fallback only).
+     */
+    _pathTruncateWithRetry(writeStart) {
+        const pathForLog = this.filePath;
+        const attempts = PATH_TRUNCATE_RETRY_DELAYS_MS.length + 1;
+        const tryAt = (i) =>
+            new Promise((resolve, reject) => {
+                fs.truncate(pathForLog, writeStart, (truncateErr) => {
+                    if (!truncateErr) {
+                        logger.debug("File truncated successfully by path", {
+                            path: pathForLog,
+                            writeStart,
+                            attempt: i + 1,
+                            attempts,
+                        });
+                        resolve({ method: "truncate" });
+                        return;
+                    }
+                    logger.warn(
+                        "Error truncating file by path:",
+                        formatWriteFsError(truncateErr, "truncate", {
+                            path: pathForLog,
+                            writeStart,
+                            attempt: i + 1,
+                            attempts,
+                        })
+                    );
+                    if (i + 1 >= attempts) {
+                        reject(truncateErr);
+                        return;
+                    }
+                    setTimeout(() => {
+                        tryAt(i + 1).then(resolve, reject);
+                    }, PATH_TRUNCATE_RETRY_DELAYS_MS[i]);
+                });
+            });
+        return tryAt(0);
+    }
+
+    /**
+     * Prefer sync ftruncate on the still-open write fd (inside 'finish').
+     * Returns { method: 'ftruncate', fd } or throws.
+     * Caller must fall back to path truncate only after 'close'.
+     */
+    _ftruncateOpenFdSync(writeStart) {
+        const fd = this.writeStream && this.writeStream.fd;
+        if (typeof fd !== "number" || fd < 0) {
+            const err = new Error("WRITE_FD_UNAVAILABLE");
+            err.code = "WRITE_FD_UNAVAILABLE";
+            err.path = this.filePath;
+            throw err;
+        }
+        fs.ftruncateSync(fd, writeStart);
+        logger.debug("File ftruncated successfully on write fd", {
+            path: this.filePath,
+            fd,
+            writeStart,
         });
+        return { method: "ftruncate", fd };
     }
 
     _getSaveFrequency() {
@@ -378,42 +466,88 @@ export class RecoverableWriteStream extends Writable {
     }
 
     _final(callback) {
-        this.writeStream.on('finish', () => {
+        if (this._finalizeStarted) {
+            logger.warn("RecoverableWriteStream._final re-entered; ignoring", {
+                path: this.filePath,
+            });
+            callback();
+            return;
+        }
+        this._finalizeStarted = true;
+
+        const saveAndFinish = () => {
+            if (this.context && typeof this.context.saveContext === 'function') {
+                this._unsavedItemCount = 0;
+                Promise.resolve(this.context.saveContext())
+                    .then(() => callback())
+                    .catch((err) => callback(err));
+            } else {
+                callback();
+            }
+        };
+
+        this.writeStream.once('finish', () => {
             const ctx = this.context && this.context.context;
             this._syncContextCheckpoint();
-
-            const saveAndFinish = () => {
-                if (this.context && typeof this.context.saveContext === 'function') {
-                    this._unsavedItemCount = 0;
-                    Promise.resolve(this.context.saveContext())
-                        .then(() => callback())
-                        .catch((err) => callback(err));
-                } else {
-                    callback();
-                }
-            };
 
             // 仅当解密真正完成时才截断：完成时去掉残留尾巴（inplace 场景
             // 下即密文尾段 + 块信息 + header）。暂停/中断时绝不能截断，
             // 否则 inplace 场景会毁掉尚未消费的密文与文件尾部 header。
             if (!ctx || ctx['decryptCompleted'] !== true) {
-                logger.debug("Decrypt not completed; skip truncate at checkpoint");
+                logger.debug("Decrypt not completed; skip truncate at checkpoint", {
+                    path: this.filePath,
+                    writeStart: ctx && ctx['writeStart'],
+                });
                 saveAndFinish();
                 return;
             }
 
             const writeStart = (ctx && ctx['writeStart']) || 0;
-            fs.truncate(this.filePath, writeStart, (truncateErr) => {
-                if (truncateErr) {
-                    logger.warn("Error truncating file:", truncateErr);
-                    callback(truncateErr);
-                    return;
-                }
-                logger.debug("File truncated successfully to length:", writeStart);
-                saveAndFinish();
+            const fdBefore = this.writeStream && this.writeStream.fd;
+            logger.debug("Finalizing decrypt output truncate", {
+                path: this.filePath,
+                writeStart,
+                fd: fdBefore,
             });
+
+            try {
+                this._ftruncateOpenFdSync(writeStart);
+                saveAndFinish();
+            } catch (ftruncateErr) {
+                logger.warn(
+                    "Error ftruncate on open write fd; will path-truncate after close:",
+                    formatWriteFsError(ftruncateErr, "ftruncate", {
+                        path: this.filePath,
+                        writeStart,
+                        fd: fdBefore,
+                        decryptCompleted: true,
+                    })
+                );
+                // autoClose will close after this finish handler returns; truncate by path then.
+                const afterClose = () => {
+                    this._pathTruncateWithRetry(writeStart)
+                        .then(() => saveAndFinish())
+                        .catch((truncateErr) => {
+                            logger.warn(
+                                "Error truncating file in _final (path fallback):",
+                                formatWriteFsError(truncateErr, "truncate", {
+                                    path: this.filePath,
+                                    writeStart,
+                                    fd: fdBefore,
+                                    decryptCompleted: true,
+                                })
+                            );
+                            callback(truncateErr);
+                        });
+                };
+                if (this.writeStream.closed || this.writeStream.destroyed) {
+                    afterClose();
+                } else {
+                    this.writeStream.once('close', afterClose);
+                }
+            }
         });
         this.writeStream.end();
-        logger.debug("Finalizing write stream");
+        logger.debug("Finalizing write stream", { path: this.filePath });
     }
 }

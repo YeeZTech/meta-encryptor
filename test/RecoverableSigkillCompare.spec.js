@@ -1,14 +1,12 @@
 /**
- * SIGKILL 中断 + 恢复的三场景对比：
- *   1. 双文件、不同目录（密文与明文输出分属两个目录）
- *   2. 双文件、同目录
- *   3. 单文件 inplace（明文写回密文文件本身）
+ * SIGKILL 中断 + 恢复：默认 inplace；保留少量双路径对照。
+ *   1. 双文件、同目录（对照）
+ *   2. 单文件 inplace
+ *   3. inplace + saveFrequency=1
  *
- * 流程（三个场景完全一致）：
+ * 流程：
  *   子进程解密 → 达到绝对进度阈值后 SIGKILL → 再起子进程续解 → 再 SIGKILL
  *   → 父进程最终续解到完成 → 校验 MD5。
- *
- * 目的：定位「密文明文同文件」在非优雅中断下是否比双文件更脆弱，以及错误形态。
  */
 const meta = require('../src/index.node.js');
 import {Sealer} from '../src/node/Sealer';
@@ -212,13 +210,7 @@ beforeAll(() => {
     }
 });
 
-test('sigkill x2 then resume - two files, different directories', async () => {
-    const s = await prepareScenario('sk_diffdir', { sameFile: false, outDirName: 'sk_diffdir_b' });
-    const md5 = await runKillResumeScenario('diff-dir', s);
-    expect(md5).toStrictEqual(s.plainMd5);
-}, 300000);
-
-test('sigkill x2 then resume - two files, same directory', async () => {
+test('sigkill x2 then resume - two files, same directory (dual-path 对照)', async () => {
     const s = await prepareScenario('sk_samedir', { sameFile: false });
     const md5 = await runKillResumeScenario('same-dir', s);
     expect(md5).toStrictEqual(s.plainMd5);

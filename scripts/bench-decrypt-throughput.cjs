@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 /**
- * Temporary benchmark — DSFT-style decrypt throughput (MB/s).
- * Exercises PipelineContextInFile atomic save during Recoverable decrypt.
+ * Decrypt throughput benchmark (MB/s).
+ *
+ * Modes:
+ *   dsft    — read .decrypting, write separate out (DSFT DecryptAction layout)
+ *   inplace — read/write same sealed file
+ *   both    — run dsft then inplace (default)
  *
  * Usage:
  *   node scripts/bench-decrypt-throughput.cjs
- *   node scripts/bench-decrypt-throughput.cjs --size-mb=200 --runs=3
- *
- * Remove this script when no longer needed.
+ *   node scripts/bench-decrypt-throughput.cjs --size-mb=200 --runs=3 --mode=both
  */
 'use strict';
 
@@ -32,12 +34,18 @@ const KEY_PAIR = {
 };
 
 function parseArgs(argv) {
-  const opts = { sizeMb: 100, runs: 1 };
+  const opts = { sizeMb: 200, runs: 3, mode: 'both' };
   for (const arg of argv) {
     if (arg.startsWith('--size-mb=')) {
-      opts.sizeMb = Math.max(1, Number(arg.slice('--size-mb='.length)) || 100);
+      opts.sizeMb = Math.max(1, Number(arg.slice('--size-mb='.length)) || 200);
     } else if (arg.startsWith('--runs=')) {
-      opts.runs = Math.max(1, Number(arg.slice('--runs='.length)) || 1);
+      opts.runs = Math.max(1, Number(arg.slice('--runs='.length)) || 3);
+    } else if (arg.startsWith('--mode=')) {
+      const m = arg.slice('--mode='.length);
+      if (!['dsft', 'inplace', 'both'].includes(m)) {
+        throw new Error(`invalid --mode=${m}; use dsft|inplace|both`);
+      }
+      opts.mode = m;
     } else if (arg === '--help' || arg === '-h') {
       opts.help = true;
     }
@@ -82,8 +90,7 @@ function sealPlain(plainPath, sealedPath) {
   });
 }
 
-/** Same path layout as dianshu-file-transfer DecryptAction. */
-function dsftStyleDecrypt(sealedPath, outputPath, progressPath) {
+function recoverableDecrypt(sealedPath, outputPath, progressPath) {
   return new Promise(async (resolve, reject) => {
     try {
       const context = new PipelineContextInFile(progressPath);
@@ -108,11 +115,19 @@ function rmIfExists(p) {
   } catch (_) {}
 }
 
-async function runOnce(workDir, plainPath, sizeBytes) {
-  const base = path.join(workDir, 'bench_out');
-  const sealedPath = base + '.decrypting';
-  const outputPath = base;
+async function runOnce(workDir, plainPath, sizeBytes, mode) {
+  const base = path.join(workDir, `bench_${mode}`);
   const progressPath = base + '.progress';
+  let sealedPath;
+  let outputPath;
+
+  if (mode === 'dsft') {
+    sealedPath = base + '.decrypting';
+    outputPath = base;
+  } else {
+    sealedPath = base + '.sealed';
+    outputPath = sealedPath; // inplace
+  }
 
   for (const p of [sealedPath, outputPath, progressPath, `${progressPath}.tmp`]) {
     rmIfExists(p);
@@ -123,44 +138,53 @@ async function runOnce(workDir, plainPath, sizeBytes) {
   const sealMs = Number(process.hrtime.bigint() - sealStart) / 1e6;
 
   const decryptStart = process.hrtime.bigint();
-  await dsftStyleDecrypt(sealedPath, outputPath, progressPath);
+  await recoverableDecrypt(sealedPath, outputPath, progressPath);
   const decryptMs = Number(process.hrtime.bigint() - decryptStart) / 1e6;
 
   const plainMd5 = await md5File(plainPath);
   const outMd5 = await md5File(outputPath);
   if (plainMd5 !== outMd5) {
-    throw new Error(`MD5 mismatch: plain=${plainMd5} out=${outMd5}`);
+    throw new Error(`[${mode}] MD5 mismatch: plain=${plainMd5} out=${outMd5}`);
   }
 
   const sizeMb = sizeBytes / (1024 * 1024);
-  const decryptMbPerSec = sizeMb / (decryptMs / 1000);
-  const sealMbPerSec = sizeMb / (sealMs / 1000);
-
-  let progressSaves = 0;
-  if (fs.existsSync(progressPath)) {
-    progressSaves = 1;
-  }
-
   return {
+    mode,
     sizeMb,
     sealMs,
     decryptMs,
-    sealMbPerSec,
-    decryptMbPerSec,
+    sealMbPerSec: sizeMb / (sealMs / 1000),
+    decryptMbPerSec: sizeMb / (decryptMs / 1000),
     progressFileBytes: fs.existsSync(progressPath)
       ? fs.statSync(progressPath).size
       : 0,
-    progressSaves,
   };
+}
+
+function summarize(label, results) {
+  const avg = (key) => results.reduce((s, x) => s + x[key], 0) / results.length;
+  const vals = (key) => results.map((r) => r[key]);
+  console.log(`\n${label}`);
+  console.log(
+    `  Decrypt: avg ${avg('decryptMbPerSec').toFixed(2)} MB/s ` +
+      `(min ${Math.min(...vals('decryptMbPerSec')).toFixed(2)}, ` +
+      `max ${Math.max(...vals('decryptMbPerSec')).toFixed(2)})`
+  );
+  console.log(`  Decrypt wall: avg ${avg('decryptMs').toFixed(1)} ms`);
+  console.log(`  Seal (setup): avg ${avg('sealMbPerSec').toFixed(2)} MB/s`);
 }
 
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
-    console.log(`Usage: node scripts/bench-decrypt-throughput.cjs [--size-mb=N] [--runs=N]`);
+    console.log(
+      'Usage: node scripts/bench-decrypt-throughput.cjs [--size-mb=N] [--runs=N] [--mode=dsft|inplace|both]'
+    );
     process.exit(0);
   }
 
+  const modes =
+    opts.mode === 'both' ? ['dsft', 'inplace'] : [opts.mode];
   const sizeBytes = Math.floor(opts.sizeMb * 1024 * 1024);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), 'me-decrypt-bench-'));
   const plainPath = path.join(workDir, 'plain.dat');
@@ -169,7 +193,7 @@ async function main() {
   console.log('─'.repeat(56));
   console.log(`Node ${process.version} | ${process.platform} ${process.arch}`);
   console.log(`Plain size: ${opts.sizeMb} MiB (${sizeBytes} bytes)`);
-  console.log(`Runs: ${opts.runs}`);
+  console.log(`Runs: ${opts.runs} | Modes: ${modes.join(', ')}`);
   console.log(`Work dir: ${workDir}`);
   console.log('Generating plain file...');
 
@@ -178,38 +202,39 @@ async function main() {
   const genMs = Number(process.hrtime.bigint() - genStart) / 1e6;
   console.log(`Plain file ready in ${genMs.toFixed(0)} ms\n`);
 
-  const results = [];
-  for (let i = 0; i < opts.runs; i++) {
-    const label = opts.runs > 1 ? `Run ${i + 1}/${opts.runs}` : 'Run';
-    process.stdout.write(`${label}... `);
-    const r = await runOnce(workDir, plainPath, sizeBytes);
-    results.push(r);
-    console.log(
-      `decrypt ${r.decryptMbPerSec.toFixed(2)} MB/s (${r.decryptMs.toFixed(0)} ms), ` +
-        `seal ${r.sealMbPerSec.toFixed(2)} MB/s`
-    );
+  const byMode = {};
+  for (const mode of modes) {
+    byMode[mode] = [];
+    for (let i = 0; i < opts.runs; i++) {
+      const label = `[${mode}] ${i + 1}/${opts.runs}`;
+      process.stdout.write(`${label}... `);
+      const r = await runOnce(workDir, plainPath, sizeBytes, mode);
+      byMode[mode].push(r);
+      console.log(
+        `decrypt ${r.decryptMbPerSec.toFixed(2)} MB/s (${r.decryptMs.toFixed(0)} ms), ` +
+          `seal ${r.sealMbPerSec.toFixed(2)} MB/s`
+      );
+    }
   }
-
-  const avg = (arr, key) => arr.reduce((s, x) => s + x[key], 0) / arr.length;
 
   console.log('\n' + '─'.repeat(56));
   console.log('Summary (decrypt = plain MiB / wall time):');
-  if (opts.runs === 1) {
-    const r = results[0];
-    console.log(`  Decrypt throughput: ${r.decryptMbPerSec.toFixed(2)} MB/s`);
-    console.log(`  Decrypt wall time:  ${r.decryptMs.toFixed(1)} ms`);
-    console.log(`  Seal throughput:    ${r.sealMbPerSec.toFixed(2)} MB/s (setup)`);
-    console.log(`  Progress file size: ${r.progressFileBytes} bytes`);
-  } else {
-    console.log(
-      `  Decrypt throughput: avg ${avg(results, 'decryptMbPerSec').toFixed(2)} MB/s ` +
-        `(min ${Math.min(...results.map((r) => r.decryptMbPerSec)).toFixed(2)}, ` +
-        `max ${Math.max(...results.map((r) => r.decryptMbPerSec)).toFixed(2)})`
+  for (const mode of modes) {
+    summarize(
+      mode === 'dsft' ? 'DSFT dual-path (.decrypting → out)' : 'Inplace (same file)',
+      byMode[mode]
     );
-    console.log(`  Decrypt wall time:  avg ${avg(results, 'decryptMs').toFixed(1)} ms`);
-    console.log(`  Seal throughput:    avg ${avg(results, 'sealMbPerSec').toFixed(2)} MB/s (setup)`);
   }
-  console.log('  MD5: OK (all runs)');
+  if (modes.includes('dsft') && modes.includes('inplace')) {
+    const d = byMode.dsft.reduce((s, x) => s + x.decryptMbPerSec, 0) / byMode.dsft.length;
+    const i = byMode.inplace.reduce((s, x) => s + x.decryptMbPerSec, 0) / byMode.inplace.length;
+    const delta = ((i - d) / d) * 100;
+    console.log(
+      `\nInplace vs DSFT: ${delta >= 0 ? '+' : ''}${delta.toFixed(1)}% ` +
+        `(${i.toFixed(2)} vs ${d.toFixed(2)} MB/s)`
+    );
+  }
+  console.log('MD5: OK (all runs)');
   console.log('─'.repeat(56));
 
   try {

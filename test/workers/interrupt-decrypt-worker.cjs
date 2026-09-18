@@ -54,14 +54,18 @@ async function main() {
   }
   const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const midPlainBytes = cfg.midPlainBytes || 256 * 1024;
-  const midDetect = cfg.midDetect || 'file';
+  const inplace = cfg.sealedPath === cfg.outPath;
+  // inplace 下 out 体积≈密封大小，不能靠文件 size 判 mid；且不得 unlink 密封文件本身
+  const midDetect = cfg.midDetect || (inplace ? 'progress' : 'file');
   const keyPair = {
     private_key: cfg.privateKey,
     public_key: cfg.publicKey,
   };
 
   if (cfg.cleanBefore !== false) {
-    for (const p of [cfg.outPath, cfg.contextPath, cfg.contextPath + '.tmp']) {
+    const toClean = [cfg.contextPath, cfg.contextPath + '.tmp'];
+    if (!inplace) toClean.unshift(cfg.outPath);
+    for (const p of toClean) {
       try {
         fs.unlinkSync(p);
       } catch (_) {
