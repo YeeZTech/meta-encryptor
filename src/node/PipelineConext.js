@@ -92,7 +92,11 @@ export class PipelineContext {
         this.runtime = {
             rawCommitted: 0,
             plainCommitted: 0,
-            pendingBlocks: [] //[{rawSize, plainSize, remainingPlain}]
+            pendingBlocks: [], //[{rawSize, plainSize, remainingPlain, raw}]
+            // 上次 checkpoint 存下的待回放密文快照及其起始偏移；
+            // checkpoint 重算时用来补全尚未被本轮消费覆盖的尾段
+            loadedData: Buffer.alloc(0),
+            loadedDataStart: 0
         };
     }
 
@@ -157,8 +161,7 @@ export class PipelineContextInFile extends PipelineContext {
         return fileBuffer;
     }
 
-    async _writeContextAtomic() {
-        const fileBuffer = this._buildPayload();
+    async _writeContextAtomic(fileBuffer) {
         const tmpPath = `${this.filePath}.tmp`;
 
         logger.debug("PipelineContextInFile::saveContext saving to ", this.filePath);
@@ -180,8 +183,9 @@ export class PipelineContextInFile extends PipelineContext {
     async _flushAll() {
         while (this._saveDirty) {
             this._saveDirty = false;
+            const payload = this._pendingPayload;
             try {
-                await this._writeContextAtomic();
+                await this._writeContextAtomic(payload);
             } catch (error) {
                 logger.error('PipelineContextInFile::saveContext error:', error.message);
                 throw error;
@@ -190,6 +194,10 @@ export class PipelineContextInFile extends PipelineContext {
     }
 
     saveContext() {
+        // 同步构建快照：调用方（RecoverableWriteStream checkpoint）刚刚以
+        // 原子方式设置好 readStart/writeStart/data，若延迟到异步 flush 时
+        // 再读 context，可能混入 Unsealer/ReadStream 的实时更新导致快照不自洽
+        this._pendingPayload = this._buildPayload();
         this._saveDirty = true;
         this._saveTail = this._saveTail.then(() => this._flushAll());
         return this._saveTail;
@@ -204,6 +212,8 @@ export class PipelineContextInFile extends PipelineContext {
                 this.runtime.rawCommitted = 0;
                 this.runtime.plainCommitted = 0;
                 this.runtime.pendingBlocks = [];
+                this.runtime.loadedData = Buffer.alloc(0);
+                this.runtime.loadedDataStart = 0;
                 return;
             }
 
@@ -231,11 +241,21 @@ export class PipelineContextInFile extends PipelineContext {
 
             await close(fd);
 
+            // status/decryptCompleted 是运行期瞬态字段：残留的 status='file'
+            // 会让 Unsealer 在回放完成前就用 remaining 覆盖 context.data
+            delete this.context.status;
+            delete this.context.decryptCompleted;
+
             const readStart = this.context.readStart || 0;
             const writeStart = this.context.writeStart || 0;
-            this.runtime.rawCommitted = readStart;
+            const data = this.context.data;
+            const dataLen = data ? data.length : 0;
+            // readStart 指向消费前沿（含待回放密文）；已提交基线要减去回放段
+            this.runtime.rawCommitted = readStart - dataLen;
             this.runtime.plainCommitted = writeStart;
             this.runtime.pendingBlocks = [];
+            this.runtime.loadedData = dataLen > 0 ? Buffer.from(data) : Buffer.alloc(0);
+            this.runtime.loadedDataStart = readStart - dataLen;
         } catch (error) {
             logger.error('PipelineContextInFile::loadContext error:', error.message);
             this.context = {};

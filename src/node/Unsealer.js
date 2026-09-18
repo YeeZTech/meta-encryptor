@@ -19,6 +19,9 @@ export class Unsealer extends Transform {
     const progressHandler = options.progressHandler;
     const context = options ? options.context : undefined;
     const ctx = context && context.context ? context.context : {};
+    // ctx.readStart 指向"消费前沿"（含已存入 ctx.data 的待回放密文），
+    // unsealer 真正的已消费字节数需要减去待回放部分。
+    const ctxDataLen = ctx.data ? ctx.data.length : 0;
 
     // Node-specific rolling keccak256 hash（原生优先，每个 item 都要过一遍，是解密的主要成本）
     const hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
@@ -31,29 +34,41 @@ export class Unsealer extends Transform {
       onBatchItem: (rawBatch) => {
         this._dataHash = hasher.update(rawBatch);
       },
-      onItemDone: ({ consumedBytes, plainSize }) => {
-        // update recoverable-stream context
-        if (context && context.context && context.context["status"] === "file") {
+      onItemDone: ({ consumedBytes, plainSize, rawItem }) => {
+        // update recoverable-stream context；'context' 表示正在回放上次
+        // checkpoint 存下的待处理密文，同样需要纳入 pending 跟踪
+        const status = context && context.context ? context.context["status"] : undefined;
+        if (context && context.context && (status === "file" || status === "context")) {
           if (!context.runtime) {
             context.runtime = {
-              rawCommitted: context.context.readStart || 0,
+              rawCommitted: (context.context.readStart || 0) - ctxDataLen,
               plainCommitted: context.context.writeStart || 0,
               pendingBlocks: []
             };
           } else {
             if (context.runtime.rawCommitted === undefined)
-              context.runtime.rawCommitted = context.context.readStart || 0;
+              context.runtime.rawCommitted = (context.context.readStart || 0) - ctxDataLen;
             if (context.runtime.plainCommitted === undefined)
               context.runtime.plainCommitted = context.context.writeStart || 0;
             if (!Array.isArray(context.runtime.pendingBlocks))
               context.runtime.pendingBlocks = [];
           }
-          context.runtime.pendingBlocks.push({ rawSize: consumedBytes, plainSize, remainingPlain: plainSize });
+          context.runtime.pendingBlocks.push({
+            rawSize: consumedBytes,
+            plainSize,
+            remainingPlain: plainSize,
+            // 保留原始密文：inplace 解密时该区域可能被明文覆盖，
+            // checkpoint 需将其存入 context.data 供 resume 回放
+            raw: rawItem
+              ? Buffer.from(rawItem.buffer, rawItem.byteOffset, rawItem.byteLength)
+              : null
+          });
         }
       },
       initialState: {
         readItemCount: options?.processedItemCount ?? ctx.readItemCount ?? 0,
-        processedBytes: options?.processedBytes ?? ctx.readStart ?? 0,
+        processedBytes: options?.processedBytes ??
+          (ctx.readStart !== undefined ? Math.max(0, ctx.readStart - ctxDataLen) : 0),
         writeBytes: options?.writeBytes ?? ctx.writeStart ?? 0,
       }
     });
@@ -74,6 +89,11 @@ export class Unsealer extends Transform {
       await this.#core.processChunk(chunk);
 
       if (this.#core.finished) {
+        // 通知 RecoverableWriteStream 解密已完成：只有此时 _final 才允许
+        // truncate（inplace 场景下提前截断会毁掉未消费的密文与尾部 header）
+        if (this._context && this._context.context) {
+          this._context.context["decryptCompleted"] = true;
+        }
         this.push(null);
       }
 

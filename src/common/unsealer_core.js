@@ -165,6 +165,11 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
     const item = tryReadItem(state.accumulated);
     if (!item) break;
 
+    // Raw item bytes (size prefix + cipher); recoverable checkpoints persist
+    // them so resume never re-reads regions an in-place writer may have
+    // overwritten with plaintext.
+    const rawItem = onItemDone ? state.accumulated.slice(0, item.consumedBytes) : null;
+
     state.accumulated = item.remaining;
     state.processedBytes += item.consumedBytes;
 
@@ -185,7 +190,7 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
     }
 
     state.readItemCount += 1;
-    if (onItemDone) onItemDone({ consumedBytes: item.consumedBytes, plainSize });
+    if (onItemDone) onItemDone({ consumedBytes: item.consumedBytes, plainSize, rawItem });
     if (onProgress) {
       onProgress(state.totalItems, state.readItemCount, state.processedBytes, state.writeBytes);
     }

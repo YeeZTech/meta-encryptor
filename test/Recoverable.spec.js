@@ -152,9 +152,8 @@ test('context.data mirrors unsealer remaining during file-mode decrypt', async (
     } catch (error) {}
 }, 60000);
 
-test('test pipeline context basic', async () => {
-    //let src = "Unsealerlarge.file";
-    //let src = './rollup.config.js'
+test('test pipeline context basic (dual-path 对照)', async () => {
+    // 保留少量双路径：读密封 dst，写另一文件 .sealed.ret
     let src = testPath('tsconfig.json');
     fs.copyFileSync('./tsconfig.json', src);
     let context_path = testPath('test_context');
@@ -200,13 +199,12 @@ test('test pipeline context large', async () => {
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     let dst = await sealFile(src);
-    let ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
-
+    // inplace：读/写同一密封文件
     let context = new PipelineContextInFile(context_path);
     await context.loadContext();
 
     let rs = new RecoverableReadStream(dst, context);
-    let ws = new RecoverableWriteStream(ret_src, context);
+    let ws = new RecoverableWriteStream(dst, context);
 
     let unsealer = new meta.Unsealer({
         keyPair: key_pair,
@@ -264,11 +262,10 @@ test('test pipeline context large', async () => {
             resolve();
         });
     });
-    await compare(src, ret_src);
+    await compare(src, dst);
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
         fs.unlinkSync(dst);
     } catch (error) {}
 }, 180000);
@@ -277,13 +274,12 @@ test('test pipeline context large', async () => {
 test('test pipeline context with pause and resume from large file', async () => {
     let src = testPath('pause_resume_large.file');
     let context_path = testPath('pause_resume_large_context');
-    let dst, ret_src;
+    let dst;
 
-    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
+        fs.unlinkSync(dst);
     } catch (error) {}
 
     generateFileWithSize(src, 1024 * 1024 * 20);
@@ -313,7 +309,7 @@ test('test pipeline context with pause and resume from large file', async () => 
         let rs = new RecoverableReadStream(dst, context);
         let unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
         let pauseController = new PauseController();
-        let ws = new RecoverableWriteStream(ret_src, context);
+        let ws = new RecoverableWriteStream(dst, context); // inplace
 
         bindPipelineErrors([rs, unsealer, pauseController, ws], reject);
 
@@ -338,41 +334,44 @@ test('test pipeline context with pause and resume from large file', async () => 
     await new Promise((resolve, reject) => {
         let rs = new RecoverableReadStream(dst, context);
         let unsealer = new meta.Unsealer({ keyPair: key_pair, context });
-        let ws = new RecoverableWriteStream(ret_src, context);
+        let ws = new RecoverableWriteStream(dst, context); // inplace
 
         bindPipelineErrors([rs, unsealer, ws], reject);
         rs.pipe(unsealer).pipe(ws);
         ws.on('finish', resolve);
     });
 
-    await compare(src, ret_src);
+    await compare(src, dst);
 
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(dst);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
     } catch (error) {}
 }, 180000);
 
 
 
-test('test pipeline context with multiple random pause and resume', async () => {
+test('test pipeline context with multiple random pause and resume (dual-path 对照)', async () => {
+    // 多轮 pause 若某轮跑完会 truncate；inplace 下会毁掉密文尾 header。
+    // 主路径用「on same file」覆盖 inplace；此处保留双路径对照。
     let src = testPath('pause_resume_large.rand.file');
     let context_path = testPath('pause_resume_large_context.rand');
-    let dst, ret_src;
+    let dst;
+    let ret;
 
-    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
-        fs.unlinkSync(dst);
     } catch (error) {}
 
     const fileSize = 1024 * 1024 * 50;
     generateFileWithSize(src, fileSize);
     dst = await sealFile(src);
+    ret = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    try {
+        fs.unlinkSync(ret);
+    } catch (error) {}
 
     const generateRandomPausePoints = (fileSize, numberOfPauses) => {
         const minGap = 1024 * 1024 * 2;
@@ -408,7 +407,7 @@ test('test pipeline context with multiple random pause and resume', async () => 
 
             let rs = new RecoverableReadStream(dst, context);
             let unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
-            let ws = new RecoverableWriteStream(ret_src, context);
+            let ws = new RecoverableWriteStream(ret, context);
 
             bindPipelineErrors([rs, unsealer, ws], reject);
 
@@ -442,15 +441,15 @@ test('test pipeline context with multiple random pause and resume', async () => 
         }
     }
 
-    await compare(src, ret_src);
+    await compare(src, ret);
 
     context = new PipelineContextInFile(context_path);
     await context.loadContext();
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
         fs.unlinkSync(dst);
+        fs.unlinkSync(ret);
     } catch (error) {}
 }, 180000);
 
@@ -466,14 +465,12 @@ test('test pipeline context large same file', async () => {
     //100MB
     generateFileWithSize(src, 1024 * 1024 * 100);
     let dst = await sealFile(src);
-    let ret_src = src;
 
     let m1 = await calculateMD5(src);
 
     let context = new PipelineContextInFile(context_path);
     context.loadContext();
     let rs = new RecoverableReadStream(dst, context);
-    // let ws = new RecoverableWriteStream(ret_src, context);
     let ws = new RecoverableWriteStream(dst, context);
     let unsealer = new meta.Unsealer({keyPair: key_pair, context: context});
     rs.pipe(unsealer).pipe(ws);
@@ -484,13 +481,13 @@ test('test pipeline context large same file', async () => {
         });
     });
 
-    let m2 = await calculateMD5(ret_src);
+    let m2 = await calculateMD5(dst);
     expect(m1.length > 0).toBe(true);
     expect(m1).toStrictEqual(m2);
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
+        fs.unlinkSync(dst);
     } catch (error) {}
     
 }, 180000);
@@ -504,10 +501,10 @@ test('test pipeline context with pause and resume on same file', async () => {
         fs.unlinkSync(context_path);
     } catch (error) {}
 
-    // 正常用法：读密文 dst，写明文 src（同一输出路径）；不要写入 .sealed 文件本身
+    // inplace：读/写密封文件 dst 本身
     generateFileWithSize(src, 1024 * 1024 * 50);
-    dst = await sealFile(src);
     const originalMD5 = await calculateMD5(src);
+    dst = await sealFile(src);
 
     let context = new PipelineContextInFile(context_path);
     await context.loadContext();
@@ -524,7 +521,7 @@ test('test pipeline context with pause and resume on same file', async () => {
 
         let rs = new RecoverableReadStream(dst, context);
         let unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
-        let ws = new RecoverableWriteStream(src, context);
+        let ws = new RecoverableWriteStream(dst, context); // inplace
 
         bindPipelineErrors([rs, unsealer, ws], reject);
 
@@ -548,14 +545,14 @@ test('test pipeline context with pause and resume on same file', async () => {
     await new Promise((resolve, reject) => {
         let rs = new RecoverableReadStream(dst, context);
         let unsealer = new meta.Unsealer({ keyPair: key_pair, context });
-        let ws = new RecoverableWriteStream(src, context);
+        let ws = new RecoverableWriteStream(dst, context); // inplace
 
         bindPipelineErrors([rs, unsealer, ws], reject);
         rs.pipe(unsealer).pipe(ws);
         ws.on('finish', resolve);
     });
 
-    const finalMD5 = await calculateMD5(src);
+    const finalMD5 = await calculateMD5(dst);
     expect(originalMD5).toStrictEqual(finalMD5);
 
     try {
@@ -565,7 +562,7 @@ test('test pipeline context with pause and resume on same file', async () => {
     } catch (error) {}
 }, 180000);
 
-// 同文件多轮 pause/resume（读 dst 密文，写回 src 明文路径）；100MB 覆盖 multipause 逻辑，避免 500MB CI 超时
+// 同文件多轮 pause/resume（inplace：读 dst 密文并把明文写回 dst 本身）；100MB 覆盖 multipause 逻辑
 test('test pipeline context with multiple random pause and resume on same file', async () => {
     let src = testPath('multi_pause_resume_large.rand_same.file');
     let context_path = testPath('multi_pause_resume_large_context.rand_same');
@@ -616,7 +613,7 @@ test('test pipeline context with multiple random pause and resume on same file',
 
             let rs = new RecoverableReadStream(dst, context);
             let unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
-            let ws = new RecoverableWriteStream(src, context);
+            let ws = new RecoverableWriteStream(dst, context); // ★ inplace：明文写回密文文件本身
 
             bindPipelineErrors([rs, unsealer, ws], reject);
 
@@ -650,7 +647,7 @@ test('test pipeline context with multiple random pause and resume on same file',
         }
     }
 
-    const finalMD5 = await calculateMD5(src);
+    const finalMD5 = await calculateMD5(dst);
     expect(originalMD5).toStrictEqual(finalMD5);
 
     try {
@@ -660,29 +657,72 @@ test('test pipeline context with multiple random pause and resume on same file',
     } catch (error) {}
 }, 600000);
 
-test('test truncate removes residual bytes after pause/resume', async () => {
-    // This test verifies that _final always truncates to writeStart,
-    // removing any residual garbage bytes left from a prior incomplete
-    // write attempt. In the old code, the condition
-    //   readStart + length >= fileSize
-    // could be false when residual bytes exist, skipping truncate
-    // and causing SHA256 mismatch.
-
-    let src = testPath('truncate_residual_test.file');
-    let context_path = testPath('truncate_residual_context');
-    let dst, ret_src;
-
-    ret_src = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+test('decrypt complete prefers ftruncate(fd) over path truncate', async () => {
+    // Production Windows failures: finish → fs.truncate(path) re-opens while the
+    // write fd is still held (AV / cloud sync) → UNKNOWN/-4094. Finalize must
+    // ftruncate the open fd, then close explicitly (autoClose: false).
+    const src = testPath('ftruncate_prefers_fd.file');
+    const context_path = testPath('ftruncate_prefers_fd.context');
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
+    } catch (error) {}
+
+    fs.writeFileSync(src, 'ftruncate prefers open write fd!!', 'utf8');
+    const dst = await sealFile(src);
+
+    const ftruncateSpy = jest.spyOn(fs, 'ftruncateSync');
+    const truncateSpy = jest.spyOn(fs, 'truncate');
+
+    try {
+        const context = new PipelineContextInFile(context_path);
+        await context.loadContext();
+
+        await new Promise((resolve, reject) => {
+            const rs = new RecoverableReadStream(dst, context);
+            const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+            const ws = new RecoverableWriteStream(dst, context); // inplace
+            bindPipelineErrors([rs, unsealer, ws], reject);
+            ws.on('finish', resolve);
+            rs.pipe(unsealer).pipe(ws);
+        });
+
+        expect(ftruncateSpy).toHaveBeenCalled();
+        expect(truncateSpy).not.toHaveBeenCalled();
+        await compare(src, dst);
+    } finally {
+        ftruncateSpy.mockRestore();
+        truncateSpy.mockRestore();
+        try {
+            fs.unlinkSync(src);
+            fs.unlinkSync(dst);
+            fs.unlinkSync(context_path);
+        } catch (error) {}
+    }
+}, 600000);
+
+test('test truncate removes residual bytes after pause/resume (dual-path 对照)', async () => {
+    // 残字节只能挂在「写路径」上而不破坏密文，故本场景保留双路径：
+    // 读密封 dst，写 ret；pause 后向 ret 追加垃圾，resume 后 _final 须 truncate 掉。
+
+    let src = testPath('truncate_residual_test.file');
+    let context_path = testPath('truncate_residual_context');
+    let dst;
+    let ret;
+
+    try {
+        fs.unlinkSync(src);
+        fs.unlinkSync(context_path);
     } catch (error) {}
 
     // Create a small source file (32 bytes — tiny enough to expose the bug)
     const sourceContent = 'hello from FileDownloader test!!';
     fs.writeFileSync(src, sourceContent, 'utf8');
     dst = await sealFile(src);
+    ret = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
+    try {
+        fs.unlinkSync(ret);
+    } catch (error) {}
 
     // --- Stage 1: partial write, then pause ---
     let context = new PipelineContextInFile(context_path);
@@ -708,7 +748,7 @@ test('test truncate removes residual bytes after pause/resume', async () => {
         let rs = new RecoverableReadStream(dst, context);
         let unsealer = new meta.Unsealer({keyPair: key_pair, context: context});
         let pauseController = new PauseController();
-        let ws = new RecoverableWriteStream(ret_src, context);
+        let ws = new RecoverableWriteStream(ret, context);
 
         let checkInterval = setInterval(() => {
             if (pauseTriggered) {
@@ -730,14 +770,11 @@ test('test truncate removes residual bytes after pause/resume', async () => {
         ws.on('error', reject);
     });
 
-    // --- Simulate residual garbage bytes ---
-    // Append garbage to the output file so fileSize becomes larger
-    // than what writeStart represents. This is exactly the scenario
-    // where the old code would skip truncate.
-    const beforeResidualSize = fs.statSync(ret_src).size;
+    // --- Simulate residual garbage bytes on the write file only ---
+    const beforeResidualSize = fs.statSync(ret).size;
     const garbage = Buffer.alloc(64, 0xFF); // 64 bytes of 0xFF
-    fs.appendFileSync(ret_src, garbage);
-    const afterResidualSize = fs.statSync(ret_src).size;
+    fs.appendFileSync(ret, garbage);
+    const afterResidualSize = fs.statSync(ret).size;
     logger.debug(`Appended ${afterResidualSize - beforeResidualSize} garbage bytes. ` +
                  `File size before: ${beforeResidualSize}, after: ${afterResidualSize}`);
 
@@ -754,7 +791,7 @@ test('test truncate removes residual bytes after pause/resume', async () => {
             writeBytes: context.context.writeStart || 0,
             context: context
         });
-        let ws = new RecoverableWriteStream(ret_src, context);
+        let ws = new RecoverableWriteStream(ret, context);
 
         ws.on('finish', () => {
             logger.debug('Resume completed.');
@@ -766,16 +803,16 @@ test('test truncate removes residual bytes after pause/resume', async () => {
     });
 
     // --- Verify: final file must match source (no residual garbage) ---
-    const finalSize = fs.statSync(ret_src).size;
+    const finalSize = fs.statSync(ret).size;
     expect(finalSize).toBe(sourceContent.length);
-    await compare(src, ret_src);
+    await compare(src, ret);
 
     // Cleanup
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(dst);
+        fs.unlinkSync(ret);
         fs.unlinkSync(context_path);
-        fs.unlinkSync(ret_src);
     } catch (error) {
         console.warn('Cleanup error:', error.message);
     }
@@ -948,13 +985,11 @@ function waitForWorkerEvent(events, name, timeoutMs) {
 test('interrupt decrypt graceful (pause + ws.end) then resume', async () => {
     const src = testPath('interrupt_decrypt_graceful.file');
     const contextPath = testPath('interrupt_decrypt_graceful_context');
-    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
 
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(contextPath);
         fs.unlinkSync(contextPath + '.tmp');
-        fs.unlinkSync(retSrc);
     } catch (_) {}
 
     generateFileWithSize(src, 1024 * 1024 * 16);
@@ -976,7 +1011,7 @@ test('interrupt decrypt graceful (pause + ws.end) then resume', async () => {
 
         const rs = new RecoverableReadStream(sealed, context);
         const unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
-        const ws = new RecoverableWriteStream(retSrc, context);
+        const ws = new RecoverableWriteStream(sealed, context);
         bindPipelineErrors([rs, unsealer, ws], reject);
 
         const checkInterval = setInterval(async () => {
@@ -993,10 +1028,11 @@ test('interrupt decrypt graceful (pause + ws.end) then resume', async () => {
         rs.pipe(unsealer).pipe(ws);
     });
 
-    expect(fs.existsSync(retSrc)).toBe(true);
-    const sizeAtPause = fs.statSync(retSrc).size;
-    expect(sizeAtPause).toBeGreaterThanOrEqual(midThreshold);
-    expect(sizeAtPause).toBeLessThan(fs.statSync(src).size);
+    expect(fs.existsSync(sealed)).toBe(true);
+    // inplace 下文件体积仍接近密封大小，用 checkpoint writeStart 断言进度
+    context = new PipelineContextInFile(contextPath);
+    await context.loadContext();
+    expect(context.context.writeStart || 0).toBeGreaterThanOrEqual(midThreshold);
 
     // 模拟进程退出后重启：重新 load context
     context = new PipelineContextInFile(contextPath);
@@ -1005,20 +1041,19 @@ test('interrupt decrypt graceful (pause + ws.end) then resume', async () => {
     await new Promise((resolve, reject) => {
         const rs = new RecoverableReadStream(sealed, context);
         const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
-        const ws = new RecoverableWriteStream(retSrc, context);
+        const ws = new RecoverableWriteStream(sealed, context);
         bindPipelineErrors([rs, unsealer, ws], reject);
         rs.pipe(unsealer).pipe(ws);
         ws.on('finish', resolve);
     });
 
-    expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+    expect(await calculateMD5(sealed)).toStrictEqual(plainMd5);
 
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(sealed);
         fs.unlinkSync(contextPath);
         fs.unlinkSync(contextPath + '.tmp');
-        fs.unlinkSync(retSrc);
     } catch (_) {}
 }, 180000);
 
@@ -1036,17 +1071,17 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
 
     const src = testPath('interrupt_decrypt_kill.file');
     const contextPath = testPath('interrupt_decrypt_kill_context');
-    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
     const configPath = testPath('interrupt_decrypt_kill_worker.json');
 
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(contextPath);
         fs.unlinkSync(contextPath + '.tmp');
-        fs.unlinkSync(retSrc);
     } catch (_) {}
 
-    generateFileWithSize(src, 1024 * 1024 * 16);
+    // inplace 下解密完成后会 truncate 掉尾部 header；文件太小 + mid 后等待过久
+    // 时，SIGKILL 前可能已跑完，续解会读到明文尾当 header。加大体积并缩短窗口。
+    generateFileWithSize(src, 1024 * 1024 * 128);
     const sealed = await sealFile(src);
     const plainMd5 = await calculateMD5(src);
     const midPlainBytes = 256 * 1024;
@@ -1055,10 +1090,12 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
         configPath,
         JSON.stringify({
             sealedPath: sealed,
-            outPath: retSrc,
+            outPath: sealed, // inplace
             contextPath,
             mode: 'kill',
             midPlainBytes,
+            midDetect: 'progress',
+            cleanBefore: false,
             privateKey: key_pair.private_key,
             publicKey: key_pair.public_key,
         })
@@ -1083,7 +1120,7 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
         const mid = await waitForWorkerEvent(events, 'mid-decrypt', 120_000);
         expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
 
-        await sleep(800);
+        await sleep(150);
         child.kill('SIGKILL');
         await new Promise((resolve) => {
             const t = setTimeout(resolve, 5000);
@@ -1094,9 +1131,15 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
         });
         child = null;
 
-        expect(fs.existsSync(retSrc)).toBe(true);
-        const sizeAtKill = fs.statSync(retSrc).size;
-        expect(sizeAtKill).toBeGreaterThanOrEqual(midPlainBytes);
+        expect(fs.existsSync(sealed)).toBe(true);
+        // 尚未完成：文件仍应大于明文（保留密文尾 + header）
+        expect(fs.statSync(sealed).size).toBeGreaterThan(fs.statSync(src).size);
+        {
+            const ctxAfterKill = new PipelineContextInFile(contextPath);
+            await ctxAfterKill.loadContext();
+            expect(ctxAfterKill.context.writeStart || 0).toBeGreaterThanOrEqual(midPlainBytes);
+            expect(ctxAfterKill.context.decryptCompleted).not.toBe(true);
+        }
 
         // 父进程模拟重启后续解
         const context = new PipelineContextInFile(contextPath);
@@ -1105,13 +1148,13 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
         await new Promise((resolve, reject) => {
             const rs = new RecoverableReadStream(sealed, context);
             const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
-            const ws = new RecoverableWriteStream(retSrc, context);
+            const ws = new RecoverableWriteStream(sealed, context);
             bindPipelineErrors([rs, unsealer, ws], reject);
             rs.pipe(unsealer).pipe(ws);
             ws.on('finish', resolve);
         });
 
-        expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+        expect(await calculateMD5(sealed)).toStrictEqual(plainMd5);
     } finally {
         if (child && !child.killed) {
             try {
@@ -1123,15 +1166,14 @@ test('interrupt decrypt ungraceful (SIGKILL mid-decrypt) then resume', async () 
             fs.unlinkSync(sealed);
             fs.unlinkSync(contextPath);
             fs.unlinkSync(contextPath + '.tmp');
-            fs.unlinkSync(retSrc);
             fs.unlinkSync(configPath);
         } catch (_) {}
     }
-}, 180000);
+}, 600000);
 
 /**
  * 断电式中断 + 落盘频率=1：每提交 1 个 item 即 saveContext，子进程 SIGKILL，
- * 父进程 loadContext 后从最近存档点续解。读写分离下应总能解出正确明文。
+ * 父进程 loadContext 后从最近存档点续解（inplace）。
  */
 test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', async () => {
     const buildEntry = path.resolve(__dirname, '../build/commonjs/index.node.cjs');
@@ -1143,7 +1185,6 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
 
     const src = testPath('interrupt_decrypt_kill_freq1.file');
     const contextPath = testPath('interrupt_decrypt_kill_freq1_context');
-    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
     const configPath = testPath('interrupt_decrypt_kill_freq1_worker.json');
     const contextOptions = { saveFrequency: 1, strongConsistency: false };
 
@@ -1151,7 +1192,6 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
         fs.unlinkSync(src);
         fs.unlinkSync(contextPath);
         fs.unlinkSync(contextPath + '.tmp');
-        fs.unlinkSync(retSrc);
     } catch (_) {}
 
     generateFileWithSize(src, 1024 * 1024 * 128);
@@ -1163,10 +1203,12 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
         configPath,
         JSON.stringify({
             sealedPath: sealed,
-            outPath: retSrc,
+            outPath: sealed, // inplace
             contextPath,
             mode: 'kill',
             midPlainBytes,
+            midDetect: 'progress',
+            cleanBefore: false,
             contextOptions,
             privateKey: key_pair.private_key,
             publicKey: key_pair.public_key,
@@ -1192,7 +1234,7 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
         const mid = await waitForWorkerEvent(events, 'mid-decrypt', 120_000);
         expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
 
-        await sleep(800);
+        await sleep(150);
         child.kill('SIGKILL');
         await new Promise((resolve) => {
             const t = setTimeout(resolve, 5000);
@@ -1203,10 +1245,14 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
         });
         child = null;
 
-        expect(fs.existsSync(retSrc)).toBe(true);
-        const sizeAtKill = fs.statSync(retSrc).size;
-        expect(sizeAtKill).toBeGreaterThanOrEqual(midPlainBytes);
-        expect(sizeAtKill).toBeLessThan(fs.statSync(src).size);
+        expect(fs.existsSync(sealed)).toBe(true);
+        expect(fs.statSync(sealed).size).toBeGreaterThan(fs.statSync(src).size);
+        {
+            const ctxAfterKill = new PipelineContextInFile(contextPath);
+            await ctxAfterKill.loadContext();
+            expect(ctxAfterKill.context.writeStart || 0).toBeGreaterThanOrEqual(midPlainBytes);
+            expect(ctxAfterKill.context.decryptCompleted).not.toBe(true);
+        }
 
         // 父进程模拟断电重启：loadContext 后从存档点续解
         const context = new PipelineContextInFile(contextPath, contextOptions);
@@ -1217,13 +1263,13 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
         await new Promise((resolve, reject) => {
             const rs = new RecoverableReadStream(sealed, context);
             const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
-            const ws = new RecoverableWriteStream(retSrc, context);
+            const ws = new RecoverableWriteStream(sealed, context);
             bindPipelineErrors([rs, unsealer, ws], reject);
             rs.pipe(unsealer).pipe(ws);
             ws.on('finish', resolve);
         });
 
-        expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+        expect(await calculateMD5(sealed)).toStrictEqual(plainMd5);
     } finally {
         if (child && !child.killed) {
             try {
@@ -1235,7 +1281,6 @@ test('interrupt decrypt ungraceful (SIGKILL) with saveFrequency=1 then resume', 
             fs.unlinkSync(sealed);
             fs.unlinkSync(contextPath);
             fs.unlinkSync(contextPath + '.tmp');
-            fs.unlinkSync(retSrc);
             fs.unlinkSync(configPath);
         } catch (_) {}
     }
@@ -1255,14 +1300,12 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
 
     const src = testPath('interrupt_decrypt_sigterm.file');
     const contextPath = testPath('interrupt_decrypt_sigterm_context');
-    const retSrc = path.join(path.dirname(src), path.basename(src) + '.sealed.ret');
     const configPath = testPath('interrupt_decrypt_sigterm_worker.json');
 
     try {
         fs.unlinkSync(src);
         fs.unlinkSync(contextPath);
         fs.unlinkSync(contextPath + '.tmp');
-        fs.unlinkSync(retSrc);
     } catch (_) {}
 
     // 默认 saveFrequency=32 且无 fsync 后吞吐更高；16MB 会在 mid→SIGTERM(200ms) 窗口内跑完。
@@ -1276,10 +1319,12 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
         configPath,
         JSON.stringify({
             sealedPath: sealed,
-            outPath: retSrc,
+            outPath: sealed, // inplace
             contextPath,
             mode: 'graceful',
             midPlainBytes,
+            midDetect: 'progress',
+            cleanBefore: false,
             privateKey: key_pair.private_key,
             publicKey: key_pair.public_key,
         })
@@ -1322,13 +1367,13 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
         await new Promise((resolve, reject) => {
             const rs = new RecoverableReadStream(sealed, context);
             const unsealer = new meta.Unsealer({ keyPair: key_pair, context });
-            const ws = new RecoverableWriteStream(retSrc, context);
+            const ws = new RecoverableWriteStream(sealed, context);
             bindPipelineErrors([rs, unsealer, ws], reject);
             rs.pipe(unsealer).pipe(ws);
             ws.on('finish', resolve);
         });
 
-        expect(await calculateMD5(retSrc)).toStrictEqual(plainMd5);
+        expect(await calculateMD5(sealed)).toStrictEqual(plainMd5);
     } finally {
         if (child && !child.killed) {
             try {
@@ -1340,7 +1385,6 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
             fs.unlinkSync(sealed);
             fs.unlinkSync(contextPath);
             fs.unlinkSync(contextPath + '.tmp');
-            fs.unlinkSync(retSrc);
             fs.unlinkSync(configPath);
         } catch (_) {}
     }
@@ -1355,7 +1399,7 @@ test('interrupt decrypt graceful cross-process (SIGTERM → pause) then resume',
  * 中断方式：跨进程 SIGKILL（对齐 dsft FileDownloader.recovery mid-decrypt kill）。
  * 失败保留，用于跟踪固定 *.progress.tmp 原子写问题。
  */
-test('interrupt decrypt dsft-style paths (SIGKILL) then resume like DecryptAction', async () => {
+test('interrupt decrypt dsft-style paths (SIGKILL) then resume like DecryptAction (dual-path 对照)', async () => {
     const buildEntry = path.resolve(__dirname, '../build/commonjs/index.node.cjs');
     if (!fs.existsSync(buildEntry)) {
         throw new Error(

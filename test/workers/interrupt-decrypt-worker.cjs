@@ -13,6 +13,9 @@
  *   sealedPath, outPath, contextPath,
  *   mode: "kill" | "graceful",
  *   midPlainBytes?: number,   // default 256KiB
+ *   cleanBefore?: boolean,    // default true; false = resume 模式，不清理 out/context
+ *   midDetect?: "file" | "progress", // default "file"；"progress" 用 unsealer 进度
+ *                                    // （writeBytes，含续传基线），inplace 场景必须用它
  *   contextOptions?: { saveFrequency?, strongConsistency? },
  *   privateKey, publicKey
  * }
@@ -51,28 +54,43 @@ async function main() {
   }
   const cfg = JSON.parse(fs.readFileSync(configPath, 'utf8'));
   const midPlainBytes = cfg.midPlainBytes || 256 * 1024;
+  const inplace = cfg.sealedPath === cfg.outPath;
+  // inplace 下 out 体积≈密封大小，不能靠文件 size 判 mid；且不得 unlink 密封文件本身
+  const midDetect = cfg.midDetect || (inplace ? 'progress' : 'file');
   const keyPair = {
     private_key: cfg.privateKey,
     public_key: cfg.publicKey,
   };
 
-  for (const p of [cfg.outPath, cfg.contextPath, cfg.contextPath + '.tmp']) {
-    try {
-      fs.unlinkSync(p);
-    } catch (_) {
-      /* ignore */
+  if (cfg.cleanBefore !== false) {
+    const toClean = [cfg.contextPath, cfg.contextPath + '.tmp'];
+    if (!inplace) toClean.unshift(cfg.outPath);
+    for (const p of toClean) {
+      try {
+        fs.unlinkSync(p);
+      } catch (_) {
+        /* ignore */
+      }
     }
   }
+
+  let shuttingDown = false;
+  let midEmitted = false;
 
   const context = new PipelineContextInFile(cfg.contextPath, cfg.contextOptions || {});
   await context.loadContext();
 
-  let rs = new RecoverableReadStream(cfg.sealedPath, context);
-  let unsealer = new Unsealer({ keyPair, context });
-  let ws = new RecoverableWriteStream(cfg.outPath, context);
+  const progressHandler = (_total, _read, _procBytes, writeBytes) => {
+    if (midDetect !== 'progress' || midEmitted || shuttingDown) return;
+    if (writeBytes >= midPlainBytes) {
+      midEmitted = true;
+      emit({ event: 'mid-decrypt', bytes: writeBytes });
+    }
+  };
 
-  let shuttingDown = false;
-  let midEmitted = false;
+  let rs = new RecoverableReadStream(cfg.sealedPath, context);
+  let unsealer = new Unsealer({ keyPair, context, progressHandler });
+  let ws = new RecoverableWriteStream(cfg.outPath, context);
 
   const gracefulShutdown = async () => {
     if (shuttingDown) return;
@@ -100,7 +118,7 @@ async function main() {
   emit({ event: 'started' });
 
   const poll = setInterval(() => {
-    if (midEmitted || shuttingDown) return;
+    if (midDetect !== 'file' || midEmitted || shuttingDown) return;
     try {
       if (fs.existsSync(cfg.outPath)) {
         const bytes = fs.statSync(cfg.outPath).size;

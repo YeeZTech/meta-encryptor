@@ -40,14 +40,16 @@ function sealToFile(plainPath, sealedPath, keyPair, hashProvider) {
   });
 }
 
+/** inplace：明文写回密封文件本身（outPath 默认等于 sealedPath） */
 function unsealToFile(sealedPath, outPath, keyPair, hashProvider) {
+  const target = outPath || sealedPath;
   return new Promise(async (resolve, reject) => {
-    const progressPath = outPath + '.progress';
+    const progressPath = sealedPath + '.progress';
     const context = new PipelineContextInFile(progressPath);
     await context.loadContext();
     const read = new RecoverableReadStream(sealedPath, context);
     const unsealer = new Unsealer({ keyPair, context, hashProvider });
-    const write = new RecoverableWriteStream(outPath, context);
+    const write = new RecoverableWriteStream(target, context);
     read.on('error', reject);
     unsealer.on('error', reject);
     write.on('error', reject);
@@ -77,7 +79,6 @@ test('Sealer/Unsealer with injected hashProvider round-trips and matches calcula
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'me-keccak-'));
   const plainPath = path.join(dir, 'plain.bin');
   const sealedPath = path.join(dir, 'sealed.bin');
-  const outPath = path.join(dir, 'out.bin');
   const plain = Buffer.alloc(256 * 1024, 7);
   fs.writeFileSync(plainPath, plain);
 
@@ -94,9 +95,11 @@ test('Sealer/Unsealer with injected hashProvider round-trips and matches calcula
   expect(calls).toBeGreaterThan(0);
 
   const expectedHash = calculateSealedHash(sealedPath, { hashProvider });
-  await unsealToFile(sealedPath, outPath, keyPair, hashProvider);
-  expect(fs.readFileSync(outPath).equals(plain)).toBe(true);
   expect(calculateSealedHash(sealedPath)).toBe(expectedHash);
+
+  // inplace：明文写回密封文件
+  await unsealToFile(sealedPath, undefined, keyPair, hashProvider);
+  expect(fs.readFileSync(sealedPath).equals(plain)).toBe(true);
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
