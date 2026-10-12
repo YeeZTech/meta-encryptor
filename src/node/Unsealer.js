@@ -3,6 +3,7 @@ import { Transform } from "stream";
 import log from "loglevel";
 
 import { UnsealerCore } from '../common/unsealer_core.js';
+import { DefaultStreamHighWaterMark } from '../common/limits.js';
 const logger = log.getLogger("meta-encryptor/Unsealer");
 
 import YPCCryptoFun from "./ypccrypto.js";
@@ -13,7 +14,8 @@ export class Unsealer extends Transform {
   #core;
 
   constructor(options) {
-    super(options);
+    // 见 limits.js DefaultStreamHighWaterMark：对齐 item 大小，减少线程池往返与背压次数
+    super({ highWaterMark: DefaultStreamHighWaterMark, ...options });
 
     const keyPair = options.keyPair;
     const progressHandler = options.progressHandler;

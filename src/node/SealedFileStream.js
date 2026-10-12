@@ -1,7 +1,7 @@
 import {Readable} from "stream";
 import fs from "fs";
 import{HeaderSize, BlockInfoSize,
-  MagicNum, CurrentBlockFileVersion} from "../common/limits.js";
+  MagicNum, CurrentBlockFileVersion, DefaultStreamHighWaterMark} from "../common/limits.js";
 import { MetaEncryptorError } from '../common/errors.js';
 import {
   buffer2header_t
@@ -15,7 +15,8 @@ const logger = log.getLogger("meta-encryptor/SealedFileStream");
 
 export class SealedFileStream extends Readable{
   constructor(filePath, options){
-    super(options);
+    // 每次 _read(size) 对应一次线程池 pread；HWM 对齐 item 大小以减少往返
+    super({ highWaterMark: DefaultStreamHighWaterMark, ...options });
     this.filePath = filePath;
     this.isHeaderSent = false;
     this.contentSize= 0;
@@ -99,7 +100,8 @@ export class SealedFileStream extends Readable{
         this.isHeaderSent = true;
       }
     }else{
-      const buffer = Buffer.alloc(size);
+      // 整段都会被 pread 覆盖（只 push 实际读到的字节），无需零填充
+      const buffer = Buffer.allocUnsafe(size);
       logger.debug("read file from ", this.startReadPos);
       this.fileHandle.read(buffer, 0, size, this.startReadPos)
         .then(({ bytesRead }) => {

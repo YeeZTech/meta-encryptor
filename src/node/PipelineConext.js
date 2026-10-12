@@ -70,15 +70,21 @@ function toBinaryChunk(value) {
 
 const DEFAULT_SAVE_FREQUENCY = 32;
 const DEFAULT_STRONG_CONSISTENCY = false;
+/** 0 = 仅按 saveFrequency 计数落盘，不加时间下限 */
+const DEFAULT_MIN_SAVE_INTERVAL_MS = 0;
 
 function normalizePipelineContextOptions(options) {
     const opts = options || {};
     const saveFrequency = Number.isInteger(opts.saveFrequency) && opts.saveFrequency > 0
         ? opts.saveFrequency
         : DEFAULT_SAVE_FREQUENCY;
+    const minSaveIntervalMs = Number.isFinite(opts.minSaveIntervalMs) && opts.minSaveIntervalMs > 0
+        ? opts.minSaveIntervalMs
+        : DEFAULT_MIN_SAVE_INTERVAL_MS;
     return {
         ...opts,
         saveFrequency,
+        minSaveIntervalMs,
         strongConsistency: opts.strongConsistency === true
             ? true
             : DEFAULT_STRONG_CONSISTENCY,
