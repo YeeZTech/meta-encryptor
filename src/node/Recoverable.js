@@ -18,12 +18,28 @@ export class RecoverableReadStream extends Readable {
         if (context && context.runtime) {
             context.runtime.readFilePath = path.resolve(filePath);
         }
+        this.headerRead = 0;
+
+        // 写端在收尾时把 completed 持久化进 context（见 RecoverableWriteStream._final）。
+        // 带着这样的 context 再次构建管道，说明调用方在"续传"一个已完成的任务
+        // （典型：inplace 完成后文件已 truncate 成明文、但任务状态没来得及更新）。
+        // 此时不能再去读文件尾部 header（可能已是明文），直接按空输入结束，让写端
+        // 走正常收尾（补做 truncate、再次落盘），调用方拿到 'finish'。
+        if (context && context.context && context.context['completed'] === true) {
+            logger.warn("Context already marks decrypt as completed; emitting empty stream", {
+                path: filePath,
+                writeStart: context.context['writeStart'],
+            });
+            this.inputStream = null;
+            this.state = 'completed';
+            return;
+        }
+
         this.inputStream = new SealedFileStream(filePath, {
             start: this._getReadStartInContext(),
             highWaterMark: this.readableHighWaterMark
         });
         this.state = 'header';
-        this.headerRead = 0;
 
         this.inputStream.on('error', (err) => {
             this.emit('error', err);
@@ -67,6 +83,9 @@ export class RecoverableReadStream extends Readable {
     }
     _read(size) {
         switch (this.state) {
+            case 'completed':
+                this.push(null);
+                break;
             case 'header':
                 const headerChunk = this.inputStream.read(Math.min(HeaderSize - this.headerRead, size));
                 if (headerChunk) {
@@ -197,6 +216,8 @@ export class RecoverableWriteStream extends Writable {
         /** 首个写入 / 后台落盘错误；一旦出现，流即 destroy */
         this._pendingError = null;
         this._lastSaveAt = 0;
+        /** _final 等待在途写入全部回调的 resolver */
+        this._drainResolve = null;
 
         const writeStart = this._getWriteStartInContext();
         const fileExists = fs.existsSync(filePath);
@@ -272,6 +293,7 @@ export class RecoverableWriteStream extends Writable {
         if (this._pendingError) return;
         this._pendingError = err;
         this._releaseInflightWaiter();
+        this._notifyDrained();
         if (!this.destroyed) this.destroy(err);
     }
 
@@ -282,6 +304,23 @@ export class RecoverableWriteStream extends Writable {
             this._inflightWaiter = null;
             waiter(this._pendingError || undefined);
         }
+    }
+
+    /** 在途写入全部回调（或出错）后兑现 _whenDrained */
+    _notifyDrained() {
+        if (!this._drainResolve) return;
+        if (this._pendingError || this._inflightBytes === 0) {
+            const resolve = this._drainResolve;
+            this._drainResolve = null;
+            resolve();
+        }
+    }
+
+    _whenDrained() {
+        if (this._pendingError || this._inflightBytes === 0) return Promise.resolve();
+        return new Promise((resolve) => {
+            this._drainResolve = resolve;
+        });
     }
 
     _destroy(err, callback) {
@@ -421,6 +460,7 @@ export class RecoverableWriteStream extends Writable {
                 return;
             }
             this._releaseInflightWaiter();
+            this._notifyDrained();
             saved.catch((error) => this._failPipeline(error));
         });
         if (this._inflightBytes < this._maxInflightBytes()) {
@@ -598,6 +638,40 @@ export class RecoverableWriteStream extends Writable {
         }
         this._finalizeStarted = true;
 
+        // 写完成已解耦：Writable 调 _final 时可能还有 pwrite 在途，先等账本全部提交
+        this._whenDrained().then(() => {
+            if (this._pendingError) {
+                callback(this._pendingError);
+                return;
+            }
+            const ctx = this.context && this.context.context;
+            this._syncContextCheckpoint();
+
+            // 仅当解密真正完成时才截断：完成时去掉残留尾巴（inplace 场景
+            // 下即密文尾段 + 块信息 + header）。暂停/中断时绝不能截断，
+            // 否则 inplace 场景会毁掉尚未消费的密文与文件尾部 header。
+            //   decryptCompleted：本次运行 Unsealer 消费完全部 item（运行期字段，load 时丢弃）
+            //   completed       ：上次运行已在 truncate 前持久化的完成标记（见下）
+            const done = !!ctx && (ctx['decryptCompleted'] === true || ctx['completed'] === true);
+            if (!done) {
+                this._endInner(false, callback);
+                return;
+            }
+
+            // 先把 completed 落盘，再 truncate：两步之间进程被杀，重启后读端据此直接
+            // 结束、写端在这里补做 truncate；否则 inplace 下文件已成明文、尾部 header
+            // 不复存在，续传会撞上 ERR_VERSION_MISMATCH
+            ctx['completed'] = true;
+            const persist = this.context && typeof this.context.saveContext === 'function'
+                ? Promise.resolve(this.context.saveContext())
+                : Promise.resolve();
+            return persist.then(() => this._endInner(true, callback));
+        }).catch((err) => callback(err));
+        logger.debug("Finalizing write stream", { path: this.filePath });
+    }
+
+    /** 结束底层 fs.WriteStream；done=true 时在 'finish' 后截断残留尾巴并落盘 */
+    _endInner(done, callback) {
         const saveAndFinish = () => {
             if (this.context && typeof this.context.saveContext === 'function') {
                 this._unsavedItemCount = 0;
@@ -613,10 +687,7 @@ export class RecoverableWriteStream extends Writable {
             const ctx = this.context && this.context.context;
             this._syncContextCheckpoint();
 
-            // 仅当解密真正完成时才截断：完成时去掉残留尾巴（inplace 场景
-            // 下即密文尾段 + 块信息 + header）。暂停/中断时绝不能截断，
-            // 否则 inplace 场景会毁掉尚未消费的密文与文件尾部 header。
-            if (!ctx || ctx['decryptCompleted'] !== true) {
+            if (!done) {
                 logger.debug("Decrypt not completed; skip truncate at checkpoint", {
                     path: this.filePath,
                     writeStart: ctx && ctx['writeStart'],
@@ -671,6 +742,5 @@ export class RecoverableWriteStream extends Writable {
             }
         });
         this.writeStream.end();
-        logger.debug("Finalizing write stream", { path: this.filePath });
     }
 }

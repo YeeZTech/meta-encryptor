@@ -16,6 +16,14 @@
 - `Sealer` / `Unsealer` / `SealedFileStream` / `RecoverableReadStream` / `RecoverableWriteStream`
   默认 `highWaterMark` 统一为 64 KiB（对齐 item 大小，`limits.DefaultStreamHighWaterMark`），
   不再依赖 Node 版本相关的 16 KiB 默认值；可显式覆盖。
+- 续传已完成任务不再报 `ERR_VERSION_MISMATCH`：写端收尾时先把 `completed: true` 持久化进
+  context 再 truncate；带该标记再建管道时读端直接结束、写端补做 truncate 并 'finish'
+  （inplace 完成后文件已是明文、尾部 header 不存在，老路径会把明文当密封文件打开）。
+  `loadContext()` 仍丢弃运行期字段 `decryptCompleted`（中间存档里可能出现在在途写入提交前）。
+  `_final` 现在会等所有在途写入提交后再收尾。
+- `SealedFileStream` header 校验失败（`ERR_VERSION_MISMATCH` / `ERR_INVALID_MAGIC`）的
+  `detail` 增加 `filePath`、`fileSize`、`tailHex`（尾部 64 字节原文），日志可直接判断尾部
+  是明文、HTML 还是半截文件；错误消息里的 `actual` 是丢精度的 Number，不要用它反推。
 - `calculateSealedHashAsync` 扫盘改为双缓冲预读：哈希当前 4 MiB 窗口时并行读下一窗口，
   跨窗口的 item 在缓冲头部空隙拼接。页缓存热时约 +7%，冷文件（SSD）单文件约 +70%。
 - 滚动哈希（密封 / 解封 / 校验共用）改为流式 `update(prev); update(item)`，不再把

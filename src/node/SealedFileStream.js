@@ -55,11 +55,20 @@ export class SealedFileStream extends Readable{
 
           const header = buffer2header_t(this.header);
 
+          // 尾部不是 header（文件已被 truncate 成明文 / 下载不完整 / 根本不是密封文件）时
+          // version 是个随机大数且已丢精度，日志里光看数字无从判断；带上原始尾部字节
+          const tailDetail = () => ({
+            filePath: this.filePath,
+            fileSize: fileStats.size,
+            tailHex: this.header.toString('hex'),
+          });
           if (header.version_number != CurrentBlockFileVersion) {
-            throw new MetaEncryptorError('ERR_VERSION_MISMATCH', { detail: { expected: CurrentBlockFileVersion, actual: header.version_number } });
+            throw new MetaEncryptorError('ERR_VERSION_MISMATCH', {
+              detail: { expected: CurrentBlockFileVersion, actual: header.version_number, ...tailDetail() },
+            });
           }
           if(!header.magic_number.equals(MagicNum)){
-            throw new MetaEncryptorError('ERR_INVALID_MAGIC');
+            throw new MetaEncryptorError('ERR_INVALID_MAGIC', { detail: tailDetail() });
           }
           this.contentSize = fileStats.size - HeaderSize - BlockInfoSize * header.block_number;
           if(this.contentSize <= 0){

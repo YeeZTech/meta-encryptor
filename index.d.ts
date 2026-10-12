@@ -66,6 +66,12 @@ export interface RecoverableWriteStreamOptions {
 }
 
 export class PipelineContext {
+  /**
+   * 断点数据。除 readStart / writeStart / data / readItemCount 外，写端收尾时会写入
+   * `completed: true`（在 truncate 之前持久化）；带该标记再次构建管道会直接 finish
+   * 而不去读密封文件尾部 header（inplace 完成后文件已是明文）。
+   * 要对同一密封文件重新解密，请删除 .progress 或传入新的 context。
+   */
   context: Record<string, any>;
   options: PipelineContextOptions;
   constructor(options?: PipelineContextOptions);
