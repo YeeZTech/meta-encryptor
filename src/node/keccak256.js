@@ -37,6 +37,8 @@ const SELF_TEST_EXPECTED =
 /** 'native' | 'js'；undefined 表示还没探测 */
 let implementation;
 let nativeHash = null;
+/** 原生 `keccak` 的工厂（createKeccak），用于流式 update；null 表示走纯 JS */
+let nativeCreate = null;
 
 const PACKAGE_NAME = '@yeez-tech/meta-encryptor';
 
@@ -138,8 +140,7 @@ function loadNative() {
     return null;
   }
 
-  const hash = (data) =>
-    createKeccak('keccak256').update(Buffer.isBuffer(data) ? data : Buffer.from(data)).digest();
+  const hash = (data) => createKeccak('keccak256').update(asBuffer(data)).digest();
 
   const actual = hash(Buffer.from(SELF_TEST_INPUT, 'utf-8')).toString('hex');
   if (actual !== SELF_TEST_EXPECTED) {
@@ -149,14 +150,44 @@ function loadNative() {
     });
     return null;
   }
-  return hash;
+  return { hash, create: createKeccak };
+}
+
+/** Uint8Array → Buffer 视图（不拷贝）；原生 addon 只接受 Buffer */
+function asBuffer(data) {
+  if (Buffer.isBuffer(data)) return data;
+  if (ArrayBuffer.isView(data)) return Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+  return Buffer.from(data);
 }
 
 function ensureResolved() {
   if (implementation !== undefined) return;
-  nativeHash = loadNative();
+  const native = loadNative();
+  nativeHash = native ? native.hash : null;
+  nativeCreate = native ? native.create : null;
   implementation = nativeHash ? 'native' : 'js';
   logger.info('keccak256 implementation selected', { implementation });
+}
+
+/**
+ * 流式 keccak256（默认实现专用）：`update()` 可多次调用，等价于对拼接后的输入做一次哈希。
+ * 原生与纯 JS 都支持增量 absorb，所以 `prev ‖ item` 不必先拼成一块再哈希。
+ * @returns {{ update(data: Uint8Array): void, digest(): Buffer }}
+ */
+function createKeccak256Stream() {
+  ensureResolved();
+  if (nativeCreate) {
+    const h = nativeCreate('keccak256');
+    return {
+      update(data) { h.update(asBuffer(data)); },
+      digest() { return h.digest(); },
+    };
+  }
+  const h = keccakJs.create();
+  return {
+    update(data) { h.update(data); },
+    digest() { return Buffer.from(h.digest()); },
+  };
 }
 
 /**
@@ -192,16 +223,34 @@ export function resolveKeccak256(hashProvider) {
 
 /**
  * 滚动哈希器（hash_0 = keccak256("Fidelius")，hash_i = keccak256(hash_{i-1} ‖ item_i)）。
- * 复用一块 `prevHash ‖ item` 缓冲，避免每个 item 都 concat / hex 往返。
+ * 默认实现走流式 absorb：`update(prev); update(item)`，不再把 `prev ‖ item` 拷到一块
+ * 缓冲里（每 item 省一次 64 KiB memcpy）；注入的 hashProvider 只有一次性接口，
+ * 仍走拷贝路径。
  * 密封（DataProvider）、解封（Unsealer）、校验（SealedHash）三处口径必须一致，故共用此实现。
  *
  * @param {(data: Uint8Array) => Buffer} [hashFn] 省略则用默认 keccak256
  * @param {Buffer} [seedHash] 断点续算的中间哈希；省略则从种子开始
  */
 export function createRollingHasher(hashFn = keccak256, seedHash) {
-  let buffer = Buffer.allocUnsafe(HASH_SIZE + INITIAL_ITEM_BUFFER_SIZE);
   let current = seedHash || hashFn(Buffer.from(HASH_SEED, 'utf-8'));
 
+  if (hashFn === keccak256) {
+    return {
+      get value() {
+        return current;
+      },
+      /** @returns {Buffer} 更新后的哈希 */
+      update(item) {
+        const h = createKeccak256Stream();
+        h.update(current);
+        h.update(item);
+        current = h.digest();
+        return current;
+      },
+    };
+  }
+
+  let buffer = Buffer.allocUnsafe(HASH_SIZE + INITIAL_ITEM_BUFFER_SIZE);
   return {
     get value() {
       return current;

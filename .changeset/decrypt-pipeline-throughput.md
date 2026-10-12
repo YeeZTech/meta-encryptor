@@ -16,6 +16,10 @@
 - `Sealer` / `Unsealer` / `SealedFileStream` / `RecoverableReadStream` / `RecoverableWriteStream`
   默认 `highWaterMark` 统一为 64 KiB（对齐 item 大小，`limits.DefaultStreamHighWaterMark`），
   不再依赖 Node 版本相关的 16 KiB 默认值；可显式覆盖。
+- `calculateSealedHashAsync` 扫盘改为双缓冲预读：哈希当前 4 MiB 窗口时并行读下一窗口，
+  跨窗口的 item 在缓冲头部空隙拼接。页缓存热时约 +7%，冷文件（SSD）单文件约 +70%。
+- 滚动哈希（密封 / 解封 / 校验共用）改为流式 `update(prev); update(item)`，不再把
+  `prev ‖ item` 拷到一块缓冲里；注入 `hashProvider` 的调用方仍走原拷贝路径。摘要不变。
 - 热路径去拷贝：AES-GCM 加解密不再经 hex 字符串往返；`UnsealerCore` / `_decryptMessageWithPrefix`
   使用 `subarray` 视图；`SealedFileStream` 读缓冲 `allocUnsafe`；`Sealer` 累积改为分片列表、
   达阈值只拼一次，并去掉 `memory-streams` 中转。密封输出格式与密文字节完全不变。
