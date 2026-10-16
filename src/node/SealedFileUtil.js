@@ -16,20 +16,23 @@ const getFileHeader = function (filePath) {
   }
 
   const fd = fs.openSync(filePath, 'r');
-  const buffer = Buffer.alloc(HeaderSize);
-  let readLen = fs.readSync(
-    fd,
-    buffer,
-    0,
-    HeaderSize,
-    srcStat.size - HeaderSize
-  );
-  if (readLen != HeaderSize) {
+  try {
+    const buffer = Buffer.alloc(HeaderSize);
+    const readLen = fs.readSync(
+      fd,
+      buffer,
+      0,
+      HeaderSize,
+      srcStat.size - HeaderSize
+    );
+    if (readLen != HeaderSize) {
+      return null;
+    }
+    return buffer2header_t(buffer);
+  } finally {
+    // An open handle pins deleted files' space, and on Windows keeps the name until close.
     fs.closeSync(fd);
-    return null;
   }
-  const header = buffer2header_t(buffer);
-  return header;
 };
 
 export const isSealedFile = function (filePath) {
