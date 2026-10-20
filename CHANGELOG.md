@@ -33,3 +33,11 @@
   - 热路径去拷贝：AES-GCM 加解密不再经 hex 字符串往返；`UnsealerCore` / `_decryptMessageWithPrefix`
     使用 `subarray` 视图；`SealedFileStream` 读缓冲 `allocUnsafe`；`Sealer` 累积改为分片列表、
     达阈值只拼一次，并去掉 `memory-streams` 中转。密封输出格式与密文字节完全不变。
+
+- cd0c2ea: 新增 `getSecp256k1Implementation()`，并在首次加密 / 解密时打印 secp256k1 的实现选择日志（logger：`meta-encryptor/secp256k1`），与 keccak256 的日志对应。
+  secp256k1 的原生 addon 加载失败时会静默退回纯 JS 的 elliptic，加解密吞吐降到原来的 1/3~1/4；此时返回 `'elliptic'`，并打一条带加载报错的 warn 日志，便于从客户端日志里确认。
+
+### Patch Changes
+
+- 7ddd375: 修复 `isSealedFile` / `sealedFileVersion` / `dataHashOfSealedFile` 读取文件头后不关闭文件句柄的问题。
+  此前每次调用都会泄漏一个只读句柄：被删除的密封文件在进程退出前一直占用磁盘空间，Windows 上文件名也可能残留。
