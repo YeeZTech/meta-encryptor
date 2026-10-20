@@ -8,6 +8,8 @@ export class Sealer extends Transform {
   constructor(options?: {
     keyPair: any;
     hashProvider?: SealedHashProvider;
+    /** 默认 64 KiB（对齐 item 大小），而不是 Node 的 16 KiB；可显式覆盖 */
+    highWaterMark?: number;
     [key: string]: any;
   });
 }
@@ -18,11 +20,14 @@ export class Unsealer extends Transform {
     context?: any;
     progressHandler?: (...args: any[]) => void;
     hashProvider?: SealedHashProvider;
+    /** 默认 64 KiB（对齐 item 大小），而不是 Node 的 16 KiB；可显式覆盖 */
+    highWaterMark?: number;
     [key: string]: any;
   });
 }
 
 export class SealedFileStream extends Readable {
+  /** options.highWaterMark 默认 64 KiB（每次 _read 对应一次 pread） */
   constructor(filePath: string, options?: any);
 }
 
@@ -38,10 +43,35 @@ export interface PipelineContextOptions {
    * 默认 false（省略 fsync，提升吞吐）。
    */
   strongConsistency?: boolean;
+  /**
+   * 两次 checkpoint 落盘之间的最小间隔（毫秒）。与 saveFrequency 同时生效：
+   * 达到 saveFrequency 个 item 且距上次落盘 ≥ 该间隔时才落盘。
+   * 默认 0（仅按 saveFrequency）。流结束与 inplace 写前存档不受此限制。
+   */
+  minSaveIntervalMs?: number;
+  [key: string]: any;
+}
+
+/** RecoverableWriteStream 额外选项（其余字段透传 stream.Writable） */
+export interface RecoverableWriteStreamOptions {
+  /** 默认 64 KiB（对齐 item 大小） */
+  highWaterMark?: number;
+  /**
+   * 已交给底层 fs.WriteStream 但尚未写完的明文字节上限。写端在该范围内
+   * 立即 ack，不让解密流水线等待每次 pwrite 完成。
+   * 默认：双文件 4 MiB；inplace（读写同一文件）256 KiB。
+   */
+  maxInflightBytes?: number;
   [key: string]: any;
 }
 
 export class PipelineContext {
+  /**
+   * 断点数据。除 readStart / writeStart / data / readItemCount 外，写端收尾时会写入
+   * `completed: true`（在 truncate 之前持久化）；带该标记再次构建管道会直接 finish
+   * 而不去读密封文件尾部 header（inplace 完成后文件已是明文）。
+   * 要对同一密封文件重新解密，请删除 .progress 或传入新的 context。
+   */
   context: Record<string, any>;
   options: PipelineContextOptions;
   constructor(options?: PipelineContextOptions);
@@ -57,11 +87,12 @@ export class PipelineContextInFile extends PipelineContext {
 }
 
 export class RecoverableReadStream extends Readable {
+  /** options.highWaterMark 默认 64 KiB，并透传给内部 SealedFileStream */
   constructor(filePath: string, context: PipelineContext, options?: any);
 }
 
 export class RecoverableWriteStream extends Writable {
-  constructor(filePath: string, context: PipelineContext, options?: any);
+  constructor(filePath: string, context: PipelineContext, options?: RecoverableWriteStreamOptions);
 }
 
 // Sealed file utilities
@@ -81,6 +112,13 @@ export interface SealedHashProvider {
 
 /** Node 侧当前生效的 keccak 实现；浏览器入口不导出此函数 */
 export function getKeccakImplementation(): 'native' | 'js';
+
+/**
+ * Node 侧当前生效的 secp256k1 实现；首次调用时打日志（logger: meta-encryptor/secp256k1）。
+ * 'elliptic' 表示原生 addon 加载失败、已静默退回纯 JS，加解密会明显变慢。
+ * 浏览器入口不导出此函数。
+ */
+export function getSecp256k1Implementation(): 'native' | 'elliptic' | 'unknown';
 
 export function calculateSealedHash(
   filePath: string,

@@ -70,15 +70,21 @@ function toBinaryChunk(value) {
 
 const DEFAULT_SAVE_FREQUENCY = 32;
 const DEFAULT_STRONG_CONSISTENCY = false;
+/** 0 = 仅按 saveFrequency 计数落盘，不加时间下限 */
+const DEFAULT_MIN_SAVE_INTERVAL_MS = 0;
 
 function normalizePipelineContextOptions(options) {
     const opts = options || {};
     const saveFrequency = Number.isInteger(opts.saveFrequency) && opts.saveFrequency > 0
         ? opts.saveFrequency
         : DEFAULT_SAVE_FREQUENCY;
+    const minSaveIntervalMs = Number.isFinite(opts.minSaveIntervalMs) && opts.minSaveIntervalMs > 0
+        ? opts.minSaveIntervalMs
+        : DEFAULT_MIN_SAVE_INTERVAL_MS;
     return {
         ...opts,
         saveFrequency,
+        minSaveIntervalMs,
         strongConsistency: opts.strongConsistency === true
             ? true
             : DEFAULT_STRONG_CONSISTENCY,
@@ -242,7 +248,10 @@ export class PipelineContextInFile extends PipelineContext {
             await close(fd);
 
             // status/decryptCompleted 是运行期瞬态字段：残留的 status='file'
-            // 会让 Unsealer 在回放完成前就用 remaining 覆盖 context.data
+            // 会让 Unsealer 在回放完成前就用 remaining 覆盖 context.data；
+            // decryptCompleted 可能出现在在途写入尚未提交时的中间存档里，不能据此判完成。
+            // 真正的完成标记是 completed（写端收尾、所有明文提交后才写入），保留给
+            // RecoverableReadStream / RecoverableWriteStream 识别"续传一个已完成的任务"。
             delete this.context.status;
             delete this.context.decryptCompleted;
 

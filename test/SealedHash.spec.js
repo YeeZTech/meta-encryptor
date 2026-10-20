@@ -218,6 +218,64 @@ test('注入 hashProvider 时用注入实现，结果与内置一致', async () 
   expect(calls.count).toBeGreaterThan(before);
 });
 
+test('预读窗口：各种 chunkSize 下 item 跨窗口边界拼接正确，结果不变', async () => {
+  const fileSize = fs.statSync(sealedPath).size;
+  // 最小窗口（内部钳到 item 上限 + 4096）：几乎每个 item 都跨边界；
+  // 非 item 对齐的窗口：边界落在 item 任意位置；超大窗口：一次读完、无预读
+  for (const chunkSize of [1, 70 * 1024, 100 * 1024 + 13, 1024 * 1024 + 7, fileSize * 2]) {
+    await expect(
+      calculateSealedHashAsync(sealedPath, { chunkSize, yieldEveryBytes: 64 * 1024 })
+    ).resolves.toBe(expectedHash);
+  }
+});
+
+test('预读窗口：取消时有在途预读也能干净关闭并给出可续算断点', async () => {
+  const controller = new AbortController();
+  let fired = false;
+  const aborted = calculateSealedHashAsync(sealedPath, {
+    chunkSize: 70 * 1024,
+    yieldEveryBytes: 64 * 1024,
+    signal: controller.signal,
+    onProgress: (p) => {
+      if (!fired && p.itemIndex >= 5) {
+        fired = true;
+        controller.abort();
+      }
+    },
+  });
+  const err = await aborted.catch((e) => e);
+  expect(err.code).toBe('ERR_SEALED_HASH_ABORTED');
+  await expect(
+    calculateSealedHashAsync(sealedPath, { checkpoint: err.detail.checkpoint, chunkSize: 70 * 1024 })
+  ).resolves.toBe(expectedHash);
+});
+
+test('滚动哈希流式 update(prev)+update(item) 与拼接后一次哈希逐 item 一致（原生 / 纯 JS）', () => {
+  const { createRollingHasher, keccak256: defaultKeccak, getKeccakImplementation } =
+    require('../src/node/keccak256.js');
+  const items = [0, 1, 7, 31, 32, 33, 135, 136, 137, 4096, 64 * 1024 + 92].map((n) => {
+    const b = Buffer.allocUnsafe(n);
+    for (let i = 0; i < n; i++) b[i] = (i * 131 + n) % 256;
+    return b;
+  });
+
+  // 默认实现（流式路径）
+  const streaming = createRollingHasher();
+  // 注入一次性实现（拷贝路径）—— 与 5.0.x 的 concat 口径相同
+  const copying = createRollingHasher((d) => Buffer.from(keccak256(d)));
+  let reference = Buffer.from(keccak256(Buffer.from('Fidelius', 'utf-8')));
+  expect(streaming.value.equals(reference)).toBe(true);
+  for (const item of items) {
+    reference = Buffer.from(keccak256(Buffer.concat([reference, item])));
+    expect(streaming.update(item).equals(reference)).toBe(true);
+    expect(copying.update(item).equals(reference)).toBe(true);
+    // 非 Buffer 的 Uint8Array 视图（带 byteOffset）也必须按视图范围哈希
+    const view = new Uint8Array(item.buffer, item.byteOffset, item.byteLength);
+    expect(defaultKeccak(view).equals(Buffer.from(keccak256(item)))).toBe(true);
+  }
+  expect(['native', 'js']).toContain(getKeccakImplementation());
+});
+
 test('文件被截断报 ERR_UNEXPECTED_EOF，文件过小报 ERR_FILE_TOO_SMALL', async () => {
   const truncated = path.join(dir, 'truncated.sealed');
   const full = fs.readFileSync(sealedPath);

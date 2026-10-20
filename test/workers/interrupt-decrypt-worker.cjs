@@ -16,7 +16,8 @@
  *   cleanBefore?: boolean,    // default true; false = resume 模式，不清理 out/context
  *   midDetect?: "file" | "progress", // default "file"；"progress" 用 unsealer 进度
  *                                    // （writeBytes，含续传基线），inplace 场景必须用它
- *   contextOptions?: { saveFrequency?, strongConsistency? },
+ *   contextOptions?: { saveFrequency?, strongConsistency?, minSaveIntervalMs? },
+ *   writeStreamOptions?: { maxInflightBytes?, highWaterMark? }, // 透传 RecoverableWriteStream
  *   privateKey, publicKey
  * }
  *
@@ -90,7 +91,7 @@ async function main() {
 
   let rs = new RecoverableReadStream(cfg.sealedPath, context);
   let unsealer = new Unsealer({ keyPair, context, progressHandler });
-  let ws = new RecoverableWriteStream(cfg.outPath, context);
+  let ws = new RecoverableWriteStream(cfg.outPath, context, cfg.writeStreamOptions || undefined);
 
   const gracefulShutdown = async () => {
     if (shuttingDown) return;

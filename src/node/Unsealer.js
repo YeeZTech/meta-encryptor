@@ -1,8 +1,10 @@
 import { createRollingHasher, resolveKeccak256 } from './keccak256.js';
+import { getSecp256k1Implementation } from './secp256k1Impl.js';
 import { Transform } from "stream";
 import log from "loglevel";
 
 import { UnsealerCore } from '../common/unsealer_core.js';
+import { DefaultStreamHighWaterMark } from '../common/limits.js';
 const logger = log.getLogger("meta-encryptor/Unsealer");
 
 import YPCCryptoFun from "./ypccrypto.js";
@@ -13,7 +15,8 @@ export class Unsealer extends Transform {
   #core;
 
   constructor(options) {
-    super(options);
+    // 见 limits.js DefaultStreamHighWaterMark：对齐 item 大小，减少线程池往返与背压次数
+    super({ highWaterMark: DefaultStreamHighWaterMark, ...options });
 
     const keyPair = options.keyPair;
     const progressHandler = options.progressHandler;
@@ -25,6 +28,7 @@ export class Unsealer extends Transform {
 
     // Node-specific rolling keccak256 hash（原生优先，每个 item 都要过一遍，是解密的主要成本）
     const hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
+    getSecp256k1Implementation();
 
     this.#core = new UnsealerCore({
       decrypt: (cipher) =>

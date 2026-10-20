@@ -596,7 +596,10 @@ test('test pipeline context with multiple random pause and resume on same file',
     let context = new PipelineContextInFile(context_path);
     await context.loadContext();
 
-    for (let stage = 0; stage < pausePoints.length + 1; stage++) {
+    // 暂停点靠近文件尾时，轮询间隔内解密可能已经跑完（inplace 下完成即 truncate，
+    // 密文尾 header 不复存在），此时不能再"续传"；用 finished 标记跳出
+    let finished = false;
+    for (let stage = 0; stage < pausePoints.length + 1 && !finished; stage++) {
         const currentPauseThreshold = pausePoints[stage];
 
         await new Promise((resolve, reject) => {
@@ -618,8 +621,10 @@ test('test pipeline context with multiple random pause and resume on same file',
             bindPipelineErrors([rs, unsealer, ws], reject);
 
             let checkInterval;
+            let pausing = false;
             const tryPause = async () => {
                 if (checkInterval) clearInterval(checkInterval);
+                pausing = true;
                 try {
                     await pauseDecryptPipeline(rs, unsealer, ws);
                     resolve();
@@ -631,21 +636,29 @@ test('test pipeline context with multiple random pause and resume on same file',
             if (stage < pausePoints.length) {
                 checkInterval = setInterval(() => {
                     if (pauseTriggered) tryPause();
-                }, 100);
+                }, 20);
             }
 
             rs.pipe(unsealer).pipe(ws);
-            ws.on('finish', resolve);
+            ws.on('finish', () => {
+                if (checkInterval) clearInterval(checkInterval);
+                // pause 也会走 ws.end() → 'finish'；只有 Unsealer 标记完成才算真正跑完
+                if (!pausing && context.context && context.context.decryptCompleted === true) {
+                    finished = true;
+                }
+                resolve();
+            });
         });
 
         context = new PipelineContextInFile(context_path);
         await context.loadContext();
 
-        if (stage < pausePoints.length) {
+        if (stage < pausePoints.length && !finished) {
             const resumeDelay = 2000 + Math.random() * 3000;
             await new Promise((r) => setTimeout(r, resumeDelay));
         }
     }
+    expect(finished).toBe(true);
 
     const finalMD5 = await calculateMD5(dst);
     expect(originalMD5).toStrictEqual(finalMD5);
@@ -1431,7 +1444,8 @@ test('interrupt decrypt dsft-style paths (SIGKILL) then resume like DecryptActio
     };
     cleanupDsftPaths();
 
-    generateFileWithSize(src, 1024 * 1024 * 20);
+    // 双文件解密约 200 MB/s：文件要足够大、kill 延迟要足够短，SIGKILL 才落在中途
+    generateFileWithSize(src, 1024 * 1024 * 128);
     const sealedTmp = await sealFile(src);
     // dsft：下载完成后 .crdownload → .decrypting；此处直接落到 .decrypting
     fs.renameSync(sealedTmp, decryptingPath);
@@ -1485,7 +1499,7 @@ test('interrupt decrypt dsft-style paths (SIGKILL) then resume like DecryptActio
         expect(Number(mid.bytes)).toBeGreaterThanOrEqual(midPlainBytes);
 
         // 缩短等待，更易撞上 in-flight saveContext（贴近 dsft 强杀时序）
-        await sleep(100);
+        await sleep(10);
         child.kill('SIGKILL');
         await new Promise((resolve) => {
             const t = setTimeout(resolve, 5000);

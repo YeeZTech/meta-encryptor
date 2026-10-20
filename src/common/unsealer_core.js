@@ -85,8 +85,10 @@ export function tryReadItem(accumulated) {
   const totalItemBytes = 8 + itemSize; // prefix + data
   if (accumulated.length < totalItemBytes) return null;
 
-  const cipher = accumulated.slice(8, totalItemBytes);
-  const remaining = accumulated.slice(totalItemBytes);
+  // 零拷贝视图：accumulated 从不被原地修改，解密只读 cipher；
+  // remaining 作为视图继续累积，避免每个 item 复制整段尾巴（大 chunk 下是 O(n²)）
+  const cipher = accumulated.subarray(8, totalItemBytes);
+  const remaining = accumulated.subarray(totalItemBytes);
 
   return { cipher, remaining, consumedBytes: totalItemBytes };
 }
@@ -150,14 +152,18 @@ export function createUnsealState(initial = {}) {
  */
 export async function processSealedChunk(state, newChunk, { decrypt, onPlain, onProgress, onItemDone, onBatchItem }) {
   const data = newChunk instanceof Uint8Array ? newChunk : new Uint8Array(newChunk);
-  state.accumulated = concatUint8Array(state.accumulated, data);
+  // 尾巴为空（最常见：上一 chunk 恰好消费完）时直接引用新 chunk，不复制；
+  // 流在 push 后不会再复用该 Buffer，这里也从不原地修改它
+  state.accumulated = state.accumulated.length === 0
+    ? data
+    : concatUint8Array(state.accumulated, data);
 
   if (!state.isHeaderReady) {
     if (state.accumulated.length < HeaderSize) return;
-    const headerBytes = state.accumulated.slice(0, HeaderSize);
+    const headerBytes = state.accumulated.subarray(0, HeaderSize);
     const { itemNumber } = validateHeader(headerBytes);
     state.totalItems = itemNumber;
-    state.accumulated = state.accumulated.slice(HeaderSize);
+    state.accumulated = state.accumulated.subarray(HeaderSize);
     state.isHeaderReady = true;
   }
 
@@ -167,8 +173,9 @@ export async function processSealedChunk(state, newChunk, { decrypt, onPlain, on
 
     // Raw item bytes (size prefix + cipher); recoverable checkpoints persist
     // them so resume never re-reads regions an in-place writer may have
-    // overwritten with plaintext.
-    const rawItem = onItemDone ? state.accumulated.slice(0, item.consumedBytes) : null;
+    // overwritten with plaintext. 视图即可：底层 buffer 不会被改写，
+    // checkpoint 落盘时 Buffer.concat 才真正复制。
+    const rawItem = onItemDone ? state.accumulated.subarray(0, item.consumedBytes) : null;
 
     state.accumulated = item.remaining;
     state.processedBytes += item.consumedBytes;

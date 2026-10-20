@@ -1,7 +1,7 @@
 import {Readable} from "stream";
 import fs from "fs";
 import{HeaderSize, BlockInfoSize,
-  MagicNum, CurrentBlockFileVersion} from "../common/limits.js";
+  MagicNum, CurrentBlockFileVersion, DefaultStreamHighWaterMark} from "../common/limits.js";
 import { MetaEncryptorError } from '../common/errors.js';
 import {
   buffer2header_t
@@ -15,7 +15,8 @@ const logger = log.getLogger("meta-encryptor/SealedFileStream");
 
 export class SealedFileStream extends Readable{
   constructor(filePath, options){
-    super(options);
+    // 每次 _read(size) 对应一次线程池 pread；HWM 对齐 item 大小以减少往返
+    super({ highWaterMark: DefaultStreamHighWaterMark, ...options });
     this.filePath = filePath;
     this.isHeaderSent = false;
     this.contentSize= 0;
@@ -54,11 +55,20 @@ export class SealedFileStream extends Readable{
 
           const header = buffer2header_t(this.header);
 
+          // 尾部不是 header（文件已被 truncate 成明文 / 下载不完整 / 根本不是密封文件）时
+          // version 是个随机大数且已丢精度，日志里光看数字无从判断；带上原始尾部字节
+          const tailDetail = () => ({
+            filePath: this.filePath,
+            fileSize: fileStats.size,
+            tailHex: this.header.toString('hex'),
+          });
           if (header.version_number != CurrentBlockFileVersion) {
-            throw new MetaEncryptorError('ERR_VERSION_MISMATCH', { detail: { expected: CurrentBlockFileVersion, actual: header.version_number } });
+            throw new MetaEncryptorError('ERR_VERSION_MISMATCH', {
+              detail: { expected: CurrentBlockFileVersion, actual: header.version_number, ...tailDetail() },
+            });
           }
           if(!header.magic_number.equals(MagicNum)){
-            throw new MetaEncryptorError('ERR_INVALID_MAGIC');
+            throw new MetaEncryptorError('ERR_INVALID_MAGIC', { detail: tailDetail() });
           }
           this.contentSize = fileStats.size - HeaderSize - BlockInfoSize * header.block_number;
           if(this.contentSize <= 0){
@@ -99,7 +109,8 @@ export class SealedFileStream extends Readable{
         this.isHeaderSent = true;
       }
     }else{
-      const buffer = Buffer.alloc(size);
+      // 整段都会被 pread 覆盖（只 push 实际读到的字节），无需零填充
+      const buffer = Buffer.allocUnsafe(size);
       logger.debug("read file from ", this.startReadPos);
       this.fileHandle.read(buffer, 0, size, this.startReadPos)
         .then(({ bytesRead }) => {

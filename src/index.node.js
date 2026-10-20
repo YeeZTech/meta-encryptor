@@ -28,6 +28,7 @@ export {
 } from "./node/SealedHash.js";
 
 export { getKeccakImplementation } from "./node/keccak256.js";
+export { getSecp256k1Implementation } from "./node/secp256k1Impl.js";
 
 export const { DataProvider, checkSealedData, unsealData } = Provider;
 
