@@ -113,6 +113,13 @@ export interface SealedHashProvider {
 /** Node 侧当前生效的 keccak 实现；浏览器入口不导出此函数 */
 export function getKeccakImplementation(): 'native' | 'js';
 
+/**
+ * Node 侧当前生效的 secp256k1 实现；首次调用时打日志（logger: meta-encryptor/secp256k1）。
+ * 'elliptic' 表示原生 addon 加载失败、已静默退回纯 JS，加解密会明显变慢。
+ * 浏览器入口不导出此函数。
+ */
+export function getSecp256k1Implementation(): 'native' | 'elliptic' | 'unknown';
+
 export function calculateSealedHash(
   filePath: string,
   options?: { hashProvider?: SealedHashProvider }

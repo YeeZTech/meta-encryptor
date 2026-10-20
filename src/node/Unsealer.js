@@ -1,4 +1,5 @@
 import { createRollingHasher, resolveKeccak256 } from './keccak256.js';
+import { getSecp256k1Implementation } from './secp256k1Impl.js';
 import { Transform } from "stream";
 import log from "loglevel";
 
@@ -27,6 +28,7 @@ export class Unsealer extends Transform {
 
     // Node-specific rolling keccak256 hash（原生优先，每个 item 都要过一遍，是解密的主要成本）
     const hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
+    getSecp256k1Implementation();
 
     this.#core = new UnsealerCore({
       decrypt: (cipher) =>

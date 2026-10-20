@@ -2,6 +2,7 @@ import { Transform } from "stream";
 import Provider from "./DataProvider.js";
 import YPCNt_Object from "../common/ypcntobject.js"
 import { DefaultStreamHighWaterMark, MaxItemSize } from "../common/limits.js";
+import { getSecp256k1Implementation } from "./secp256k1Impl.js";
 
 const {
   DataProvider,
@@ -96,6 +97,7 @@ export class Sealer extends Transform {
     this.threshold = MaxItemSize;
     this.keyPair = options.keyPair;
     this.DP = new DataProvider(this.keyPair, { hashProvider: options.hashProvider });
+    getSecp256k1Implementation();
   }
 
   /** 兼容旧字段：外部/测试读取时返回当前累积内容 */
