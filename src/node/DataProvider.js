@@ -51,19 +51,27 @@ const DataProvider = function(_key, options = {}) {
   this.sealBatchSize = 0;
 }
 
+/**
+ * 同一个文件的所有 item 共用一个封装会话（一次 ECDH + 顺序 IV），见 YPCCrypto.createSessionEncryptor。
+ * write_batch 允许传入不同公钥，换公钥时重建会话。
+ */
+DataProvider.prototype._itemEncryptor = function(public_key) {
+  if (!this._itemSession || this._itemSession.publicKeyHex !== public_key) {
+    this._itemSession = {
+      publicKeyHex: public_key,
+      encryptor: YPCCrypto.createSessionEncryptor(Buffer.from(public_key, "hex"), 0x2),
+    };
+  }
+  return this._itemSession.encryptor;
+};
+
 DataProvider.prototype.write_batch = function(batch, public_key, writable_stream) {
   let pkg_bytes = batch2ntpackage(batch);
   // Ensure Node Buffer
   if(!Buffer.isBuffer(pkg_bytes)){
     pkg_bytes = Buffer.from(pkg_bytes);
   }
-  const ots = YPCCrypto.generatePrivateKey();
-  let s = YPCCrypto._encryptMessage(
-    Buffer.from(public_key, "hex"),
-    ots,
-    pkg_bytes,
-    0x2
-  );
+  let s = this._itemEncryptor(public_key).encrypt(pkg_bytes);
   let all = BlockFile.append_item(s, this.header, this.block_meta_info);
   this.header = all[0];
   this.block_meta_info = all[1];
