@@ -32,6 +32,7 @@ function bindPipelineErrors(streams, reject) {
 
 const {PipelineContextInFile} = require('../src/node/PipelineConext.js');
 const {RecoverableReadStream, RecoverableWriteStream} = require('../src/node/Recoverable.js');
+import {dataHashOfSealedFile} from '../src/node/SealedFileUtil.js';
 import fs from 'fs';
 import {calculateMD5, key_pair, generateFileWithSize, testPath} from './helper';
 
@@ -58,25 +59,12 @@ async function compare(src, ret_src) {
     expect(m1).toStrictEqual(m2);
 }
 
-function unsealerRemainingBuffer(unsealer) {
-    const rem = unsealer._state.remaining;
-    if (!rem || rem.length === 0) return Buffer.alloc(0);
-    return Buffer.from(rem.buffer, rem.byteOffset, rem.byteLength);
-}
-
-function contextDataBuffer(context) {
-    const data = context.context?.data;
-    if (!data || data.length === 0) return Buffer.alloc(0);
-    return Buffer.isBuffer(data) ? data : Buffer.from(data);
-}
-
 /**
- * Invariant: while Read→Unsealer runs (no RecoverableWriteStream), context.data must
- * track Unsealer #core.remaining — not RecoverableReadStream's raw read-ahead append.
- * RecoverableWriteStream checkpoints clear data before save, so pause/resume e2e
- * tests do not exercise this; removing Unsealer's data sync breaks this contract.
+ * Invariant: context 的 readStart / data 只在写端 checkpoint 时更新。
+ * 读端与 Unsealer 运行中不改动它们，否则运行中 saveContext() 会存下
+ * "readStart 超前、writeStart 未动" 的不自洽状态。
  */
-test('context.data mirrors unsealer remaining during file-mode decrypt', async () => {
+test('context keeps the loaded checkpoint while Read→Unsealer runs', async () => {
     const src = testPath('context_data_sync.file');
     const contextPath = testPath('context_data_sync_context');
     let dst;
@@ -113,21 +101,19 @@ test('context.data mirrors unsealer remaining during file-mode decrypt', async (
 
         const poll = setInterval(() => {
             if (context.context?.status !== 'file') return;
+            if ((unsealer._state.processedBytes || 0) <= 65536) return;
 
-            const remaining = unsealerRemainingBuffer(unsealer);
-            const data = contextDataBuffer(context);
-            const processedBytes = unsealer._state.processedBytes || 0;
-
-            // Mid-item: past header, unsealer has unconsumed tail, pipeline still running
-            if (processedBytes > 65536 && remaining.length > 0 && data.length > 0) {
-                snapshot = { data: Buffer.from(data), remaining: Buffer.from(remaining) };
-                clearInterval(poll);
-                rs.unpipe(unsealer);
-                unsealer.unpipe(sink);
-                rs.destroy();
-                unsealer.destroy();
-                sink.end(() => resolve());
-            }
+            snapshot = {
+                readStart: context.context.readStart,
+                data: context.context.data,
+                writeStart: context.context.writeStart,
+            };
+            clearInterval(poll);
+            rs.unpipe(unsealer);
+            unsealer.unpipe(sink);
+            rs.destroy();
+            unsealer.destroy();
+            sink.end(() => resolve());
         }, 10);
 
         rs.pipe(unsealer).pipe(sink);
@@ -138,12 +124,12 @@ test('context.data mirrors unsealer remaining during file-mode decrypt', async (
 
         setTimeout(() => {
             clearInterval(poll);
-            reject(new Error('timed out waiting for mid-item partial decrypt state'));
+            reject(new Error('timed out waiting for mid-file decrypt state'));
         }, 30000);
     });
 
     expect(snapshot).not.toBeNull();
-    expect(snapshot.data.equals(snapshot.remaining)).toBe(true);
+    expect(snapshot).toEqual({ readStart: undefined, data: undefined, writeStart: undefined });
 
     try {
         fs.unlinkSync(src);
@@ -151,6 +137,90 @@ test('context.data mirrors unsealer remaining during file-mode decrypt', async (
         fs.unlinkSync(contextPath);
     } catch (error) {}
 }, 60000);
+
+/**
+ * 运行中手动 saveContext() 后硬停（不走 ws.end 的收尾落盘），续传结果必须正确，
+ * 且 Unsealer.dataHash 覆盖全部明文（与 header.data_hash 一致）。
+ * saveFrequency 设得极大，保证磁盘上只有这一份手动存档。
+ * keepHash=false 模拟旧版 checkpoint（无 dataHash）：续传仍正确，哈希只覆盖续传部分。
+ */
+test.each([
+    ['dual-file, with dataHash', true, false],
+    ['dual-file, legacy checkpoint without dataHash', false, false],
+    ['inplace, with dataHash', true, true],
+])('manual saveContext mid-run then hard stop resumes correctly (%s)', async (_label, keepHash, inplace) => {
+    const tag = (keepHash ? 'hash' : 'nohash') + (inplace ? '_inplace' : '');
+    const src = testPath(`manual_save_${tag}.file`);
+    const contextPath = testPath(`manual_save_${tag}_context`);
+
+    for (const p of [src, contextPath, src + '.ret']) {
+        try { fs.unlinkSync(p); } catch (error) {}
+    }
+
+    generateFileWithSize(src, 1024 * 1024 * 20);
+    const dst = await sealFile(src);
+    const out = inplace ? dst : src + '.ret';
+    const expectedHash = dataHashOfSealedFile(dst);
+    const ctxOptions = { saveFrequency: 1e9 };
+
+    let context = new PipelineContextInFile(contextPath, ctxOptions);
+    await context.loadContext();
+
+    await new Promise((resolve, reject) => {
+        let triggered = false;
+        let rs, unsealer, ws;
+        const hardStop = () => {
+            rs.unpipe(unsealer);
+            unsealer.unpipe(ws);
+            rs.destroy();
+            unsealer.destroy();
+            ws.destroy();
+            setTimeout(resolve, 200);
+        };
+        const progressHandler = (_total, _read, _bytes, writeBytes) => {
+            if (triggered || writeBytes < 1024 * 1024 * 5) return;
+            triggered = true;
+            Promise.resolve(context.saveContext()).then(hardStop, reject);
+        };
+        rs = new RecoverableReadStream(dst, context);
+        unsealer = new meta.Unsealer({ keyPair: key_pair, context, progressHandler });
+        ws = new RecoverableWriteStream(out, context);
+        bindPipelineErrors([rs, unsealer, ws], (err) => {
+            if (triggered) return;
+            reject(err);
+        });
+        ws.on('finish', () => reject(new Error('decrypt finished before hard stop')));
+        rs.pipe(unsealer).pipe(ws);
+    });
+
+    context = new PipelineContextInFile(contextPath, ctxOptions);
+    await context.loadContext();
+    expect(context.context.writeStart).toBeGreaterThan(0);
+    expect(Buffer.isBuffer(context.context.dataHash)).toBe(true);
+    if (!keepHash) {
+        delete context.context.dataHash;
+        await context.saveContext();
+        context = new PipelineContextInFile(contextPath, ctxOptions);
+        await context.loadContext();
+    }
+
+    let unsealer;
+    await new Promise((resolve, reject) => {
+        const rs = new RecoverableReadStream(dst, context);
+        unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+        const ws = new RecoverableWriteStream(out, context);
+        bindPipelineErrors([rs, unsealer, ws], reject);
+        ws.on('finish', resolve);
+        rs.pipe(unsealer).pipe(ws);
+    });
+
+    await compare(src, out);
+    expect(unsealer.dataHash.equals(expectedHash)).toBe(keepHash);
+
+    for (const p of [src, dst, contextPath, out]) {
+        try { fs.unlinkSync(p); } catch (error) {}
+    }
+}, 120000);
 
 test('test pipeline context basic (dual-path 对照)', async () => {
     // 保留少量双路径：读密封 dst，写另一文件 .sealed.ret
@@ -284,6 +354,8 @@ test('test pipeline context with pause and resume from large file', async () => 
 
     generateFileWithSize(src, 1024 * 1024 * 20);
     dst = await sealFile(src);
+    // inplace 完成后尾部 header 会被截掉，先取出 data_hash
+    const expectedHash = dataHashOfSealedFile(dst);
 
     let context = new PipelineContextInFile(context_path);
     await context.loadContext();
@@ -331,17 +403,19 @@ test('test pipeline context with pause and resume from large file', async () => 
     await context.loadContext();
 
     // --- stage2：loadContext 后重建管道（README 示例）---
+    let resumedUnsealer;
     await new Promise((resolve, reject) => {
         let rs = new RecoverableReadStream(dst, context);
-        let unsealer = new meta.Unsealer({ keyPair: key_pair, context });
+        resumedUnsealer = new meta.Unsealer({ keyPair: key_pair, context });
         let ws = new RecoverableWriteStream(dst, context); // inplace
 
-        bindPipelineErrors([rs, unsealer, ws], reject);
-        rs.pipe(unsealer).pipe(ws);
+        bindPipelineErrors([rs, resumedUnsealer, ws], reject);
+        rs.pipe(resumedUnsealer).pipe(ws);
         ws.on('finish', resolve);
     });
 
     await compare(src, dst);
+    expect(resumedUnsealer.dataHash.equals(expectedHash)).toBe(true);
 
     try {
         fs.unlinkSync(src);

@@ -26,8 +26,13 @@ export class Unsealer extends Transform {
     // unsealer 真正的已消费字节数需要减去待回放部分。
     const ctxDataLen = ctx.data ? ctx.data.length : 0;
 
-    // Node-specific rolling keccak256 hash（原生优先，每个 item 都要过一遍，是解密的主要成本）
-    const hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
+    // Node-specific rolling keccak256 hash（原生优先，每个 item 都要过一遍，是解密的主要成本）。
+    // 续传时从 checkpoint 的 dataHash（已提交 item 的滚动哈希）接着算；
+    // 旧版 checkpoint 没有该字段，只能从种子开始，续传后的哈希不覆盖已解密部分
+    const seedHash = Buffer.isBuffer(ctx.dataHash) && ctx.dataHash.length === 32
+      ? ctx.dataHash
+      : undefined;
+    const hasher = createRollingHasher(resolveKeccak256(options.hashProvider), seedHash);
     getSecp256k1Implementation();
 
     this.#core = new UnsealerCore({
@@ -65,7 +70,9 @@ export class Unsealer extends Transform {
             // checkpoint 需将其存入 context.data 供 resume 回放
             raw: rawItem
               ? Buffer.from(rawItem.buffer, rawItem.byteOffset, rawItem.byteLength)
-              : null
+              : null,
+            // 本 item 解完后的滚动哈希；写端提交该块时作为 checkpoint 的 dataHash
+            dataHash: hasher.value
           });
         }
       },
@@ -88,6 +95,14 @@ export class Unsealer extends Transform {
     logger.debug("Unsealer : ", this);
   }
 
+  /**
+   * 已解密明文的滚动哈希（与封装侧 header.data_hash 同口径）。
+   * 续传时从 checkpoint 的 dataHash 接着算；旧版 checkpoint 无该字段时只覆盖本次运行解密的 item。
+   */
+  get dataHash() {
+    return this._dataHash;
+  }
+
   async _transform(chunk, encoding, callback) {
     try {
       await this.#core.processChunk(chunk);
@@ -99,14 +114,6 @@ export class Unsealer extends Transform {
           this._context.context["decryptCompleted"] = true;
         }
         this.push(null);
-      }
-
-      // Sync unconsumed cipher tail for recoverable Read replay (see Recoverable.spec.js)
-      if (this._context && this._context.context && this._context.context["status"] === "file") {
-        const remaining = this.#core.remaining;
-        this._context.context["data"] = remaining.length > 0
-          ? Buffer.from(remaining.buffer, remaining.byteOffset, remaining.byteLength)
-          : Buffer.alloc(0);
       }
 
       callback();

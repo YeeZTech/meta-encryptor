@@ -98,7 +98,9 @@ export class PipelineContext {
         this.runtime = {
             rawCommitted: 0,
             plainCommitted: 0,
-            pendingBlocks: [], //[{rawSize, plainSize, remainingPlain, raw}]
+            pendingBlocks: [], //[{rawSize, plainSize, remainingPlain, raw, dataHash}]
+            // 最后一个已提交块解完后的滚动哈希；null 表示本次运行尚未提交
+            committedDataHash: null,
             // 上次 checkpoint 存下的待回放密文快照及其起始偏移；
             // checkpoint 重算时用来补全尚未被本轮消费覆盖的尾段
             loadedData: Buffer.alloc(0),
@@ -218,6 +220,7 @@ export class PipelineContextInFile extends PipelineContext {
                 this.runtime.rawCommitted = 0;
                 this.runtime.plainCommitted = 0;
                 this.runtime.pendingBlocks = [];
+                this.runtime.committedDataHash = null;
                 this.runtime.loadedData = Buffer.alloc(0);
                 this.runtime.loadedDataStart = 0;
                 return;
@@ -247,8 +250,8 @@ export class PipelineContextInFile extends PipelineContext {
 
             await close(fd);
 
-            // status/decryptCompleted 是运行期瞬态字段：残留的 status='file'
-            // 会让 Unsealer 在回放完成前就用 remaining 覆盖 context.data；
+            // status/decryptCompleted 是运行期瞬态字段，不跨进程保留：
+            // status 由读端按回放 / 读文件阶段重新设置；
             // decryptCompleted 可能出现在在途写入尚未提交时的中间存档里，不能据此判完成。
             // 真正的完成标记是 completed（写端收尾、所有明文提交后才写入），保留给
             // RecoverableReadStream / RecoverableWriteStream 识别"续传一个已完成的任务"。
@@ -263,6 +266,7 @@ export class PipelineContextInFile extends PipelineContext {
             this.runtime.rawCommitted = readStart - dataLen;
             this.runtime.plainCommitted = writeStart;
             this.runtime.pendingBlocks = [];
+            this.runtime.committedDataHash = null;
             this.runtime.loadedData = dataLen > 0 ? Buffer.from(data) : Buffer.alloc(0);
             this.runtime.loadedDataStart = readStart - dataLen;
         } catch (error) {

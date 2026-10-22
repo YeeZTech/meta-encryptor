@@ -102,38 +102,31 @@ export class RecoverableReadStream extends Readable {
                 logger.debug("Reading header, read so far:", this.headerRead);
                 break;
             case 'contextData':
+                // context 里的 readStart / data 只由写端在 checkpoint 时更新，读端不改：
+                // 运行中任何时刻 saveContext() 存下的都是最近一次自洽的 checkpoint
                 this.context.context['status'] = 'context';
-                const contextData = this._getDataInContext();
-                if (contextData.length > 0) {
-                    const chunkSize = Math.min(contextData.length, size);
-                    const chunk = contextData.slice(0, chunkSize);
-                    this.context.context['data'] = contextData.slice(chunkSize);
+                if (this._replay === undefined) {
+                    this._replay = this._getDataInContext();
+                    this._replayOffset = 0;
+                }
+                if (this._replayOffset < this._replay.length) {
+                    const end = Math.min(this._replay.length, this._replayOffset + size);
+                    const chunk = this._replay.subarray(this._replayOffset, end);
+                    this._replayOffset = end;
                     this.push(chunk);
-                    if (this.context.context['data'].length === 0) {
+                    if (this._replayOffset === this._replay.length) {
                         this.state = 'remaining';
                     }
                 } else {
                     this.state = 'remaining';
                     this._read(size);
                 }
-                logger.debug("Reading context data, remaining length:", this.context.context['data'] ? this.context.context['data'].length : 0);
+                logger.debug("Replaying context data, remaining length:", this._replay.length - this._replayOffset);
                 break;
             case 'remaining':
                 this.context.context['status'] = 'file';
                 const remainingChunk = this.inputStream.read(size);
                 if (remainingChunk) {
-                    if (
-                        this.context.context['readStart'] === undefined ||
-                        typeof this.context.context['readStart'] !== 'number' ||
-                        isNaN(this.context.context['readStart'])
-                    ) {
-                        this.context.context['readStart'] = 0;
-                    }
-                    this.context.context['readStart'] += remainingChunk.length;
-                    const prevData = this.context.context['data'] || Buffer.alloc(0);
-                    this.context.context['data'] = Buffer.concat([prevData, remainingChunk]);
-                    logger.debug("Updated readStart in context to:", this.context.context['readStart'], " data length to:", this.context.context['data'].length);
-                    
                     this.push(remainingChunk);
                 } else {
                     if (this.inputStream.readableEnded) {
@@ -527,6 +520,7 @@ export class RecoverableWriteStream extends Writable {
                 // Block fully committed
                 runtime.rawCommitted += block.rawSize;
                 runtime.plainCommitted += block.plainSize;
+                if (block.dataHash) runtime.committedDataHash = block.dataHash;
                 blocks.shift();
                 hasCommittedBlock = true;
                 committedItems += 1;
@@ -580,6 +574,7 @@ export class RecoverableWriteStream extends Writable {
      *   readStart  = 消费前沿之后磁盘保证未被明文覆盖的位置
      *   data       = [rawCommitted, readStart) 区间的原始密文（resume 时回放）
      *   writeStart = 已完整落盘的明文字节数
+     *   dataHash   = 已提交 item 的滚动哈希（Unsealer 续传时作为种子）
      * inplace（明文写回密文同一文件）场景下，pending 块的密文区间可能已被
      * 明文覆盖，因此必须把这些密文随 checkpoint 一起持久化，而不能指望
      * resume 时从文件重读。
@@ -591,6 +586,11 @@ export class RecoverableWriteStream extends Writable {
         const ctx = this.context && this.context.context;
         const runtime = this.context && this.context.runtime;
         if (!ctx || !runtime) return;
+
+        // 本次运行尚未提交任何块时保留加载时的 dataHash（与 readStart/writeStart 一致）
+        if (runtime.committedDataHash) {
+            ctx['dataHash'] = runtime.committedDataHash;
+        }
 
         if (!this._isInplace()) {
             ctx['readStart'] = runtime.rawCommitted;

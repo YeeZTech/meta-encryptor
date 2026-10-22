@@ -24,6 +24,11 @@ export class Unsealer extends Transform {
     highWaterMark?: number;
     [key: string]: any;
   });
+  /**
+   * Node 入口：已解密明文的滚动哈希（与 header.data_hash 同口径），断点续传后从
+   * checkpoint 接着算。浏览器入口的 Unsealer 不计算哈希，此字段为 undefined。
+   */
+  readonly dataHash?: Buffer;
 }
 
 export class SealedFileStream extends Readable {
