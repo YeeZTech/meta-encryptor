@@ -12,7 +12,7 @@ export { Unsealer } from "./node/Unsealer.js";
 
 export { SealedFileStream } from "./node/SealedFileStream.js";
 export {PipelineContext, PipelineContextInFile} from "./node/PipelineConext.js";
-export {RecoverableReadStream, RecoverableWriteStream} from "./node/Recoverable.js";
+export {RecoverableReadStream, RecoverableWriteStream, RecoverableSourceStream} from "./node/Recoverable.js";
 
 export {
   isSealedFile,

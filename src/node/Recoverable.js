@@ -152,6 +152,51 @@ export class RecoverableReadStream extends Readable {
 }
 
 /**
+ * 加密续传的读端：从 context.readStart（已封装的明文字节数）开始读源文件。
+ * 用法与 RecoverableReadStream 对称：RecoverableSourceStream → Sealer({context}) → RecoverableWriteStream。
+ * context 已标记 completed 时直接按空输入结束，由写端完成收尾。
+ * 源文件是否变化由 PipelineContextInFile.loadContext({ sourcePath }) 在构建管道前判定。
+ */
+export class RecoverableSourceStream extends Readable {
+    constructor(filePath, context, options) {
+        super({ highWaterMark: DefaultStreamHighWaterMark, ...options });
+        this.context = context;
+        const ctx = (context && context.context) || {};
+        if (ctx['completed'] === true) {
+            this.inputStream = null;
+            return;
+        }
+        const start = Number.isInteger(ctx['readStart']) ? ctx['readStart'] : 0;
+        logger.debug("Sealing source from position:", start);
+        this.inputStream = fs.createReadStream(filePath, {
+            start,
+            highWaterMark: this.readableHighWaterMark,
+        });
+        this.inputStream.on('data', (chunk) => {
+            if (!this.push(chunk)) this.inputStream.pause();
+        });
+        this.inputStream.on('end', () => this.push(null));
+        this.inputStream.on('error', (err) => this.destroy(err));
+        this.inputStream.pause();
+    }
+
+    _read() {
+        if (!this.inputStream) {
+            this.push(null);
+            return;
+        }
+        this.inputStream.resume();
+    }
+
+    _destroy(err, callback) {
+        if (this.inputStream && !this.inputStream.destroyed) {
+            this.inputStream.destroy();
+        }
+        callback(err);
+    }
+}
+
+/**
  * Structured fields for fs / write-stream failures (Sentry / electron-log).
  * Prefer this over logging the raw Error alone — Windows often surfaces only
  * UNKNOWN/-4094 without a useful message unless code/errno/syscall/path are kept.
@@ -521,9 +566,15 @@ export class RecoverableWriteStream extends Writable {
                 runtime.rawCommitted += block.rawSize;
                 runtime.plainCommitted += block.plainSize;
                 if (block.dataHash) runtime.committedDataHash = block.dataHash;
+                if (block.checkpoint) {
+                    runtime.committedCheckpoint = {
+                        ...runtime.committedCheckpoint,
+                        ...block.checkpoint,
+                    };
+                }
                 blocks.shift();
                 hasCommittedBlock = true;
-                committedItems += 1;
+                committedItems += Number.isInteger(block.items) ? block.items : 1;
             }
         }
         logger.debug("After committing, remaining to commit:", remain, " bytes. Updated runtime:", runtime);
@@ -575,6 +626,7 @@ export class RecoverableWriteStream extends Writable {
      *   data       = [rawCommitted, readStart) 区间的原始密文（resume 时回放）
      *   writeStart = 已完整落盘的明文字节数
      *   dataHash   = 已提交 item 的滚动哈希（Unsealer 续传时作为种子）
+     * 以及已提交块携带的其它断点字段（加密的 blockStarts / completed，见 Sealer）。
      * inplace（明文写回密文同一文件）场景下，pending 块的密文区间可能已被
      * 明文覆盖，因此必须把这些密文随 checkpoint 一起持久化，而不能指望
      * resume 时从文件重读。
@@ -590,6 +642,9 @@ export class RecoverableWriteStream extends Writable {
         // 本次运行尚未提交任何块时保留加载时的 dataHash（与 readStart/writeStart 一致）
         if (runtime.committedDataHash) {
             ctx['dataHash'] = runtime.committedDataHash;
+        }
+        if (runtime.committedCheckpoint) {
+            Object.assign(ctx, runtime.committedCheckpoint);
         }
 
         if (!this._isInplace()) {

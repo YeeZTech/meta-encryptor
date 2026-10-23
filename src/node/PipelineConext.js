@@ -1,6 +1,7 @@
 import log from 'loglevel';
 
 import fs from 'fs';
+import path from 'path';
 import { promisify } from 'util';
 
 import { MetaEncryptorError } from '../common/errors.js';
@@ -101,6 +102,8 @@ export class PipelineContext {
             pendingBlocks: [], //[{rawSize, plainSize, remainingPlain, raw, dataHash}]
             // 最后一个已提交块解完后的滚动哈希；null 表示本次运行尚未提交
             committedDataHash: null,
+            // 已提交块携带的其它断点字段（加密的 blockStarts / completed），checkpoint 时并入 context
+            committedCheckpoint: null,
             // 上次 checkpoint 存下的待回放密文快照及其起始偏移；
             // checkpoint 重算时用来补全尚未被本轮消费覆盖的尾段
             loadedData: Buffer.alloc(0),
@@ -211,18 +214,63 @@ export class PipelineContextInFile extends PipelineContext {
         return this._saveTail;
     }
 
-    async loadContext() {
+    _resetState() {
+        this.context = {};
+        this.runtime.rawCommitted = 0;
+        this.runtime.plainCommitted = 0;
+        this.runtime.pendingBlocks = [];
+        this.runtime.committedDataHash = null;
+        this.runtime.committedCheckpoint = null;
+        this.runtime.loadedData = Buffer.alloc(0);
+        this.runtime.loadedDataStart = 0;
+    }
+
+    /**
+     * @param {{ sourcePath?: string, outputPath?: string }} [options]
+     *   加密续传时传入：sourcePath 为待加密源文件，outputPath 为密封输出。
+     *   源文件大小 / 修改时间与断点记录不一致、或输出文件短于 writeStart 时丢弃断点从头加密；
+     *   随后把当前源文件指纹记入 context.source。解密续传不传。
+     */
+    async loadContext(options) {
+        await this._loadFromFile();
+        const sourcePath = options && options.sourcePath;
+        if (sourcePath) {
+            this._bindSealSource(sourcePath, options.outputPath);
+        }
+    }
+
+    _bindSealSource(sourcePath, outputPath) {
+        if (outputPath && path.resolve(outputPath) === path.resolve(sourcePath)) {
+            throw new MetaEncryptorError('ERR_SEAL_INPLACE_UNSUPPORTED', { detail: { path: sourcePath } });
+        }
+        const stat = fs.statSync(sourcePath);
+        const source = { size: stat.size, mtimeMs: stat.mtimeMs };
+        if (Object.keys(this.context).length > 0) {
+            const prev = this.context.source;
+            const writeStart = this.context.writeStart || 0;
+            let reason = null;
+            if (!prev || prev.size !== source.size || prev.mtimeMs !== source.mtimeMs) {
+                reason = 'source changed';
+            } else if (outputPath && writeStart > 0 &&
+                (!fs.existsSync(outputPath) || fs.statSync(outputPath).size < writeStart)) {
+                reason = 'output missing or truncated';
+            }
+            if (reason) {
+                logger.warn('Discarding seal checkpoint, restart from scratch:', reason, {
+                    sourcePath, outputPath, prev, source, writeStart,
+                });
+                this._resetState();
+            }
+        }
+        this.context.source = source;
+    }
+
+    async _loadFromFile() {
         try {
             await this._saveTail;
 
             if (!fs.existsSync(this.filePath)) {
-                this.context = {};
-                this.runtime.rawCommitted = 0;
-                this.runtime.plainCommitted = 0;
-                this.runtime.pendingBlocks = [];
-                this.runtime.committedDataHash = null;
-                this.runtime.loadedData = Buffer.alloc(0);
-                this.runtime.loadedDataStart = 0;
+                this._resetState();
                 return;
             }
 
@@ -267,6 +315,7 @@ export class PipelineContextInFile extends PipelineContext {
             this.runtime.plainCommitted = writeStart;
             this.runtime.pendingBlocks = [];
             this.runtime.committedDataHash = null;
+            this.runtime.committedCheckpoint = null;
             this.runtime.loadedData = dataLen > 0 ? Buffer.from(data) : Buffer.alloc(0);
             this.runtime.loadedDataStart = readStart - dataLen;
         } catch (error) {

@@ -1,5 +1,6 @@
 import {
   header_t,
+  block_info_t,
   header_t2buffer,
   buffer2header_t,
   block_info_t2buffer,
@@ -20,10 +21,11 @@ import {BlockNumLimit, MaxItemSize,
   HeaderSize, MagicNum,
   CurrentBlockFileVersion, BlockInfoSize} from "../common/limits.js";
 
+const ItemNumPerBlock = 256;
 const BlockFile = BlockFileFun(
   MagicNum,
   BlockNumLimit,
-  256
+  ItemNumPerBlock
 );
 /**
  * @param {any} _key
@@ -43,7 +45,8 @@ const DataProvider = function(_key, options = {}) {
 
   this.key_pair = _key;
   // 滚动哈希：每个 item 都要过一遍 keccak（原生优先），是加密的主要成本
-  this._hasher = createRollingHasher(resolveKeccak256(options.hashProvider));
+  this._hashFn = resolveKeccak256(options.hashProvider);
+  this._hasher = createRollingHasher(this._hashFn);
   this.data_hash = this._hasher.value;
   this.all_line_num = 0,
     this.now_line_num = 0;
@@ -86,6 +89,55 @@ DataProvider.prototype.write_batch = function(batch, public_key, writable_stream
     writable_stream.write(outBuf);
   }
 }
+
+/** 把未满 MaxItemSize 的待封装批次立即封成一个 item（不写文件尾） */
+DataProvider.prototype.flushBatch = function(writable_stream = null) {
+  if (this.sealBatchSize === 0) return;
+  this.write_batch(this.sealBatch, this.key_pair["public_key"], writable_stream);
+  this.sealBatch = [];
+  this.sealBatchSize = 0;
+};
+
+/** 各 block 起始文件偏移（uint64 LE 依次排列），供加密断点持久化 */
+DataProvider.prototype.blockStarts = function() {
+  const n = this.block_meta_info.length;
+  const buf = Buffer.alloc(8 * n);
+  for (let i = 0; i < n; i++) {
+    buf.writeBigUInt64LE(BigInt(this.block_meta_info[i].start_file_pos), 8 * i);
+  }
+  return buf;
+};
+
+/**
+ * 从加密断点恢复：已封装 itemCount 个 item、共 sealedBytes 字节，滚动哈希为 dataHash。
+ * block 信息由各 block 起始偏移推出（每 block 固定 ItemNumPerBlock 个 item）。
+ * 恢复后的 item 用新的会话密钥加密（不持久化任何密钥材料）。
+ */
+DataProvider.prototype.restoreSealState = function({ itemCount, sealedBytes, blockStarts, dataHash }) {
+  const blockNumber = Math.ceil(itemCount / ItemNumPerBlock);
+  if (!Buffer.isBuffer(dataHash) || dataHash.length !== 32) {
+    throw new MetaEncryptorError('ERR_SEAL_CONTEXT_INVALID', { detail: { reason: 'dataHash' } });
+  }
+  if (!Buffer.isBuffer(blockStarts) || blockStarts.length !== 8 * blockNumber) {
+    throw new MetaEncryptorError('ERR_SEAL_CONTEXT_INVALID', { detail: { reason: 'blockStarts' } });
+  }
+  const blocks = [];
+  for (let i = 0; i < blockNumber; i++) {
+    const last = i === blockNumber - 1;
+    blocks.push(new block_info_t(
+      i * ItemNumPerBlock,
+      last ? itemCount : (i + 1) * ItemNumPerBlock,
+      Number(blockStarts.readBigUInt64LE(8 * i)),
+      last ? sealedBytes : Number(blockStarts.readBigUInt64LE(8 * (i + 1)))
+    ));
+  }
+  this.header = new header_t(MagicNum, CurrentBlockFileVersion, blockNumber, itemCount);
+  this.block_meta_info = blocks;
+  this._hasher = createRollingHasher(this._hashFn, Buffer.from(dataHash));
+  this.data_hash = this._hasher.value;
+  this.sealBatch = [];
+  this.sealBatchSize = 0;
+};
 
 DataProvider.prototype.sealData = function(input,
   writable_stream = null,
