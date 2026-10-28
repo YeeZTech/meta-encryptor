@@ -24,6 +24,8 @@
   "ERR_PIPELINE_CONTEXT_SAVE": "saveContext should be implemented",
   "ERR_PIPELINE_CONTEXT_LOAD": "loadContext should be implemented",
   "ERR_PIPELINE_CONTEXT_INVALID": "PipelineContextInFile::loadContext invalid length",
+  "ERR_SEAL_CONTEXT_INVALID": "Seal checkpoint is inconsistent: {reason}",
+  "ERR_SEAL_INPLACE_UNSUPPORTED": "Sealing in place is not supported: source and output are the same file ({path})",
   "ERR_DOWNLOAD_FAILED": "Download failed: {message}",
   "ERR_RANGE_NOT_HONORED": "Range request was not honored by the server (got {actualStatus} instead of {expectedStatus}). This usually indicates a network proxy or security software is intercepting HTTP requests. Please try using the desktop client instead, or contact your network administrator.",
   "ERR_TOO_MANY_REDIRECTS": "Too many redirects (max {redirectCount})",

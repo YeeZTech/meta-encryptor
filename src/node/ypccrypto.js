@@ -28,7 +28,36 @@ const YPCCrypto = function () {
 
   this._encryptMessage = function (pkey, skey, msg, prefix) {
     const enc_key = this.generateAESKeyFrom(pkey, skey);
-    let iv = randomBytes(12);
+    const publicKey = this.generatePublicKeyFromPrivateKey(skey);
+    return this._encryptMessageWithKey(enc_key, publicKey, randomBytes(12), msg, prefix);
+  };
+
+  /**
+   * 封装会话：只做一次 ECDH，之后每条消息共用派生出的 AES 密钥，
+   * IV = 4 字节随机前缀 ‖ 8 字节大端序号（从 0 递增）。
+   * 输出布局与 _encryptMessage 完全一致，解密端按消息自带的 iv / pubkey 处理，无需区分。
+   * 同一会话内序号不回退，IV 不会重复；不同会话的临时私钥不同，密钥也不同。
+   */
+  this.createSessionEncryptor = function (pkey, prefix) {
+    const ots = this.generatePrivateKey();
+    const enc_key = this.generateAESKeyFrom(pkey, ots);
+    const publicKey = this.generatePublicKeyFromPrivateKey(ots);
+    const ivPrefix = randomBytes(4);
+    let counter = 0;
+    return {
+      publicKey,
+      encrypt: (msg) => {
+        const iv = Buffer.allocUnsafe(12);
+        ivPrefix.copy(iv, 0);
+        iv.writeUInt32BE(Math.floor(counter / 0x100000000), 4);
+        iv.writeUInt32BE(counter >>> 0, 8);
+        counter++;
+        return this._encryptMessageWithKey(enc_key, publicKey, iv, msg, prefix);
+      },
+    };
+  };
+
+  this._encryptMessageWithKey = function (enc_key, publicKey, iv, msg, prefix) {
     let cipher = crypto.createCipheriv(algorithm, enc_key, iv);
     const tad = new Uint8Array(64);
     tad.set(aad);
@@ -52,8 +81,7 @@ const YPCCrypto = function () {
     const result = Buffer.allocUnsafe(length);
     encrypted.copy(result, 0);
     iv.copy(result, encrypted.length);
-    const generatedPublicKey = this.generatePublicKeyFromPrivateKey(skey);
-    result.set(generatedPublicKey, encrypted.length + 12);
+    result.set(publicKey, encrypted.length + 12);
     tag.copy(result, encrypted.length + 12 + 64);
     return result;
   };

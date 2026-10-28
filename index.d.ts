@@ -4,14 +4,30 @@ export class ToString extends Transform {
   constructor(options?: any, schema?: any);
 }
 
+/**
+ * 输入按固定 64 KiB 切分成 item（最后一个可以更短），data_hash 与上游分片大小无关。
+ * 断点续传：RecoverableSourceStream → Sealer({ context }) → RecoverableWriteStream，
+ * context 需先 `loadContext({ sourcePath, outputPath })`。
+ */
 export class Sealer extends Transform {
   constructor(options?: {
     keyPair: any;
     hashProvider?: SealedHashProvider;
+    /** 断点续传上下文，与读写两端共用 */
+    context?: PipelineContext;
+    /**
+     * 输入流从源头开始（例如转码后的文本无法按字节定位），由 Sealer 丢弃
+     * context.readStart 之前的字节。默认 false：输入已从 readStart 开始。
+     */
+    skipCommittedInput?: boolean;
+    /** 与 Unsealer 同签名；加密时总 item 数未知，totalItem 恒为 0 */
+    progressHandler?: (totalItem: number, readItem: number, bytes: number, writeBytes: number) => void;
     /** 默认 64 KiB（对齐 item 大小），而不是 Node 的 16 KiB；可显式覆盖 */
     highWaterMark?: number;
     [key: string]: any;
   });
+  /** 已封装明文的滚动哈希（即 header.data_hash），续传时从 checkpoint 接着算 */
+  readonly dataHash: Buffer;
 }
 
 export class Unsealer extends Transform {
@@ -24,6 +40,11 @@ export class Unsealer extends Transform {
     highWaterMark?: number;
     [key: string]: any;
   });
+  /**
+   * Node 入口：已解密明文的滚动哈希（与 header.data_hash 同口径），断点续传后从
+   * checkpoint 接着算。浏览器入口的 Unsealer 不计算哈希，此字段为 undefined。
+   */
+  readonly dataHash?: Buffer;
 }
 
 export class SealedFileStream extends Readable {
@@ -80,14 +101,29 @@ export class PipelineContext {
   loadContext(): Promise<void> | void;
 }
 
+/** 加密续传时传给 loadContext */
+export interface SealLoadContextOptions {
+  /** 待加密源文件：大小 / 修改时间与断点记录不一致时丢弃断点从头加密 */
+  sourcePath: string;
+  /** 密封输出文件：不存在或短于断点的 writeStart 时同样从头加密；不能与 sourcePath 相同 */
+  outputPath?: string;
+}
+
 export class PipelineContextInFile extends PipelineContext {
   constructor(filePath: string, options?: PipelineContextOptions);
   saveContext(): Promise<void>;
-  loadContext(): Promise<void>;
+  /** 解密续传不传参数；加密续传传 { sourcePath, outputPath } */
+  loadContext(options?: SealLoadContextOptions): Promise<void>;
 }
 
 export class RecoverableReadStream extends Readable {
   /** options.highWaterMark 默认 64 KiB，并透传给内部 SealedFileStream */
+  constructor(filePath: string, context: PipelineContext, options?: any);
+}
+
+/** 加密续传的读端：从 context.readStart 开始读源文件；context 已 completed 时为空流 */
+export class RecoverableSourceStream extends Readable {
+  /** options.highWaterMark 默认 64 KiB */
   constructor(filePath: string, context: PipelineContext, options?: any);
 }
 
@@ -199,6 +235,7 @@ export default {
   PipelineContextInFile,
   RecoverableReadStream,
   RecoverableWriteStream,
+  RecoverableSourceStream,
   isSealedFile,
   sealedFileVersion,
   dataHashOfSealedFile,

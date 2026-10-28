@@ -451,6 +451,38 @@ unsealer.unpipe(writeStream);
 
 这种方式特别适用于大文件解密和需要断点续传的场景。系统会自动管理解密进度和上下文信息，确保可以从任意断点恢复解密过程
 
+##### 断点续传加密
+
+与解密对称：`RecoverableSourceStream → Sealer({ context }) → RecoverableWriteStream`，共用 `PipelineContextInFile`。
+加密只支持双文件（源文件与密封输出不能是同一个文件），仅支持原始字节加密（`Sealer`，不含 `CSVSealer`）。
+
+```js
+import {
+  RecoverableSourceStream,
+  RecoverableWriteStream,
+  PipelineContextInFile,
+  Sealer,
+} from "@yeez-tech/meta-encryptor";
+
+const context = new PipelineContextInFile(sealedFile + ".progress");
+// 源文件大小 / 修改时间与断点不一致、或输出文件短于断点时，自动丢弃断点从头加密
+await context.loadContext({ sourcePath: plainFile, outputPath: sealedFile });
+
+const readStream = new RecoverableSourceStream(plainFile, context);
+const sealer = new Sealer({
+  keyPair,
+  context,
+  progressHandler: (_total, items, bytes, sealedBytes) => {},
+});
+const writeStream = new RecoverableWriteStream(sealedFile, context);
+readStream.pipe(sealer).pipe(writeStream);
+```
+
+- 输入固定按 64 KiB 切分成 item，`data_hash` 只取决于明文内容，续传前后与一次性加密的结果一致。
+- 每次续传使用新的 ECDH 会话密钥，断点里不保存任何密钥材料。
+- 输入无法按字节定位时（例如先转码再加密），读端改为从源头读取并传 `skipCommittedInput: true`，由 `Sealer` 丢弃已封装的部分。
+- 暂停 / 强退 / 已完成任务的再次运行与解密的语义相同；完成后 `context.completed === true`。
+
 #### Author
 
 contact@yeez.tech
