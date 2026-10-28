@@ -1,5 +1,40 @@
 # @yeez-tech/meta-encryptor
 
+## 5.3.0
+
+### Minor Changes
+
+- ea7eb7c: 加密提速：同一个文件的所有 item 共用一个封装会话。每个文件只生成一次临时私钥、只做一次
+  ECDH + CMAC 派生，之后每个 item 仅做 AES-GCM；IV 由每 item 随机改为
+  「4 字节随机前缀 ‖ 8 字节大端序号（从 0 递增）」，同一密钥下 IV 不会重复。
+
+  密文布局不变（encrypted ‖ iv ‖ pubkey ‖ tag），每个 item 仍携带临时公钥与 IV，解密端无需任何改动，
+  新旧版本封装的文件可以互相解密。`YPCCrypto._encryptMessage`（转发密钥等单条消息）行为不变；
+  新增 `YPCCrypto.createSessionEncryptor(pkey, prefix)`。
+
+- c371d14: 断点续传解密的 context 只在写端 checkpoint 时更新：`RecoverableReadStream` 与 `Unsealer`
+  运行中不再改动 `readStart` / `data`（此前读端每读一块都 `Buffer.concat` 进 `data`、Unsealer
+  再用 remaining 覆盖，二者从未被落盘使用）。修复运行中手动 `saveContext()` 会存下
+  「readStart 超前、writeStart 未动」的不自洽存档、续传后明文缺段的问题；顺带省掉一次整条密文流的拷贝。
+  inplace 解密依赖的回放 data、pendingBlocks 原始密文与写前存档逻辑不变。
+
+  checkpoint 新增 `dataHash`（已提交 item 的滚动哈希，32 字节），`Unsealer` 续传时据此接着算，
+  新增只读属性 `Unsealer.dataHash`（Node 入口，与 header.data_hash 同口径）。`.progress` 格式自描述，
+  新旧版本可互读：旧存档无 `dataHash` 时照常续传，哈希只覆盖续传部分。
+
+- 2580bd3: 新增断点续传加密，接口与解密对称：`RecoverableSourceStream → Sealer({ context }) → RecoverableWriteStream`，
+  共用 `PipelineContextInFile`（同样支持优雅暂停与强退）。
+
+  - `Sealer` 输入固定按 64 KiB 切分成 item（此前按上游分片累积到 ≥64 KiB 为一个 item），
+    `data_hash` 只取决于明文内容，续传结果与一次性加密一致；解密端无需任何改动。
+  - `Sealer` 新增选项 `context`、`progressHandler`（与 `Unsealer` 同签名）、`skipCommittedInput`
+    （输入从源头开始时由 Sealer 跳过已封装部分，用于转码等无法按字节定位的输入），以及只读属性 `dataHash`。
+  - `PipelineContextInFile.loadContext({ sourcePath, outputPath })`：记录源文件大小与修改时间，
+    不一致或输出文件短于断点时丢弃断点从头加密；源文件与输出相同时抛 `ERR_SEAL_INPLACE_UNSUPPORTED`。
+    解密续传仍不传参数，行为不变。
+  - 加密断点字段：`readStart`（已封装明文字节）、`writeStart`、`readItemCount`、`dataHash`、
+    `blockStarts`、`source`、`completed`；每次续传使用新的 ECDH 会话密钥，不保存密钥材料。
+
 ## 5.2.0
 
 ### Minor Changes
